@@ -1,6 +1,8 @@
+import mongoose from 'mongoose';
 import { Request, Response } from 'express';
 import { BrowserHistory } from '../models/BrowserHistory';
 import { YouTubeHistory } from '../models/YouTubeHistory';
+import { YouTubeSession } from '../models/YouTubeSession';
 import { CallLog } from '../models/CallLog';
 import { CallRecording } from '../models/CallRecording';
 import { MediaCapture } from '../models/MediaCapture';
@@ -18,8 +20,9 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     const { deviceId, batteryLevel, isCharging } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
-    await Device.findOneAndUpdate(
-      { deviceId },
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const device = await Device.findOneAndUpdate(
+      { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
       {
         $set: {
           batteryLevel: batteryLevel ?? 100,
@@ -27,10 +30,34 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
           isOnline: true,
           lastSeenAt: new Date(),
         },
-      }
+      },
+      { new: true }
     );
 
-    return res.json({ success: true, message: 'Heartbeat updated.' });
+    if (!device) {
+      return res.status(404).json({ success: false, message: 'Device not found' });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Heartbeat updated.',
+      restrictions: {
+        youtubeBlocked: device.youtubeBlocked ?? false,
+        youtubeShortsBlocked: device.youtubeShortsBlocked ?? false,
+        youtubeBlockSchedule: device.youtubeBlockSchedule,
+        youtubeShortsBlockSchedule: device.youtubeShortsBlockSchedule,
+        youtubeRestrictedMode: device.youtubeRestrictedMode ?? false,
+        youtubeBlockedKeywords: device.youtubeBlockedKeywords || [],
+        preventNotificationDisable: device.preventNotificationDisable ?? false,
+        notifyOnBlockedUrlAttempt: device.notifyOnBlockedUrlAttempt ?? true,
+        browserRestrictionMode: device.browserRestrictionMode || device.browserRestrictionsMode || 'unrestricted',
+        browserRestrictionsMode: device.browserRestrictionsMode || device.browserRestrictionMode || 'unrestricted',
+        browserBlacklist: device.browserBlacklist || [],
+        browserWhitelist: device.browserWhitelist || [],
+        browserBlockedCategories: device.browserBlockedCategories || [],
+        blockedApps: device.blockedApps || [],
+      },
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -101,6 +128,44 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
 
     if (docs.length > 0) {
       await YouTubeHistory.insertMany(docs);
+    }
+
+    return res.json({ success: true, count: docs.length });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Batch Upload YouTube App Open/Close Sessions
+ */
+export const ingestYouTubeSession = async (req: Request, res: Response) => {
+  try {
+    const rawSessions = req.body.sessions || req.body.logs || (Array.isArray(req.body) ? req.body : [req.body]);
+    const topDeviceId = req.body.deviceId;
+    if (!Array.isArray(rawSessions)) {
+      return res.status(400).json({ success: false, message: 'Invalid payload format' });
+    }
+
+    const docs = rawSessions.map((item: any) => {
+      const start = item.startTime ? new Date(item.startTime) : new Date();
+      const end = item.endTime ? new Date(item.endTime) : new Date();
+      const dateStr = item.date || start.toISOString().split('T')[0];
+      return {
+        deviceId: item.deviceId || topDeviceId,
+        startTime: start,
+        endTime: end,
+        durationSeconds: item.durationSeconds || Math.max(0, Math.floor((end.getTime() - start.getTime()) / 1000)),
+        date: dateStr,
+        packageName: item.packageName || 'com.google.android.youtube',
+        source: item.source || 'YouTube App',
+        blocked: item.blocked || false,
+        blockReason: item.blockReason,
+      };
+    }).filter((d: any) => d.deviceId && d.startTime && d.endTime);
+
+    if (docs.length > 0) {
+      await YouTubeSession.insertMany(docs);
     }
 
     return res.json({ success: true, count: docs.length });

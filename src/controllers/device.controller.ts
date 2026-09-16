@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { Device } from '../models/Device';
@@ -9,30 +10,29 @@ import { getSignalingIo } from '../signaling/webrtc.signaling';
  */
 export const generatePairingCode = async (req: any, res: Response) => {
   try {
-    const { deviceId, deviceName, deviceModel, deviceBrand } = req.body;
-    if (!deviceId) {
-      return res.status(400).json({ success: false, message: 'deviceId is required' });
-    }
+    const { deviceId, code: customCode, deviceName, deviceModel, deviceBrand } = req.body;
+    const parentUserId = req.user?.userId || req.body.parentUserId;
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = customCode || Math.floor(100000 + Math.random() * 900000).toString();
+    const targetDeviceId = deviceId || `session_${code}`;
 
     await Device.findOneAndUpdate(
-      { deviceId },
+      { pairingCode: code },
       {
-        deviceId,
+        deviceId: targetDeviceId,
         deviceName: deviceName || 'Child Device',
         deviceModel: deviceModel || '',
         deviceBrand: deviceBrand || '',
         pairingCode: code,
         isPaired: false,
-        parentUserId: null,
+        parentUserId: parentUserId || null,
         isOnline: true,
         lastSeenAt: new Date(),
       },
       { upsert: true, new: true }
     );
 
-    console.log(`[PAIRING] Child device ${deviceId} generated code: ${code}`);
+    console.log(`[PAIRING] Session registered with code: ${code}`);
 
     return res.json({
       success: true,
@@ -46,19 +46,22 @@ export const generatePairingCode = async (req: any, res: Response) => {
 };
 
 /**
- * Check Pairing Status (Called by Child App polling)
+ * Check Pairing Status (Called by Parent App & Child App polling)
  */
 export const checkPairingStatus = async (req: any, res: Response) => {
   try {
     const { code } = req.params;
     const device = await Device.findOne({
       $or: [{ pairingCode: code }, { deviceId: code }],
+      isPaired: true,
     });
 
-    if (device && device.isPaired) {
+    if (device) {
       return res.json({
         success: true,
         isPaired: true,
+        isSetupComplete: !!device.isSetupComplete,
+        deviceId: device.deviceId,
         parentUid: device.parentUserId ? device.parentUserId.toString() : 'parent',
       });
     }
@@ -66,6 +69,79 @@ export const checkPairingStatus = async (req: any, res: Response) => {
     return res.json({
       success: true,
       isPaired: false,
+      isSetupComplete: false,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Child App completes permissions setup
+ */
+export const completeChildSetup = async (req: any, res: Response) => {
+  try {
+    const { deviceId, code } = req.body;
+    const targetId = deviceId || code;
+
+    if (!targetId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+
+    const device = await Device.findOneAndUpdate(
+      { $or: [{ deviceId: targetId }, { pairingCode: targetId }] },
+      { $set: { isSetupComplete: true, isPaired: true } },
+      { new: true }
+    );
+
+    if (!device) {
+      return res.status(404).json({ success: false, message: 'Device not found' });
+    }
+
+    console.log(`[SETUP-COMPLETE] Permissions setup completed for device ${device.deviceId}`);
+
+    return res.json({
+      success: true,
+      message: 'Setup completed successfully',
+      isSetupComplete: true,
+      device,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Check Setup Status (Called by Parent App when clicking "Done")
+ */
+export const checkSetupStatus = async (req: any, res: Response) => {
+  try {
+    const { code } = req.params;
+    const parentUserId = req.user?.userId;
+
+    const device = await Device.findOne({
+      $or: [{ pairingCode: code }, { deviceId: code }],
+    });
+
+    if (device) {
+      if (parentUserId && (!device.parentUserId || device.parentUserId.toString() !== parentUserId.toString())) {
+        device.parentUserId = parentUserId as any;
+        await device.save();
+      }
+
+      return res.json({
+        success: true,
+        isPaired: device.isPaired,
+        isSetupComplete: !!device.isSetupComplete,
+        deviceId: device.deviceId,
+      });
+    }
+
+    return res.json({
+      success: false,
+      isPaired: false,
+      isSetupComplete: false,
+      message: 'Device session not found',
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -115,37 +191,57 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
  */
 export const pairChildDevice = async (req: any, res: Response) => {
   try {
-    const { deviceId, deviceName, deviceModel, deviceBrand, osType, fcmToken, parentUserId } = req.body;
+    const { deviceId, code, pairingCode, deviceName, deviceModel, deviceBrand, osType, fcmToken, parentUserId } = req.body;
     if (!deviceId) {
       return res.status(400).json({ success: false, message: 'deviceId is required.' });
+    }
+
+    const inputCode = code || pairingCode;
+    let targetParentUserId = parentUserId;
+
+    if (inputCode) {
+      const codeRecord = await Device.findOne({ pairingCode: inputCode });
+      if (codeRecord) {
+        if (codeRecord.parentUserId) {
+          targetParentUserId = codeRecord.parentUserId;
+        }
+        codeRecord.isPaired = true;
+        await codeRecord.save();
+      }
     }
 
     let device = await Device.findOne({ deviceId });
     if (!device) {
       device = new Device({
         deviceId,
-        parentUserId,
+        parentUserId: targetParentUserId || null,
+        pairingCode: inputCode || null,
         deviceName: deviceName || 'Child Device',
         deviceModel: deviceModel || '',
         deviceBrand: deviceBrand || '',
         osType: osType || 'android',
         isPaired: true,
+        isSetupComplete: false,
         fcmToken: fcmToken || '',
       });
     } else {
-      if (parentUserId) device.parentUserId = parentUserId;
+      if (targetParentUserId) device.parentUserId = targetParentUserId;
+      if (inputCode) device.pairingCode = inputCode;
       if (fcmToken) device.fcmToken = fcmToken;
       device.isPaired = true;
+      device.isSetupComplete = false;
       device.isOnline = true;
       device.lastSeenAt = new Date();
     }
 
     await device.save();
+    console.log(`[PAIRING-SUCCESS] Child device ${deviceId} paired with code ${inputCode}`);
 
     return res.json({
       success: true,
       message: 'Child device paired successfully.',
       device,
+      parentUid: device.parentUserId ? device.parentUserId.toString() : 'parent',
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -158,11 +254,37 @@ export const pairChildDevice = async (req: any, res: Response) => {
 export const getParentDevices = async (req: AuthRequest, res: Response) => {
   try {
     const parentUserId = req.user?.userId;
-    const devices = await Device.find({ parentUserId }).sort({ updatedAt: -1 });
+
+    if (!parentUserId) {
+      const allDevices = await Device.find({
+        isPaired: true,
+        deviceId: { $not: /^session_/ }
+      }).sort({ updatedAt: -1 });
+      return res.json({
+        success: true,
+        devices: allDevices,
+      });
+    }
+
+    let rawDevices = await Device.find({
+      $or: [
+        { parentUserId },
+        { isPaired: true, parentUserId: null, deviceId: { $not: /^session_/ } }
+      ]
+    }).sort({ updatedAt: -1 });
+
+    const realDevices = rawDevices.filter(d => !d.deviceId.startsWith('session_'));
+
+    for (const dev of realDevices) {
+      if (!dev.parentUserId) {
+        dev.parentUserId = parentUserId as any;
+        await dev.save();
+      }
+    }
 
     return res.json({
       success: true,
-      devices,
+      devices: realDevices,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -174,10 +296,61 @@ export const getParentDevices = async (req: AuthRequest, res: Response) => {
  */
 export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
   try {
-    const { deviceId } = req.params;
-    const updates = req.body;
+    const deviceId = req.params.deviceId || req.body.deviceId;
+    if (!deviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
 
-    const device = await Device.findOneAndUpdate({ deviceId }, { $set: updates }, { new: true });
+    const updates: any = { ...req.body };
+    const mongoUpdate: any = {};
+
+    const mode = updates.browserRestrictionsMode || updates.browserRestrictionMode;
+    if (mode) {
+      updates.browserRestrictionsMode = mode;
+      updates.browserRestrictionMode = mode;
+    }
+
+    if (updates.addBlacklist) {
+      mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
+      mongoUpdate['$addToSet']['browserBlacklist'] = updates.addBlacklist;
+      delete updates.addBlacklist;
+    }
+    if (updates.addBlacklistUrls && Array.isArray(updates.addBlacklistUrls)) {
+      mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
+      mongoUpdate['$addToSet']['browserBlacklist'] = { $each: updates.addBlacklistUrls };
+      delete updates.addBlacklistUrls;
+    }
+    if (updates.removeBlacklist) {
+      mongoUpdate['$pull'] = mongoUpdate['$pull'] || {};
+      mongoUpdate['$pull']['browserBlacklist'] = updates.removeBlacklist;
+      delete updates.removeBlacklist;
+    }
+    if (updates.addWhitelist) {
+      mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
+      mongoUpdate['$addToSet']['browserWhitelist'] = updates.addWhitelist;
+      delete updates.addWhitelist;
+    }
+    if (updates.addWhitelistUrls && Array.isArray(updates.addWhitelistUrls)) {
+      mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
+      mongoUpdate['$addToSet']['browserWhitelist'] = { $each: updates.addWhitelistUrls };
+      delete updates.addWhitelistUrls;
+    }
+    if (updates.removeWhitelist) {
+      mongoUpdate['$pull'] = mongoUpdate['$pull'] || {};
+      mongoUpdate['$pull']['browserWhitelist'] = updates.removeWhitelist;
+      delete updates.removeWhitelist;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      mongoUpdate['$set'] = updates;
+    }
+
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const device = await Device.findOneAndUpdate(
+      { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
+      mongoUpdate,
+      { new: true }
+    );
     if (!device) {
       return res.status(404).json({ success: false, message: 'Device not found.' });
     }
@@ -185,6 +358,29 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
     if (device.fcmToken) {
       await sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {});
     }
+
+    const restrictions = {
+      youtubeBlocked: device.youtubeBlocked ?? false,
+      youtubeShortsBlocked: device.youtubeShortsBlocked ?? false,
+      youtubeBlockSchedule: device.youtubeBlockSchedule,
+      youtubeShortsBlockSchedule: device.youtubeShortsBlockSchedule,
+      youtubeRestrictedMode: device.youtubeRestrictedMode ?? false,
+      youtubeBlockedKeywords: device.youtubeBlockedKeywords || [],
+      preventNotificationDisable: device.preventNotificationDisable ?? false,
+      notifyOnBlockedUrlAttempt: device.notifyOnBlockedUrlAttempt ?? true,
+      browserRestrictionMode: device.browserRestrictionMode || device.browserRestrictionsMode || 'unrestricted',
+      browserRestrictionsMode: device.browserRestrictionsMode || device.browserRestrictionMode || 'unrestricted',
+      browserBlacklist: device.browserBlacklist || [],
+      browserWhitelist: device.browserWhitelist || [],
+      browserBlockedCategories: device.browserBlockedCategories || [],
+      blockedApps: device.blockedApps || [],
+    };
+
+    getSignalingIo()?.to(device.deviceId).emit('remote-command', {
+      command: 'UPDATE_RULES',
+      deviceId: device.deviceId,
+      restrictions,
+    });
 
     return res.json({
       success: true,
@@ -205,13 +401,14 @@ export const sendRemoteCommand = async (req: AuthRequest, res: Response) => {
     const { command, actionType } = req.body;
     const targetCommand = command || actionType || 'TAKE_SCREENSHOT';
 
-    const device = await Device.findOne({ deviceId });
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const device = await Device.findOne({ $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] });
     if (!device) {
       return res.status(404).json({ success: false, message: 'Device not found.' });
     }
 
     // Emit via Socket.io signaling
-    getSignalingIo()?.to(deviceId).emit('remote-command', { command: targetCommand, deviceId });
+    getSignalingIo()?.to(device.deviceId).emit('remote-command', { command: targetCommand, deviceId: device.deviceId });
 
     if (device.fcmToken) {
       await sendFcmDataCommand(device.fcmToken, targetCommand, { action: targetCommand });
@@ -236,14 +433,17 @@ export const disconnectDevice = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, message: 'deviceId is required' });
     }
 
+    const isObjId = mongoose.isValidObjectId(deviceId);
     const device = await Device.findOneAndUpdate(
-      { deviceId },
-      { $set: { isPaired: false, parentUserId: null, pairingCode: null } },
+      { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
+      { $set: { isPaired: false, isSetupComplete: false, parentUserId: null, pairingCode: null } },
       { new: true }
     );
 
-    // Emit UNPAIR signal to child device socket room
-    getSignalingIo()?.to(deviceId).emit('remote-command', { command: 'UNPAIR', deviceId });
+    if (device) {
+      // Emit UNPAIR signal to child device socket room
+      getSignalingIo()?.to(device.deviceId).emit('remote-command', { command: 'UNPAIR', deviceId: device.deviceId });
+    }
 
     console.log(`[DISCONNECT] Device ${deviceId} disconnected by parent.`);
 
@@ -252,6 +452,23 @@ export const disconnectDevice = async (req: any, res: Response) => {
       message: 'Device unpaired successfully.',
       device,
     });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Get single device details
+ */
+export const getDeviceDetails = async (req: any, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const device = await Device.findOne({ $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] });
+    if (!device) {
+      return res.status(404).json({ success: false, message: 'Device not found' });
+    }
+    return res.json(device);
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

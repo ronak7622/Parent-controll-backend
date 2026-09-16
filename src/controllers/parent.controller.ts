@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { BrowserHistory } from '../models/BrowserHistory';
 import { YouTubeHistory } from '../models/YouTubeHistory';
+import { YouTubeSession } from '../models/YouTubeSession';
 import { CallLog } from '../models/CallLog';
 import { CallRecording } from '../models/CallRecording';
 import { MediaCapture } from '../models/MediaCapture';
@@ -58,6 +59,95 @@ export const getYouTubeHistory = async (req: AuthRequest, res: Response) => {
       .limit(Number(limit));
 
     return res.json({ success: true, items, events: items });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch YouTube App Open/Close Sessions with date filter
+ */
+export const getYouTubeSessions = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date, limit = 500 } = req.query;
+
+    const query: any = { deviceId };
+    if (date) {
+      query.date = date as string;
+    }
+
+    const sessions = await YouTubeSession.find(query)
+      .sort({ startTime: -1 })
+      .limit(Number(limit));
+
+    return res.json({ success: true, sessions, items: sessions });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete a single YouTube session by ID
+ */
+export const deleteYouTubeSession = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await YouTubeSession.deleteMany({ $or: [{ _id: id }, { id }] });
+    return res.json({ success: true, message: 'Session deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete YouTube sessions for a device (optionally filtered by date)
+ */
+export const deleteYouTubeSessionsForDevice = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date } = req.query;
+    const query: any = { deviceId };
+    if (date) query.date = date as string;
+
+    const result = await YouTubeSession.deleteMany(query);
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete a single YouTube history record by ID
+ */
+export const deleteYouTubeHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await YouTubeHistory.deleteMany({ $or: [{ _id: id }, { id }] });
+    return res.json({ success: true, message: 'History record deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete YouTube history records for a device (optionally filtered by date)
+ */
+export const deleteYouTubeHistoryForDevice = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date } = req.query;
+    const query: any = { deviceId };
+    if (date) {
+      const start = new Date(date as string);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(date as string);
+      end.setHours(23, 59, 59, 999);
+      query.timestamp = { $gte: start, $lte: end };
+    }
+
+    const result = await YouTubeHistory.deleteMany(query);
+    return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

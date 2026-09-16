@@ -9,6 +9,7 @@ export interface IDevice extends Document {
   osType: 'android' | 'ios';
   pairingCode?: string;
   isPaired: boolean;
+  isSetupComplete: boolean;
   batteryLevel: number;
   isCharging: boolean;
   isOnline: boolean;
@@ -18,10 +19,16 @@ export interface IDevice extends Document {
   // Settings & Restrictions
   youtubeBlocked: boolean;
   youtubeShortsBlocked: boolean;
+  youtubeBlockSchedule?: any;
+  youtubeShortsBlockSchedule?: any;
   youtubeRestrictedMode: boolean;
   youtubeBlockedKeywords: string[];
   
+  preventNotificationDisable: boolean;
+  notifyOnBlockedUrlAttempt: boolean;
+
   browserRestrictionMode: 'unrestricted' | 'blacklist' | 'whitelist';
+  browserRestrictionsMode?: 'unrestricted' | 'blacklist' | 'whitelist';
   browserBlacklist: string[];
   browserWhitelist: string[];
   browserBlockedCategories: string[];
@@ -47,6 +54,7 @@ const DeviceSchema = new Schema<IDevice>(
     osType: { type: String, enum: ['android', 'ios'], default: 'android' },
     pairingCode: { type: String },
     isPaired: { type: Boolean, default: false },
+    isSetupComplete: { type: Boolean, default: false },
     batteryLevel: { type: Number, default: 100 },
     isCharging: { type: Boolean, default: false },
     isOnline: { type: Boolean, default: false },
@@ -55,10 +63,16 @@ const DeviceSchema = new Schema<IDevice>(
     
     youtubeBlocked: { type: Boolean, default: false },
     youtubeShortsBlocked: { type: Boolean, default: false },
+    youtubeBlockSchedule: { type: Schema.Types.Mixed, default: null },
+    youtubeShortsBlockSchedule: { type: Schema.Types.Mixed, default: null },
     youtubeRestrictedMode: { type: Boolean, default: false },
     youtubeBlockedKeywords: [{ type: String }],
     
+    preventNotificationDisable: { type: Boolean, default: false },
+    notifyOnBlockedUrlAttempt: { type: Boolean, default: true },
+
     browserRestrictionMode: { type: String, enum: ['unrestricted', 'blacklist', 'whitelist'], default: 'unrestricted' },
+    browserRestrictionsMode: { type: String, enum: ['unrestricted', 'blacklist', 'whitelist'], default: 'unrestricted' },
     browserBlacklist: [{ type: String }],
     browserWhitelist: [{ type: String }],
     browserBlockedCategories: [{ type: String }],
