@@ -16,11 +16,11 @@ const CallLogSchema = new Schema<ICallLog>(
     contactName: { type: String },
     callType: { type: String, enum: ['incoming', 'outgoing', 'missed', 'rejected'], required: true },
     durationSeconds: { type: Number, default: 0 },
-    timestamp: { type: Date, required: true, index: true },
+    timestamp: { type: Date, required: true },
   },
   { timestamps: true }
 );
 
-CallLogSchema.index({ timestamp: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+CallLogSchema.index({ deviceId: 1, timestamp: -1 });
 
 export const CallLog = mongoose.model<ICallLog>('CallLog', CallLogSchema);

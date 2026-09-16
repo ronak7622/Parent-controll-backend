@@ -16,12 +16,12 @@ const MediaCaptureSchema = new Schema<IMediaCapture>(
     mediaUrl: { type: String, required: true },
     fileSizeBytes: { type: Number },
     mimeType: { type: String, default: 'image/webp' },
-    timestamp: { type: Date, required: true, index: true },
+    timestamp: { type: Date, required: true },
   },
   { timestamps: true }
 );
 
-// TTL index to automatically delete records older than 90 days
-MediaCaptureSchema.index({ timestamp: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+// Compound index for fast screenshot/photo queries at scale
+MediaCaptureSchema.index({ deviceId: 1, type: 1, timestamp: -1 });
 
 export const MediaCapture = mongoose.model<IMediaCapture>('MediaCapture', MediaCaptureSchema);

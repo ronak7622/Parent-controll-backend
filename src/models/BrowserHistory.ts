@@ -22,12 +22,12 @@ const BrowserHistorySchema = new Schema<IBrowserHistory>(
     browserName: { type: String, default: 'Browser' },
     blocked: { type: Boolean, default: false },
     blockReason: { type: String },
-    timestamp: { type: Date, required: true, index: true },
+    timestamp: { type: Date, required: true },
   },
   { timestamps: true }
 );
 
-// TTL index to automatically delete records older than 90 days
-BrowserHistorySchema.index({ timestamp: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+// Compound index for fast time-series queries at scale
+BrowserHistorySchema.index({ deviceId: 1, timestamp: -1 });
 
 export const BrowserHistory = mongoose.model<IBrowserHistory>('BrowserHistory', BrowserHistorySchema);

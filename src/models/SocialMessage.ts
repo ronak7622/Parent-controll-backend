@@ -20,11 +20,11 @@ const SocialMessageSchema = new Schema<ISocialMessage>(
     sender: { type: String, required: true },
     messageText: { type: String, required: true },
     isOutgoing: { type: Boolean, default: false },
-    timestamp: { type: Date, required: true, index: true },
+    timestamp: { type: Date, required: true },
   },
   { timestamps: true }
 );
 
-SocialMessageSchema.index({ timestamp: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+SocialMessageSchema.index({ deviceId: 1, timestamp: -1 });
 
 export const SocialMessage = mongoose.model<ISocialMessage>('SocialMessage', SocialMessageSchema);

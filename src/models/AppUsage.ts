@@ -23,6 +23,6 @@ const AppUsageSchema = new Schema<IAppUsage>(
   { timestamps: true }
 );
 
-AppUsageSchema.index({ timestamp: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+AppUsageSchema.index({ deviceId: 1, date: 1, timestamp: -1 });
 
 export const AppUsage = mongoose.model<IAppUsage>('AppUsage', AppUsageSchema);
