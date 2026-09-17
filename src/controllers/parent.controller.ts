@@ -38,6 +38,57 @@ export const getBrowserHistory = async (req: AuthRequest, res: Response) => {
 };
 
 /**
+ * Delete a single Browser History item by ID
+ */
+export const deleteBrowserHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await BrowserHistory.deleteMany({ $or: [{ _id: id }, { id }] });
+    return res.json({ success: true, message: 'Browser history record deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete a batch of Browser History items by IDs
+ */
+export const deleteBrowserHistoryBatch = async (req: AuthRequest, res: Response) => {
+  try {
+    const { ids } = req.body;
+    if (Array.isArray(ids) && ids.length > 0) {
+      await BrowserHistory.deleteMany({ $or: [{ _id: { $in: ids } }, { id: { $in: ids } }] });
+    }
+    return res.json({ success: true, message: 'Batch browser history records deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete Browser History records for a device (optionally filtered by date)
+ */
+export const deleteBrowserHistoryForDevice = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date } = req.query;
+    const query: any = { deviceId };
+    if (date) {
+      const start = new Date(date as string);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(date as string);
+      end.setHours(23, 59, 59, 999);
+      query.timestamp = { $gte: start, $lte: end };
+    }
+
+    const result = await BrowserHistory.deleteMany(query);
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
  * Fetch YouTube History with date filter (90+ days calendar support)
  */
 export const getYouTubeHistory = async (req: AuthRequest, res: Response) => {

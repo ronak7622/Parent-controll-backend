@@ -23,6 +23,9 @@ import {
 } from '../controllers/ingest.controller';
 import {
   getBrowserHistory,
+  deleteBrowserHistory,
+  deleteBrowserHistoryBatch,
+  deleteBrowserHistoryForDevice,
   getYouTubeHistory,
   getYouTubeSessions,
   deleteYouTubeSession,
@@ -85,6 +88,9 @@ router.post('/ingest/general-logs', ingestGeneralLogs);
 // 4. Parent Data Retrieval & Deletion Routes (90+ Days Calendar History)
 // ===================================
 router.get('/parent/device/:deviceId/browser-history', optionalAuthenticateJwt, getBrowserHistory);
+router.delete('/parent/browser-history/:id', optionalAuthenticateJwt, deleteBrowserHistory);
+router.post('/parent/browser-history/batch-delete', optionalAuthenticateJwt, deleteBrowserHistoryBatch);
+router.delete('/parent/device/:deviceId/browser-history', optionalAuthenticateJwt, deleteBrowserHistoryForDevice);
 router.get('/parent/device/:deviceId/youtube-history', optionalAuthenticateJwt, getYouTubeHistory);
 router.get('/parent/device/:deviceId/youtube-sessions', optionalAuthenticateJwt, getYouTubeSessions);
 router.delete('/parent/youtube-session/:id', optionalAuthenticateJwt, deleteYouTubeSession);
