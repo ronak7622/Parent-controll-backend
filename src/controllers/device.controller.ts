@@ -88,23 +88,32 @@ export const completeChildSetup = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, message: 'deviceId is required' });
     }
 
-    const device = await Device.findOneAndUpdate(
-      { $or: [{ deviceId: targetId }, { pairingCode: targetId }] },
-      { $set: { isSetupComplete: true, isPaired: true } },
-      { new: true }
-    );
+    const initialDevice = await Device.findOne({
+      $or: [{ deviceId: targetId }, { pairingCode: targetId }],
+    });
 
-    if (!device) {
+    if (!initialDevice) {
       return res.status(404).json({ success: false, message: 'Device not found' });
     }
 
-    console.log(`[SETUP-COMPLETE] Permissions setup completed for device ${device.deviceId}`);
+    const queryFilters: any[] = [{ deviceId: targetId }, { pairingCode: targetId }];
+    if (initialDevice.pairingCode) queryFilters.push({ pairingCode: initialDevice.pairingCode });
+    if (initialDevice.deviceId) queryFilters.push({ deviceId: initialDevice.deviceId });
+
+    await Device.updateMany(
+      { $or: queryFilters },
+      { $set: { isSetupComplete: true, isPaired: true } }
+    );
+
+    const updatedDevice = await Device.findOne({ deviceId: targetId }) || initialDevice;
+
+    console.log(`[SETUP-COMPLETE] Permissions setup completed for device ${updatedDevice.deviceId}`);
 
     return res.json({
       success: true,
       message: 'Setup completed successfully',
       isSetupComplete: true,
-      device,
+      device: updatedDevice,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -119,21 +128,29 @@ export const checkSetupStatus = async (req: any, res: Response) => {
     const { code } = req.params;
     const parentUserId = req.user?.userId;
 
-    const device = await Device.findOne({
+    const devices = await Device.find({
       $or: [{ pairingCode: code }, { deviceId: code }],
     });
 
-    if (device) {
-      if (parentUserId && (!device.parentUserId || device.parentUserId.toString() !== parentUserId.toString())) {
-        device.parentUserId = parentUserId as any;
-        await device.save();
+    if (devices && devices.length > 0) {
+      const isComplete = devices.some(d => d.isSetupComplete === true);
+      const isPaired = devices.some(d => d.isPaired === true);
+      const targetDevice = devices.find(d => d.deviceId && !d.deviceId.startsWith('session_')) || devices[0];
+
+      if (parentUserId) {
+        for (const dev of devices) {
+          if (!dev.parentUserId || dev.parentUserId.toString() !== parentUserId.toString()) {
+            dev.parentUserId = parentUserId as any;
+            await dev.save();
+          }
+        }
       }
 
       return res.json({
         success: true,
-        isPaired: device.isPaired,
-        isSetupComplete: !!device.isSetupComplete,
-        deviceId: device.deviceId,
+        isPaired,
+        isSetupComplete: isComplete,
+        deviceId: targetDevice.deviceId,
       });
     }
 
