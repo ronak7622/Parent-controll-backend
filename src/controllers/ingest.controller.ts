@@ -11,6 +11,7 @@ import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
 import { Device } from '../models/Device';
 import { uploadMediaToR2 } from '../services/r2.service';
+import { getSignalingIo } from '../signaling/webrtc.signaling';
 
 /**
  * Update Heartbeat & Online Status from Child Device
@@ -87,7 +88,16 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
     })).filter((d: any) => d.deviceId && d.url);
 
     if (docs.length > 0) {
-      await BrowserHistory.insertMany(docs);
+      const inserted = await BrowserHistory.insertMany(docs);
+      const blockedDocs = inserted.filter((d: any) => d.blocked);
+      if (blockedDocs.length > 0) {
+        const io = getSignalingIo();
+        if (io) {
+          blockedDocs.forEach((bd: any) => {
+            io.to(bd.deviceId).emit('blocked-attempt', bd);
+          });
+        }
+      }
     }
 
     return res.json({ success: true, count: docs.length });
@@ -127,7 +137,16 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
     })).filter((d: any) => d.deviceId && d.title);
 
     if (docs.length > 0) {
-      await YouTubeHistory.insertMany(docs);
+      const inserted = await YouTubeHistory.insertMany(docs);
+      const blockedDocs = inserted.filter((d: any) => d.blocked);
+      if (blockedDocs.length > 0) {
+        const io = getSignalingIo();
+        if (io) {
+          blockedDocs.forEach((bd: any) => {
+            io.to(bd.deviceId).emit('blocked-attempt', bd);
+          });
+        }
+      }
     }
 
     return res.json({ success: true, count: docs.length });
