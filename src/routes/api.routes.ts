@@ -38,6 +38,20 @@ import {
   getAppUsage,
   getSocialMessages,
 } from '../controllers/parent.controller';
+import {
+  ingestWifiLog,
+  getWifiHistory,
+  deleteWifiHistoryForDay,
+  deleteWifiHistoryAll,
+  deleteWifiLogItem,
+} from '../controllers/wifi.controller';
+import {
+  ingestInternetLog,
+  getInternetHistory,
+  deleteInternetHistoryDay,
+  deleteInternetHistoryAll,
+  deleteInternetLogItem,
+} from '../controllers/internet.controller';
 import { authenticateJwt, optionalAuthenticateJwt } from '../middleware/auth';
 
 const router = Router();
@@ -83,6 +97,10 @@ router.post('/ingest/youtube-history', ingestYouTubeHistory);
 router.post('/ingest/youtube-session', ingestYouTubeSession);
 router.post('/ingest/media-capture', uploadCapturedMedia);
 router.post('/ingest/general-logs', ingestGeneralLogs);
+router.post('/ingest/social-message', ingestGeneralLogs);
+router.post('/ingest/call-log', ingestGeneralLogs);
+router.post('/ingest/app-usage', ingestGeneralLogs);
+router.post('/ingest/contact', ingestGeneralLogs);
 
 // ===================================
 // 4. Parent Data Retrieval & Deletion Routes (90+ Days Calendar History)
@@ -101,6 +119,19 @@ router.get('/parent/device/:deviceId/media-captures', optionalAuthenticateJwt, g
 router.get('/parent/device/:deviceId/contacts', optionalAuthenticateJwt, getContacts);
 router.get('/parent/device/:deviceId/call-logs', optionalAuthenticateJwt, getCallLogs);
 router.get('/parent/device/:deviceId/app-usage', optionalAuthenticateJwt, getAppUsage);
-router.get('/parent/device/:deviceId/social-messages', optionalAuthenticateJwt, getSocialMessages);
+
+// Wi-Fi Routes
+router.post('/ingest/wifi-log', ingestWifiLog);
+router.get('/parent/device/:deviceId/wifi-history', optionalAuthenticateJwt, getWifiHistory);
+router.delete('/parent/device/:deviceId/wifi-history/day', optionalAuthenticateJwt, deleteWifiHistoryForDay);
+router.delete('/parent/device/:deviceId/wifi-history/all', optionalAuthenticateJwt, deleteWifiHistoryAll);
+router.delete('/parent/wifi-history/:id', optionalAuthenticateJwt, deleteWifiLogItem);
+
+// Mobile Data / Internet Routes
+router.post('/ingest/internet-log', ingestInternetLog);
+router.get('/parent/device/:deviceId/internet-history', optionalAuthenticateJwt, getInternetHistory);
+router.delete('/parent/device/:deviceId/internet-history/day', optionalAuthenticateJwt, deleteInternetHistoryDay);
+router.delete('/parent/device/:deviceId/internet-history/all', optionalAuthenticateJwt, deleteInternetHistoryAll);
+router.delete('/parent/internet-history/:id', optionalAuthenticateJwt, deleteInternetLogItem);
 
 export default router;
