@@ -26,7 +26,6 @@ export interface IDevice extends Document {
   
   preventNotificationDisable: boolean;
   notifyOnBlockedUrlAttempt: boolean;
-  notifyWifiBlockAttempt: boolean;
 
   browserRestrictionMode: 'unrestricted' | 'blacklist' | 'whitelist';
   browserRestrictionsMode?: 'unrestricted' | 'blacklist' | 'whitelist';
@@ -71,7 +70,6 @@ const DeviceSchema = new Schema<IDevice>(
     
     preventNotificationDisable: { type: Boolean, default: false },
     notifyOnBlockedUrlAttempt: { type: Boolean, default: true },
-    notifyWifiBlockAttempt: { type: Boolean, default: false },
 
     browserRestrictionMode: { type: String, enum: ['unrestricted', 'blacklist', 'whitelist'], default: 'unrestricted' },
     browserRestrictionsMode: { type: String, enum: ['unrestricted', 'blacklist', 'whitelist'], default: 'unrestricted' },
