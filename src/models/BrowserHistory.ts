@@ -9,6 +9,11 @@ export interface IBrowserHistory extends Document {
   browserName: string;
   blocked: boolean;
   blockReason?: string;
+  sessionId?: string;
+  startTime?: Date;
+  endTime?: Date;
+  durationSeconds?: number;
+  isCurrentlyActive?: boolean;
   timestamp: Date;
 }
 
@@ -22,6 +27,11 @@ const BrowserHistorySchema = new Schema<IBrowserHistory>(
     browserName: { type: String, default: 'Browser' },
     blocked: { type: Boolean, default: false },
     blockReason: { type: String },
+    sessionId: { type: String, default: '', index: true },
+    startTime: { type: Date, default: Date.now },
+    endTime: { type: Date, default: null },
+    durationSeconds: { type: Number, default: 0 },
+    isCurrentlyActive: { type: Boolean, default: false },
     timestamp: { type: Date, required: true },
   },
   { timestamps: true }
@@ -29,5 +39,6 @@ const BrowserHistorySchema = new Schema<IBrowserHistory>(
 
 // Compound index for fast time-series queries at scale
 BrowserHistorySchema.index({ deviceId: 1, timestamp: -1 });
+BrowserHistorySchema.index({ deviceId: 1, sessionId: 1 });
 
 export const BrowserHistory = mongoose.model<IBrowserHistory>('BrowserHistory', BrowserHistorySchema);

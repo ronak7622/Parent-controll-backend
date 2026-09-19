@@ -75,32 +75,64 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid payload format' });
     }
 
-    const docs = rawLogs.map((item: any) => ({
-      deviceId: item.deviceId || topDeviceId,
-      url: item.url,
-      domain: item.domain || item.url,
-      title: item.title,
-      browserPackage: item.browserPackage || 'browser',
-      browserName: item.browserName || 'Browser',
-      blocked: item.blocked || false,
-      blockReason: item.blockReason,
-      timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
-    })).filter((d: any) => d.deviceId && d.url);
+    const sessionDocs: any[] = [];
+    const plainDocs: any[] = [];
 
-    if (docs.length > 0) {
-      const inserted = await BrowserHistory.insertMany(docs);
-      const blockedDocs = inserted.filter((d: any) => d.blocked);
-      if (blockedDocs.length > 0) {
-        const io = getSignalingIo();
-        if (io) {
-          blockedDocs.forEach((bd: any) => {
-            io.to(bd.deviceId).emit('blocked-attempt', bd);
-          });
-        }
+    for (const item of rawLogs) {
+      const deviceId = item.deviceId || topDeviceId;
+      if (!deviceId || !item.url) continue;
+
+      const docData: any = {
+        deviceId,
+        url: item.url,
+        domain: item.domain || item.url,
+        title: item.title,
+        browserPackage: item.browserPackage || 'browser',
+        browserName: item.browserName || 'Browser',
+        blocked: item.blocked || false,
+        blockReason: item.blockReason,
+        timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
+      };
+
+      if (item.sessionId) {
+        docData.sessionId = item.sessionId;
+        if (item.startTime) docData.startTime = new Date(item.startTime);
+        if (item.endTime !== undefined) docData.endTime = item.endTime ? new Date(item.endTime) : null;
+        if (typeof item.durationSeconds === 'number') docData.durationSeconds = Math.max(0, item.durationSeconds);
+        if (typeof item.isCurrentlyActive === 'boolean') docData.isCurrentlyActive = item.isCurrentlyActive;
+        sessionDocs.push(docData);
+      } else {
+        plainDocs.push(docData);
       }
     }
 
-    return res.json({ success: true, count: docs.length });
+    const insertedOrUpdated: any[] = [];
+
+    for (const sDoc of sessionDocs) {
+      const resDoc = await BrowserHistory.findOneAndUpdate(
+        { deviceId: sDoc.deviceId, sessionId: sDoc.sessionId },
+        { $set: sDoc },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      if (resDoc) insertedOrUpdated.push(resDoc);
+    }
+
+    if (plainDocs.length > 0) {
+      const inserted = await BrowserHistory.insertMany(plainDocs);
+      insertedOrUpdated.push(...inserted);
+    }
+
+    const blockedDocs = insertedOrUpdated.filter((d: any) => d.blocked);
+    if (blockedDocs.length > 0) {
+      const io = getSignalingIo();
+      if (io) {
+        blockedDocs.forEach((bd: any) => {
+          io.to(bd.deviceId).emit('blocked-attempt', bd);
+        });
+      }
+    }
+
+    return res.json({ success: true, count: insertedOrUpdated.length });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

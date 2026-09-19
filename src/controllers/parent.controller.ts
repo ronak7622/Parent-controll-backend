@@ -31,7 +31,96 @@ export const getBrowserHistory = async (req: AuthRequest, res: Response) => {
       .sort({ timestamp: -1 })
       .limit(Number(limit));
 
-    return res.json({ success: true, items, events: items });
+    let totalBrowsingDurationSeconds = 0;
+    let morningSeconds = 0;
+    let morningCount = 0;
+    let afternoonSeconds = 0;
+    let afternoonCount = 0;
+    let nightSeconds = 0;
+    let nightCount = 0;
+    const hourlyDurations = new Array(24).fill(0);
+    const hourlyCounts = new Array(24).fill(0);
+
+    const formattedItems = items.map((doc) => {
+      const obj = doc.toObject();
+      if (!obj.startTime) {
+        obj.startTime = obj.timestamp;
+      }
+
+      const dur = obj.durationSeconds || 0;
+      totalBrowsingDurationSeconds += dur;
+
+      const eventTime = new Date(obj.startTime);
+      const hour = eventTime.getHours();
+      if (hour >= 0 && hour < 24) {
+        hourlyDurations[hour] += dur;
+        hourlyCounts[hour] += 1;
+      }
+
+      if (hour >= 6 && hour < 12) {
+        morningSeconds += dur;
+        morningCount++;
+      } else if (hour >= 12 && hour < 18) {
+        afternoonSeconds += dur;
+        afternoonCount++;
+      } else {
+        nightSeconds += dur;
+        nightCount++;
+      }
+
+      return obj;
+    });
+
+    let peakHour = -1;
+    let maxHourDur = -1;
+    let maxHourCount = -1;
+    for (let h = 0; h < 24; h++) {
+      if (hourlyDurations[h] > maxHourDur || (hourlyDurations[h] === maxHourDur && hourlyCounts[h] > maxHourCount)) {
+        if (hourlyDurations[h] > 0 || hourlyCounts[h] > 0) {
+          maxHourDur = hourlyDurations[h];
+          maxHourCount = hourlyCounts[h];
+          peakHour = h;
+        }
+      }
+    }
+
+    let peakPeriod = '';
+    if (morningSeconds > 0 || afternoonSeconds > 0 || nightSeconds > 0) {
+      if (morningSeconds >= afternoonSeconds && morningSeconds >= nightSeconds) {
+        peakPeriod = 'Morning';
+      } else if (afternoonSeconds >= morningSeconds && afternoonSeconds >= nightSeconds) {
+        peakPeriod = 'Afternoon';
+      } else {
+        peakPeriod = 'Night';
+      }
+    } else if (morningCount > 0 || afternoonCount > 0 || nightCount > 0) {
+      if (morningCount >= afternoonCount && morningCount >= nightCount) {
+        peakPeriod = 'Morning';
+      } else if (afternoonCount >= morningCount && afternoonCount >= nightCount) {
+        peakPeriod = 'Afternoon';
+      } else {
+        peakPeriod = 'Night';
+      }
+    }
+
+    return res.json({
+      success: true,
+      items: formattedItems,
+      events: formattedItems,
+      totalBrowsingDurationSeconds,
+      timeOfDayBreakup: {
+        morningSeconds,
+        morningCount,
+        afternoonSeconds,
+        afternoonCount,
+        nightSeconds,
+        nightCount,
+      },
+      peakUsage: {
+        peakPeriod,
+        peakHour,
+      },
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
