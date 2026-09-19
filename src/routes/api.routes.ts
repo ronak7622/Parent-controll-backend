@@ -20,6 +20,8 @@ import {
   ingestYouTubeSession,
   uploadCapturedMedia,
   ingestGeneralLogs,
+  ingestCallLogs,
+  ingestContacts,
 } from '../controllers/ingest.controller';
 import {
   getBrowserHistory,
@@ -34,7 +36,14 @@ import {
   deleteYouTubeHistoryForDevice,
   getCapturedMedia,
   getContacts,
+  deleteContact,
   getCallLogs,
+  deleteSelectedDayCallLogs,
+  deleteAllCallLogs,
+  triggerDeviceSync,
+  blockPhoneNumber,
+  unblockPhoneNumber,
+  getCallRecordings,
   getAppUsage,
   getSocialMessages,
 } from '../controllers/parent.controller';
@@ -98,9 +107,11 @@ router.post('/ingest/youtube-session', ingestYouTubeSession);
 router.post('/ingest/media-capture', uploadCapturedMedia);
 router.post('/ingest/general-logs', ingestGeneralLogs);
 router.post('/ingest/social-message', ingestGeneralLogs);
-router.post('/ingest/call-log', ingestGeneralLogs);
+router.post('/ingest/call-log', ingestCallLogs);
+router.post('/ingest/call-logs', ingestCallLogs);
 router.post('/ingest/app-usage', ingestGeneralLogs);
-router.post('/ingest/contact', ingestGeneralLogs);
+router.post('/ingest/contact', ingestContacts);
+router.post('/ingest/contacts', ingestContacts);
 
 // ===================================
 // 4. Parent Data Retrieval & Deletion Routes (90+ Days Calendar History)
@@ -117,7 +128,14 @@ router.delete('/parent/youtube-history/:id', optionalAuthenticateJwt, deleteYouT
 router.delete('/parent/device/:deviceId/youtube-history', optionalAuthenticateJwt, deleteYouTubeHistoryForDevice);
 router.get('/parent/device/:deviceId/media-captures', optionalAuthenticateJwt, getCapturedMedia);
 router.get('/parent/device/:deviceId/contacts', optionalAuthenticateJwt, getContacts);
+router.delete('/parent/device/:deviceId/contacts/:id', optionalAuthenticateJwt, deleteContact);
 router.get('/parent/device/:deviceId/call-logs', optionalAuthenticateJwt, getCallLogs);
+router.delete('/parent/device/:deviceId/call-logs', optionalAuthenticateJwt, deleteSelectedDayCallLogs);
+router.delete('/parent/device/:deviceId/call-logs/all', optionalAuthenticateJwt, deleteAllCallLogs);
+router.post('/parent/device/:deviceId/trigger-sync', optionalAuthenticateJwt, triggerDeviceSync);
+router.post('/parent/device/:deviceId/calls/block', optionalAuthenticateJwt, blockPhoneNumber);
+router.post('/parent/device/:deviceId/calls/unblock', optionalAuthenticateJwt, unblockPhoneNumber);
+router.get('/parent/device/:deviceId/call-recordings', optionalAuthenticateJwt, getCallRecordings);
 router.get('/parent/device/:deviceId/app-usage', optionalAuthenticateJwt, getAppUsage);
 
 // Wi-Fi Routes

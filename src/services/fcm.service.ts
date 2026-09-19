@@ -6,14 +6,18 @@ let isFirebaseInitialized = false;
 try {
   if (config.firebaseServiceAccountJson) {
     const serviceAccount = JSON.parse(config.firebaseServiceAccountJson);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
-    isFirebaseInitialized = true;
-    console.log('[FCM] Firebase Admin SDK initialized successfully.');
+    if (serviceAccount && serviceAccount.private_key) {
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      isFirebaseInitialized = true;
+      console.log('[FCM] Firebase Admin SDK initialized successfully.');
+    } else {
+      console.log('[FCM-INFO] No valid private_key in Firebase Service Account. Running in mock FCM mode.');
+    }
   }
-} catch (error) {
-  console.warn('[FCM-WARNING] FCM Service Account JSON not configured or invalid:', error);
+} catch (error: any) {
+  console.warn('[FCM-WARNING] FCM Service Account JSON not configured or invalid:', error.message);
 }
 
 export const sendFcmDataCommand = async (

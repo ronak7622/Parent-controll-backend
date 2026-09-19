@@ -329,3 +329,166 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Ingest Call Logs from Child App
+ */
+export const ingestCallLogs = async (req: Request, res: Response) => {
+  try {
+    const rawLogs = req.body.logs || req.body.callLogs || (Array.isArray(req.body) ? req.body : []);
+    const topDeviceId = req.body.deviceId;
+
+    if (!Array.isArray(rawLogs) || rawLogs.length === 0) {
+      return res.status(400).json({ success: false, message: 'Invalid or empty call logs payload' });
+    }
+
+    const insertedOrUpdated: any[] = [];
+
+    // Check device's current blocked phone numbers
+    const targetDeviceId = topDeviceId || rawLogs[0]?.deviceId;
+    const device = await Device.findOne({ deviceId: targetDeviceId });
+    const blockedNumbersSet = new Set((device?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
+    const lastClearedTime = device?.lastCallHistoryClearedAt ? new Date(device.lastCallHistoryClearedAt).getTime() : 0;
+
+    for (const item of rawLogs) {
+      const deviceId = item.deviceId || topDeviceId;
+      if (!deviceId || !item.phoneNumber) continue;
+
+      const startTime = item.startTime ? new Date(item.startTime) : (item.timestamp ? new Date(item.timestamp) : new Date());
+      // If parent previously cleared all call history, don't re-ingest background logs older than the clear time
+      if (lastClearedTime > 0 && startTime.getTime() <= lastClearedTime) {
+        continue;
+      }
+
+      const cleanNum = item.phoneNumber.replace(/[^0-9]/g, '');
+      const isBlocked = cleanNum.length >= 10 && blockedNumbersSet.has(cleanNum.slice(-10));
+      const rawType = (item.callType || 'incoming').toLowerCase();
+      const callType = isBlocked ? 'blocked' : (rawType === 'blocked' || rawType === 'rejected' ? 'missed' : rawType);
+
+      const callId = item.callId || `${deviceId}_${item.phoneNumber}_${new Date(item.timestamp || item.startTime || Date.now()).getTime()}`;
+
+      let endTime = item.endTime ? new Date(item.endTime) : null;
+      const durationSeconds = typeof item.durationSeconds === 'number' ? Math.max(0, item.durationSeconds) : 0;
+      if (!endTime && durationSeconds > 0) {
+        endTime = new Date(startTime.getTime() + durationSeconds * 1000);
+      }
+
+      const docData: any = {
+        deviceId,
+        callId,
+        phoneNumber: item.phoneNumber,
+        contactName: item.contactName || '',
+        callType,
+        startTime,
+        endTime,
+        durationSeconds,
+        isBlocked: !!isBlocked,
+        simDisplayName: item.simDisplayName || '',
+        timestamp: startTime,
+      };
+
+      const resDoc = await CallLog.findOneAndUpdate(
+        { deviceId, callId },
+        { $set: docData },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      if (resDoc) insertedOrUpdated.push(resDoc);
+    }
+
+    return res.json({ success: true, count: insertedOrUpdated.length });
+  } catch (error: any) {
+    console.error('[INGEST-CALL-LOGS] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Ingest Contacts from Child App
+ */
+export const ingestContacts = async (req: Request, res: Response) => {
+  try {
+    const rawContacts = req.body.contacts || (Array.isArray(req.body) ? req.body : []);
+    const topDeviceId = req.body.deviceId;
+    const isFullSync = req.body.isFullSync === true;
+
+    if (!Array.isArray(rawContacts) || (rawContacts.length === 0 && !isFullSync)) {
+      return res.status(400).json({ success: false, message: 'Invalid or empty contacts payload' });
+    }
+
+    const targetDeviceId = topDeviceId || rawContacts[0]?.deviceId;
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+
+    // If full sync and contacts array is empty, all contacts were deleted on device
+    if (isFullSync && rawContacts.length === 0) {
+      await Contact.deleteMany({ deviceId: targetDeviceId });
+      return res.json({ success: true, count: 0, reconciled: true });
+    }
+
+    const device = await Device.findOne({ deviceId: targetDeviceId });
+    const blockedNumbersSet = new Set((device?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
+
+    const operations: any[] = [];
+    const activeNumbers: string[] = [];
+
+    for (const c of rawContacts) {
+      const deviceId = c.deviceId || topDeviceId;
+      if (!deviceId || !c.phoneNumber) continue;
+
+      activeNumbers.push(c.phoneNumber);
+      const cleanNum = c.phoneNumber.replace(/[^0-9]/g, '');
+      const isBlocked = c.isBlocked || (cleanNum.length >= 10 && blockedNumbersSet.has(cleanNum.slice(-10)));
+
+      const docData: any = {
+        deviceId,
+        name: c.name || 'Unknown Contact',
+        phoneNumber: c.phoneNumber,
+        additionalPhoneNumbers: Array.isArray(c.additionalPhoneNumbers) ? c.additionalPhoneNumbers : [],
+        emails: Array.isArray(c.emails) ? c.emails : (c.email ? [c.email] : []),
+        accountType: c.accountType || 'Device',
+        photoUri: c.photoUri || '',
+        firstName: c.firstName || '',
+        middleName: c.middleName || '',
+        lastName: c.lastName || '',
+        nickname: c.nickname || '',
+        company: c.company || '',
+        jobTitle: c.jobTitle || '',
+        department: c.department || '',
+        notes: c.notes || '',
+        contactSource: c.contactSource || c.accountType || 'Device',
+        phoneLabel: c.phoneLabel || 'Mobile',
+        isPrimaryNumber: c.isPrimaryNumber !== undefined ? c.isPrimaryNumber : true,
+        isBlocked,
+        contactCreatedDate: c.contactCreatedDate ? new Date(c.contactCreatedDate) : undefined,
+        contactUpdatedDate: c.contactUpdatedDate ? new Date(c.contactUpdatedDate) : undefined,
+        timestamp: c.timestamp ? new Date(c.timestamp) : new Date(),
+      };
+
+      operations.push({
+        updateOne: {
+          filter: { deviceId, phoneNumber: c.phoneNumber },
+          update: { $set: docData },
+          upsert: true,
+        }
+      });
+    }
+
+    if (operations.length > 0) {
+      await Contact.bulkWrite(operations, { ordered: false });
+    }
+
+    // Reconcile contacts: delete contacts on backend that no longer exist on child device
+    if (isFullSync && activeNumbers.length > 0) {
+      await Contact.deleteMany({
+        deviceId: targetDeviceId,
+        phoneNumber: { $nin: activeNumbers }
+      });
+    }
+
+    return res.json({ success: true, count: operations.length, reconciled: isFullSync });
+  } catch (error: any) {
+    console.error('[INGEST-CONTACTS] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

@@ -34,6 +34,8 @@ export interface IDevice extends Document {
   browserBlockedCategories: string[];
   
   blockedApps: string[];
+  blockedPhoneNumbers: string[];
+  lastCallHistoryClearedAt?: Date;
   
   // Captures & Timer Rules
   screenshotTimerMinutes: number; // 0 = disabled, 1, 2, 5...
@@ -78,6 +80,8 @@ const DeviceSchema = new Schema<IDevice>(
     browserBlockedCategories: [{ type: String }],
     
     blockedApps: [{ type: String }],
+    blockedPhoneNumbers: [{ type: String }],
+    lastCallHistoryClearedAt: { type: Date },
     
     screenshotTimerMinutes: { type: Number, default: 0 },
     frontPhotoTimerMinutes: { type: Number, default: 0 },
