@@ -973,13 +973,15 @@ export const getCallRecordingContacts = async (req: AuthRequest, res: Response) 
           _id: '$phoneNumber',
           phoneNumber: { $first: '$phoneNumber' },
           contactName: { $first: '$contactName' },
+          count: { $sum: 1 },
           recordingCount: { $sum: 1 },
+          latestTimestamp: { $first: '$timestamp' },
           lastRecordingAt: { $first: '$timestamp' },
           lastDurationSeconds: { $first: '$durationSeconds' },
           lastCallType: { $first: '$callType' },
         },
       },
-      { $sort: { lastRecordingAt: -1 } },
+      { $sort: { latestTimestamp: -1 } },
     ]);
 
     return res.json({
