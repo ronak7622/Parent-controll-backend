@@ -25,6 +25,8 @@ const CallRecordingSchema = new Schema<ICallRecording>(
   { timestamps: true }
 );
 
+CallRecordingSchema.index({ deviceId: 1, timestamp: -1 });
+CallRecordingSchema.index({ deviceId: 1, phoneNumber: 1, timestamp: -1 });
 CallRecordingSchema.index({ timestamp: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
 
 export const CallRecording = mongoose.model<ICallRecording>('CallRecording', CallRecordingSchema);

@@ -22,6 +22,7 @@ import {
   ingestGeneralLogs,
   ingestCallLogs,
   ingestContacts,
+  ingestCallRecording,
 } from '../controllers/ingest.controller';
 import {
   getBrowserHistory,
@@ -46,6 +47,12 @@ import {
   blockOutgoingPhoneNumber,
   unblockOutgoingPhoneNumber,
   getCallRecordings,
+  getCallRecordingSettings,
+  updateCallRecordingSettings,
+  getCallRecordingContacts,
+  deleteCallRecording,
+  deleteCallRecordingsForDay,
+  deleteAllCallRecordings,
   getAppUsage,
   getSocialMessages,
 } from '../controllers/parent.controller';
@@ -114,6 +121,7 @@ router.post('/ingest/call-logs', ingestCallLogs);
 router.post('/ingest/app-usage', ingestGeneralLogs);
 router.post('/ingest/contact', ingestContacts);
 router.post('/ingest/contacts', ingestContacts);
+router.post('/ingest/call-recording', ingestCallRecording);
 
 // ===================================
 // 4. Parent Data Retrieval & Deletion Routes (90+ Days Calendar History)
@@ -139,7 +147,13 @@ router.post('/parent/device/:deviceId/calls/block', optionalAuthenticateJwt, blo
 router.post('/parent/device/:deviceId/calls/unblock', optionalAuthenticateJwt, unblockPhoneNumber);
 router.post('/parent/device/:deviceId/calls/block-outgoing', optionalAuthenticateJwt, blockOutgoingPhoneNumber);
 router.post('/parent/device/:deviceId/calls/unblock-outgoing', optionalAuthenticateJwt, unblockOutgoingPhoneNumber);
+router.get('/parent/device/:deviceId/call-recording-settings', optionalAuthenticateJwt, getCallRecordingSettings);
+router.post('/parent/device/:deviceId/call-recording-settings', optionalAuthenticateJwt, updateCallRecordingSettings);
+router.get('/parent/device/:deviceId/call-recording-contacts', optionalAuthenticateJwt, getCallRecordingContacts);
 router.get('/parent/device/:deviceId/call-recordings', optionalAuthenticateJwt, getCallRecordings);
+router.delete('/parent/call-recording/:id', optionalAuthenticateJwt, deleteCallRecording);
+router.delete('/parent/device/:deviceId/call-recordings/day', optionalAuthenticateJwt, deleteCallRecordingsForDay);
+router.delete('/parent/device/:deviceId/call-recordings/all', optionalAuthenticateJwt, deleteAllCallRecordings);
 router.get('/parent/device/:deviceId/app-usage', optionalAuthenticateJwt, getAppUsage);
 
 // Wi-Fi Routes

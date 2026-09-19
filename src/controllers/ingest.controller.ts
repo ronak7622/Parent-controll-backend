@@ -495,3 +495,78 @@ export const ingestContacts = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Ingest Call Recording from Child App
+ */
+export const ingestCallRecording = async (req: Request, res: Response) => {
+  try {
+    const {
+      deviceId,
+      phoneNumber,
+      contactName,
+      callType,
+      durationSeconds,
+      audioBase64,
+      audioData,
+      timestamp,
+      fileSizeBytes,
+    } = req.body;
+
+    if (!deviceId || !phoneNumber) {
+      return res.status(400).json({ success: false, message: 'deviceId and phoneNumber are required' });
+    }
+
+    const base64Data = audioBase64 || audioData;
+    if (!base64Data) {
+      return res.status(400).json({ success: false, message: 'audio data is required' });
+    }
+
+    const cleanBase64 = base64Data.replace(/^data:audio\/\w+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    const folderName = `recordings/${deviceId}`;
+    const audioUrl = await uploadMediaToR2(buffer, folderName, 'm4a', 'audio/mp4');
+
+    let resolvedContactName = contactName || '';
+    if (!resolvedContactName) {
+      const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
+      const contact = await Contact.findOne({
+        deviceId,
+        $or: [
+          { phoneNumber },
+          ...(cleanNum.length >= 10 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) + '$' } }] : [])
+        ]
+      });
+      if (contact) {
+        resolvedContactName = contact.name;
+      }
+    }
+
+    const callRecording = new CallRecording({
+      deviceId,
+      phoneNumber,
+      contactName: resolvedContactName,
+      callType: callType === 'outgoing' ? 'outgoing' : 'incoming',
+      durationSeconds: Number(durationSeconds) || 0,
+      audioUrl,
+      fileSizeBytes: fileSizeBytes || buffer.length,
+      timestamp: timestamp ? new Date(timestamp) : new Date(),
+    });
+
+    await callRecording.save();
+
+    console.log(`[CALL-RECORDING] Uploaded call recording for device ${deviceId}, phone ${phoneNumber}: ${audioUrl}`);
+
+    return res.json({
+      success: true,
+      message: 'Call recording ingested successfully',
+      recordingId: callRecording._id,
+      audioUrl,
+    });
+  } catch (error: any) {
+    console.error('[INGEST-CALL-RECORDING] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+

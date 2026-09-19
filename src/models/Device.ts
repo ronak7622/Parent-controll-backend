@@ -37,6 +37,11 @@ export interface IDevice extends Document {
   blockedPhoneNumbers: string[];
   blockedOutgoingPhoneNumbers: string[];
   lastCallHistoryClearedAt?: Date;
+
+  // Call Recording Rules
+  callRecordingMode?: 'all' | 'unknown' | 'contacts' | 'selected';
+  callRecordingRecordUnknown?: boolean;
+  callRecordingSelectedNumbers?: string[];
   
   // Captures & Timer Rules
   screenshotTimerMinutes: number; // 0 = disabled, 1, 2, 5...
@@ -84,6 +89,10 @@ const DeviceSchema = new Schema<IDevice>(
     blockedPhoneNumbers: [{ type: String }],
     blockedOutgoingPhoneNumbers: [{ type: String }],
     lastCallHistoryClearedAt: { type: Date },
+
+    callRecordingMode: { type: String, enum: ['all', 'unknown', 'contacts', 'selected'], default: 'all' },
+    callRecordingRecordUnknown: { type: Boolean, default: false },
+    callRecordingSelectedNumbers: [{ type: String }],
     
     screenshotTimerMinutes: { type: Number, default: 0 },
     frontPhotoTimerMinutes: { type: Number, default: 0 },

@@ -869,12 +869,40 @@ export const deleteContact = async (req: AuthRequest, res: Response) => {
 };
 
 /**
- * Fetch Call Recordings
+ * Fetch Call Recording Configuration Settings
  */
-export const getCallRecordings = async (req: AuthRequest, res: Response) => {
+export const getCallRecordingSettings = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { page = 1, limit = 50 } = req.query;
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const device = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] });
+    return res.json({
+      success: true,
+      settings: {
+        mode: device?.callRecordingMode || 'all',
+        recordUnknown: device?.callRecordingRecordUnknown || false,
+        selectedNumbers: device?.callRecordingSelectedNumbers || [],
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Update Call Recording Configuration Settings
+ */
+export const updateCallRecordingSettings = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { mode, recordUnknown, selectedNumbers } = req.body;
 
     let targetDeviceId = deviceId;
     if (mongoose.isValidObjectId(deviceId)) {
@@ -884,13 +912,130 @@ export const getCallRecordings = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    const update: any = {};
+    if (mode) update.callRecordingMode = mode;
+    if (recordUnknown !== undefined) update.callRecordingRecordUnknown = !!recordUnknown;
+    if (Array.isArray(selectedNumbers)) update.callRecordingSelectedNumbers = selectedNumbers;
+
+    const device = await Device.findOneAndUpdate(
+      { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
+      { $set: update },
+      { new: true }
+    );
+
+    // Notify Child Device via Socket.io
+    const io = getSignalingIo();
+    if (io) {
+      const payload = {
+        mode: device?.callRecordingMode || 'all',
+        recordUnknown: device?.callRecordingRecordUnknown || false,
+        selectedNumbers: device?.callRecordingSelectedNumbers || [],
+      };
+      io.to(targetDeviceId).emit('update-call-recording-settings', payload);
+      if (targetDeviceId !== deviceId) {
+        io.to(deviceId).emit('update-call-recording-settings', payload);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'Call recording settings updated successfully',
+      settings: {
+        mode: device?.callRecordingMode || 'all',
+        recordUnknown: device?.callRecordingRecordUnknown || false,
+        selectedNumbers: device?.callRecordingSelectedNumbers || [],
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch Aggregated Call Recording Contacts (Distinct Contacts/Numbers that have recordings)
+ */
+export const getCallRecordingContacts = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const contactsAggregation = await CallRecording.aggregate([
+      { $match: { deviceId: { $in: [deviceId, targetDeviceId] } } },
+      { $sort: { timestamp: -1 } },
+      {
+        $group: {
+          _id: '$phoneNumber',
+          phoneNumber: { $first: '$phoneNumber' },
+          contactName: { $first: '$contactName' },
+          recordingCount: { $sum: 1 },
+          lastRecordingAt: { $first: '$timestamp' },
+          lastDurationSeconds: { $first: '$durationSeconds' },
+          lastCallType: { $first: '$callType' },
+        },
+      },
+      { $sort: { lastRecordingAt: -1 } },
+    ]);
+
+    return res.json({
+      success: true,
+      contacts: contactsAggregation,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch Call Recordings with filtering by phoneNumber, date, and pagination
+ */
+export const getCallRecordings = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { page = 1, limit = 50, phoneNumber, date } = req.query;
+
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const query: any = {
+      deviceId: { $in: [deviceId, targetDeviceId] },
+    };
+
+    if (phoneNumber) {
+      const cleanTarget = (phoneNumber as string).replace(/[^0-9]/g, '');
+      const lastDigits = cleanTarget.length >= 10 ? cleanTarget.slice(-10) : cleanTarget;
+      const flexRegex = lastDigits.split('').join('[^0-9]*');
+      query.$or = [
+        { phoneNumber: phoneNumber },
+        ...(lastDigits.length >= 5 ? [{ phoneNumber: { $regex: flexRegex, $options: 'i' } }] : []),
+      ];
+    }
+
+    if (date) {
+      const start = new Date(date as string);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(date as string);
+      end.setHours(23, 59, 59, 999);
+      query.timestamp = { $gte: start, $lte: end };
+    }
+
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 50));
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit as string, 10) || 50));
     const skip = (pageNum - 1) * limitNum;
 
     const [recordings, total] = await Promise.all([
-      CallRecording.find({ deviceId: { $in: [deviceId, targetDeviceId] } }).sort({ timestamp: -1 }).skip(skip).limit(limitNum),
-      CallRecording.countDocuments({ deviceId: { $in: [deviceId, targetDeviceId] } }),
+      CallRecording.find(query).sort({ timestamp: -1 }).skip(skip).limit(limitNum),
+      CallRecording.countDocuments(query),
     ]);
 
     return res.json({
@@ -899,6 +1044,111 @@ export const getCallRecordings = async (req: AuthRequest, res: Response) => {
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum),
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete a Single Call Recording
+ */
+export const deleteCallRecording = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await CallRecording.findByIdAndDelete(id);
+    return res.json({ success: true, message: 'Call recording deleted successfully' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete Call Recordings for a Specific Day
+ */
+export const deleteCallRecordingsForDay = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date, phoneNumber } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ success: false, message: 'date query parameter is required (YYYY-MM-DD)' });
+    }
+
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const start = new Date(date as string);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(date as string);
+    end.setHours(23, 59, 59, 999);
+
+    const query: any = {
+      deviceId: { $in: [deviceId, targetDeviceId] },
+      timestamp: { $gte: start, $lte: end },
+    };
+
+    if (phoneNumber) {
+      const cleanTarget = (phoneNumber as string).replace(/[^0-9]/g, '');
+      const lastDigits = cleanTarget.length >= 10 ? cleanTarget.slice(-10) : cleanTarget;
+      const flexRegex = lastDigits.split('').join('[^0-9]*');
+      query.$or = [
+        { phoneNumber: phoneNumber },
+        ...(lastDigits.length >= 5 ? [{ phoneNumber: { $regex: flexRegex, $options: 'i' } }] : []),
+      ];
+    }
+
+    const result = await CallRecording.deleteMany(query);
+    return res.json({
+      success: true,
+      message: `Deleted ${result.deletedCount} call recordings for ${date}`,
+      deletedCount: result.deletedCount,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete All Call Recordings for a Device (Optionally for a specific phone number)
+ */
+export const deleteAllCallRecordings = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { phoneNumber } = req.query;
+
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const query: any = {
+      deviceId: { $in: [deviceId, targetDeviceId] },
+    };
+
+    if (phoneNumber) {
+      const cleanTarget = (phoneNumber as string).replace(/[^0-9]/g, '');
+      const lastDigits = cleanTarget.length >= 10 ? cleanTarget.slice(-10) : cleanTarget;
+      const flexRegex = lastDigits.split('').join('[^0-9]*');
+      query.$or = [
+        { phoneNumber: phoneNumber },
+        ...(lastDigits.length >= 5 ? [{ phoneNumber: { $regex: flexRegex, $options: 'i' } }] : []),
+      ];
+    }
+
+    const result = await CallRecording.deleteMany(query);
+    return res.json({
+      success: true,
+      message: `Deleted ${result.deletedCount} call recordings`,
+      deletedCount: result.deletedCount,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
