@@ -24,12 +24,14 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
     const {
       deviceId,
       eventType,
+      sessionId,
       bytesUsed,
       simCarrier,
       simCount,
       locationAddress,
       latitude,
       longitude,
+      statusReason,
       timestamp,
     } = req.body;
 
@@ -39,70 +41,125 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
 
     const eventDate = timestamp ? new Date(timestamp) : new Date();
 
-    if (eventType === 'DATA_CONNECTED') {
-      // Close any existing active data session for this device
-      await InternetLog.updateMany(
-        { deviceId, isCurrentlyConnected: true },
-        { $set: { isCurrentlyConnected: false, endTime: eventDate } }
-      );
+    if (eventType === 'DATA_CONNECTED' || eventType === 'DATA_ON') {
+      let logEntry = null;
+      if (sessionId) {
+        logEntry = await InternetLog.findOne({ deviceId, sessionId });
+      }
 
-      const logEntry = new InternetLog({
+      if (logEntry) {
+        // Idempotent retry / update for this session
+        if (typeof bytesUsed === 'number' && bytesUsed > 0) {
+          const total = Math.max(logEntry.bytesUsed || 0, bytesUsed);
+          logEntry.bytesUsed = total;
+          logEntry.dataUsageText = formatBytes(total);
+        }
+        if (simCarrier && (!logEntry.simCarrier || logEntry.simCarrier === 'Cellular Data')) {
+          logEntry.simCarrier = simCarrier;
+        }
+        await logEntry.save();
+      } else {
+        const numBytes = typeof bytesUsed === 'number' ? bytesUsed : 0;
+        logEntry = new InternetLog({
+          deviceId,
+          eventType,
+          sessionId: sessionId || '',
+          startTime: eventDate,
+          endTime: null,
+          durationSeconds: 0,
+          bytesUsed: numBytes,
+          dataUsageText: formatBytes(numBytes),
+          isCurrentlyConnected: true,
+          simCarrier: simCarrier || 'Cellular Data',
+          simCount: simCount || 1,
+          locationAddress: locationAddress || '',
+          statusReason: statusReason || '',
+          latitude: latitude || null,
+          longitude: longitude || null,
+          timestamp: eventDate,
+        });
+        await logEntry.save();
+      }
+
+      // Close any previous open session(s) for this device (different sessionId or older).
+      const staleOpenSessions = await InternetLog.find({
         deviceId,
-        eventType,
-        startTime: eventDate,
-        endTime: null,
-        durationSeconds: 0,
-        bytesUsed: bytesUsed || 0,
-        dataUsageText: formatBytes(bytesUsed || 0),
         isCurrentlyConnected: true,
-        simCarrier: simCarrier || 'Cellular Data',
-        simCount: simCount || 1,
-        locationAddress: locationAddress || '',
-        latitude: latitude || null,
-        longitude: longitude || null,
-        timestamp: eventDate,
+        _id: { $ne: logEntry._id },
       });
+      for (const openSess of staleOpenSessions) {
+        const start = openSess.startTime ? new Date(openSess.startTime) : new Date(openSess.timestamp);
+        const durationSec = Math.max(0, Math.floor((eventDate.getTime() - start.getTime()) / 1000));
+        openSess.endTime = eventDate;
+        openSess.durationSeconds = durationSec;
+        openSess.isCurrentlyConnected = false;
+        openSess.statusReason = 'Closed by next Data connection';
+        await openSess.save();
+      }
 
-      await logEntry.save();
       return res.status(201).json({ success: true, message: 'Mobile Data session started', data: logEntry });
-    } else if (eventType === 'DATA_DISCONNECTED' || eventType === 'DATA_USAGE_UPDATE') {
-      const activeSession = await InternetLog.findOne({ deviceId, isCurrentlyConnected: true }).sort({ timestamp: -1 });
+    } else if (eventType === 'DATA_DISCONNECTED' || eventType === 'DATA_OFF' || eventType === 'DATA_USAGE_UPDATE') {
+      // 1. Primary: Find matching session by sessionId
+      let activeSession = null;
+      if (sessionId) {
+        activeSession = await InternetLog.findOne({ deviceId, sessionId });
+      }
+
+      // 2. Fallback: Find currently open session for this device
+      if (!activeSession) {
+        activeSession = await InternetLog.findOne({ deviceId, isCurrentlyConnected: true }).sort({ timestamp: -1 });
+      }
+
+      // 3. Fallback: Find most recent session whose startTime <= eventDate
+      if (!activeSession) {
+        activeSession = await InternetLog.findOne({
+          deviceId,
+          eventType: { $in: ['DATA_CONNECTED', 'DATA_ON'] },
+          startTime: { $lte: eventDate },
+        }).sort({ startTime: -1 });
+      }
 
       if (activeSession) {
         const startTime = activeSession.startTime ? new Date(activeSession.startTime) : new Date(activeSession.timestamp);
-        const durationSec = Math.max(0, Math.floor((eventDate.getTime() - startTime.getTime()) / 1000));
-        const totalBytes = Math.max(activeSession.bytesUsed || 0, bytesUsed || 0);
+        const effectiveEndTime = eventDate.getTime() >= startTime.getTime() ? eventDate : startTime;
+        const durationSec = Math.max(0, Math.floor((effectiveEndTime.getTime() - startTime.getTime()) / 1000));
+        const totalBytes = Math.max(activeSession.bytesUsed || 0, typeof bytesUsed === 'number' ? bytesUsed : 0);
 
-        activeSession.endTime = eventDate;
+        activeSession.endTime = effectiveEndTime;
         activeSession.durationSeconds = durationSec;
         activeSession.bytesUsed = totalBytes;
         activeSession.dataUsageText = formatBytes(totalBytes);
         activeSession.isCurrentlyConnected = eventType === 'DATA_USAGE_UPDATE';
         if (locationAddress) activeSession.locationAddress = locationAddress;
         if (simCarrier) activeSession.simCarrier = simCarrier;
+        if (statusReason) activeSession.statusReason = statusReason;
 
         await activeSession.save();
         return res.status(200).json({ success: true, message: 'Mobile Data session updated', data: activeSession });
       } else {
-        const newLog = new InternetLog({
+        // Fallback: create standalone record
+        const numBytes = typeof bytesUsed === 'number' ? bytesUsed : 0;
+        const fallbackEntry = new InternetLog({
           deviceId,
           eventType,
+          sessionId: sessionId || '',
           startTime: eventDate,
           endTime: eventDate,
           durationSeconds: 0,
-          bytesUsed: bytesUsed || 0,
-          dataUsageText: formatBytes(bytesUsed || 0),
+          bytesUsed: numBytes,
+          dataUsageText: formatBytes(numBytes),
           isCurrentlyConnected: false,
           simCarrier: simCarrier || 'Cellular Data',
           simCount: simCount || 1,
           locationAddress: locationAddress || '',
+          statusReason: statusReason || 'Offline fallback disconnect',
           latitude: latitude || null,
           longitude: longitude || null,
           timestamp: eventDate,
         });
 
-        await newLog.save();
-        return res.status(201).json({ success: true, message: 'Mobile Data session logged', data: newLog });
+        await fallbackEntry.save();
+        return res.status(201).json({ success: true, message: 'Mobile Data session logged', data: fallbackEntry });
       }
     } else {
       return res.status(400).json({ success: false, message: 'Invalid eventType' });
@@ -113,7 +170,7 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
   }
 };
 
-// Retrieve Internet history logs with date-wise calendar filtering & summary stats
+// Retrieve Internet history logs with date-wise calendar filtering & summary stats (100% parity with Wi-Fi)
 export const getInternetHistory = async (req: Request, res: Response) => {
   try {
     const { deviceId } = req.params;
@@ -137,7 +194,7 @@ export const getInternetHistory = async (req: Request, res: Response) => {
 
     const now = new Date();
     let totalBytesForDay = 0;
-    let totalOnlineSecondsForDay = 0;
+    let totalInternetDurationSeconds = 0;
     let simCarrierName = 'Cellular Data';
     let simCountNumber = 1;
 
@@ -147,34 +204,45 @@ export const getInternetHistory = async (req: Request, res: Response) => {
 
     const formattedLogs = logs.map((log) => {
       const logObj = log.toObject();
+
+      // Compute live duration if currently connected
       if (logObj.isCurrentlyConnected && logObj.startTime) {
         const start = new Date(logObj.startTime);
         logObj.durationSeconds = Math.max(0, Math.floor((now.getTime() - start.getTime()) / 1000));
+      } else if (!logObj.isCurrentlyConnected && logObj.startTime && logObj.endTime && (!logObj.durationSeconds || logObj.durationSeconds === 0)) {
+        const start = new Date(logObj.startTime);
+        const end = new Date(logObj.endTime);
+        const diff = Math.max(0, Math.floor((end.getTime() - start.getTime()) / 1000));
+        if (diff > 0) {
+          logObj.durationSeconds = diff;
+        }
       }
 
       const bytes = logObj.bytesUsed || 0;
       const dur = logObj.durationSeconds || 0;
 
-      totalBytesForDay += bytes;
-      totalOnlineSecondsForDay += dur;
-      if (logObj.simCarrier) simCarrierName = logObj.simCarrier;
-      if (logObj.simCount) simCountNumber = logObj.simCount;
+      if (logObj.eventType === 'DATA_CONNECTED' || logObj.eventType === 'DATA_ON' || dur > 0) {
+        totalBytesForDay += bytes;
+        totalInternetDurationSeconds += dur;
+        if (logObj.simCarrier) simCarrierName = logObj.simCarrier;
+        if (logObj.simCount) simCountNumber = logObj.simCount;
 
-      const eventTime = logObj.startTime ? new Date(logObj.startTime) : new Date(logObj.timestamp);
-      const hour = eventTime.getHours();
+        const eventTime = logObj.startTime ? new Date(logObj.startTime) : new Date(logObj.timestamp);
+        const hour = eventTime.getHours();
 
-      if (hour >= 6 && hour < 12) {
-        morningBytes += bytes;
-        morningSeconds += dur;
-        morningCount++;
-      } else if (hour >= 12 && hour < 18) {
-        afternoonBytes += bytes;
-        afternoonSeconds += dur;
-        afternoonCount++;
-      } else {
-        nightBytes += bytes;
-        nightSeconds += dur;
-        nightCount++;
+        if (hour >= 6 && hour < 12) {
+          morningBytes += bytes;
+          morningSeconds += dur;
+          morningCount++;
+        } else if (hour >= 12 && hour < 18) {
+          afternoonBytes += bytes;
+          afternoonSeconds += dur;
+          afternoonCount++;
+        } else {
+          nightBytes += bytes;
+          nightSeconds += dur;
+          nightCount++;
+        }
       }
 
       return logObj;
@@ -183,10 +251,11 @@ export const getInternetHistory = async (req: Request, res: Response) => {
     return res.status(200).json({
       success: true,
       count: formattedLogs.length,
+      totalInternetDurationSeconds,
       summary: {
         totalBytes: totalBytesForDay,
         totalDataText: formatBytes(totalBytesForDay),
-        totalOnlineSeconds: totalOnlineSecondsForDay,
+        totalOnlineSeconds: totalInternetDurationSeconds,
         simCarrier: simCarrierName,
         simCount: simCountNumber,
       },
