@@ -381,9 +381,25 @@ export const getContacts = async (req: AuthRequest, res: Response) => {
     const contacts = await contactsQuery;
     if (!total) total = contacts.length;
 
+    const targetDev = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
+    const blockedIncomingSet = new Set((targetDev?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
+    const blockedOutgoingSet = new Set((targetDev?.blockedOutgoingPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
+
+    const sanitizedContacts = contacts.map((c: any) => {
+      const obj = c.toObject ? c.toObject() : c;
+      const clean = (obj.phoneNumber || '').replace(/[^0-9]/g, '');
+      const isIncomingBlocked = (clean.length >= 10 && blockedIncomingSet.has(clean.slice(-10))) || !!obj.isBlocked;
+      const isOutgoingBlocked = (clean.length >= 10 && blockedOutgoingSet.has(clean.slice(-10))) || !!obj.isOutgoingBlocked;
+      return {
+        ...obj,
+        isBlocked: isIncomingBlocked,
+        isOutgoingBlocked,
+      };
+    });
+
     return res.json({
       success: true,
-      contacts,
+      contacts: sanitizedContacts,
       total,
       page: pageNum,
       totalPages: limitNum > 0 ? Math.ceil(total / limitNum) : 1,
@@ -665,6 +681,134 @@ export const unblockPhoneNumber = async (req: AuthRequest, res: Response) => {
       success: true,
       message: `Phone number ${phoneNumber} unblocked successfully`,
       blockedPhoneNumbers: device?.blockedPhoneNumbers || [],
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Block Outgoing Calls to a Phone Number for a Device
+ */
+export const blockOutgoingPhoneNumber = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { phoneNumber } = req.body;
+
+    if (!phoneNumber) {
+      return res.status(400).json({ success: false, message: 'phoneNumber is required' });
+    }
+
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
+
+    // 1. Add to Device.blockedOutgoingPhoneNumbers
+    const device = await Device.findOneAndUpdate(
+      { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
+      { $addToSet: { blockedOutgoingPhoneNumbers: phoneNumber } },
+      { new: true }
+    );
+
+    // 2. Update Contact if exists
+    await Contact.updateMany(
+      {
+        deviceId: { $in: [deviceId, targetDeviceId] },
+        $or: [
+          { phoneNumber },
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
+        ]
+      },
+      { $set: { isOutgoingBlocked: true } }
+    );
+
+    // 3. Notify Child Device via Socket.io
+    const io = getSignalingIo();
+    if (io) {
+      io.to(targetDeviceId).emit('update-blocked-outgoing-numbers', {
+        blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [phoneNumber],
+      });
+      if (targetDeviceId !== deviceId) {
+        io.to(deviceId).emit('update-blocked-outgoing-numbers', {
+          blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [phoneNumber],
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Outgoing calls to ${phoneNumber} blocked successfully`,
+      blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Unblock Outgoing Calls to a Phone Number for a Device
+ */
+export const unblockOutgoingPhoneNumber = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { phoneNumber } = req.body;
+
+    if (!phoneNumber) {
+      return res.status(400).json({ success: false, message: 'phoneNumber is required' });
+    }
+
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
+
+    // 1. Remove from Device.blockedOutgoingPhoneNumbers
+    const device = await Device.findOneAndUpdate(
+      { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
+      { $pull: { blockedOutgoingPhoneNumbers: phoneNumber } },
+      { new: true }
+    );
+
+    // 2. Update Contact
+    await Contact.updateMany(
+      {
+        deviceId: { $in: [deviceId, targetDeviceId] },
+        $or: [
+          { phoneNumber },
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
+        ]
+      },
+      { $set: { isOutgoingBlocked: false } }
+    );
+
+    // 3. Notify Child Device via Socket.io
+    const io = getSignalingIo();
+    if (io) {
+      io.to(targetDeviceId).emit('update-blocked-outgoing-numbers', {
+        blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
+      });
+      if (targetDeviceId !== deviceId) {
+        io.to(deviceId).emit('update-blocked-outgoing-numbers', {
+          blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Outgoing calls to ${phoneNumber} unblocked successfully`,
+      blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

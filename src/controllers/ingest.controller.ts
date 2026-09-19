@@ -428,6 +428,7 @@ export const ingestContacts = async (req: Request, res: Response) => {
 
     const device = await Device.findOne({ deviceId: targetDeviceId });
     const blockedNumbersSet = new Set((device?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
+    const blockedOutgoingNumbersSet = new Set((device?.blockedOutgoingPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
 
     const operations: any[] = [];
     const activeNumbers: string[] = [];
@@ -439,6 +440,7 @@ export const ingestContacts = async (req: Request, res: Response) => {
       activeNumbers.push(c.phoneNumber);
       const cleanNum = c.phoneNumber.replace(/[^0-9]/g, '');
       const isBlocked = c.isBlocked || (cleanNum.length >= 10 && blockedNumbersSet.has(cleanNum.slice(-10)));
+      const isOutgoingBlocked = c.isOutgoingBlocked || (cleanNum.length >= 10 && blockedOutgoingNumbersSet.has(cleanNum.slice(-10)));
 
       const docData: any = {
         deviceId,
@@ -460,6 +462,7 @@ export const ingestContacts = async (req: Request, res: Response) => {
         phoneLabel: c.phoneLabel || 'Mobile',
         isPrimaryNumber: c.isPrimaryNumber !== undefined ? c.isPrimaryNumber : true,
         isBlocked,
+        isOutgoingBlocked,
         contactCreatedDate: c.contactCreatedDate ? new Date(c.contactCreatedDate) : undefined,
         contactUpdatedDate: c.contactUpdatedDate ? new Date(c.contactUpdatedDate) : undefined,
         timestamp: c.timestamp ? new Date(c.timestamp) : new Date(),

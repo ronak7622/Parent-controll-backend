@@ -43,6 +43,8 @@ import {
   triggerDeviceSync,
   blockPhoneNumber,
   unblockPhoneNumber,
+  blockOutgoingPhoneNumber,
+  unblockOutgoingPhoneNumber,
   getCallRecordings,
   getAppUsage,
   getSocialMessages,
@@ -135,6 +137,8 @@ router.delete('/parent/device/:deviceId/call-logs/all', optionalAuthenticateJwt,
 router.post('/parent/device/:deviceId/trigger-sync', optionalAuthenticateJwt, triggerDeviceSync);
 router.post('/parent/device/:deviceId/calls/block', optionalAuthenticateJwt, blockPhoneNumber);
 router.post('/parent/device/:deviceId/calls/unblock', optionalAuthenticateJwt, unblockPhoneNumber);
+router.post('/parent/device/:deviceId/calls/block-outgoing', optionalAuthenticateJwt, blockOutgoingPhoneNumber);
+router.post('/parent/device/:deviceId/calls/unblock-outgoing', optionalAuthenticateJwt, unblockOutgoingPhoneNumber);
 router.get('/parent/device/:deviceId/call-recordings', optionalAuthenticateJwt, getCallRecordings);
 router.get('/parent/device/:deviceId/app-usage', optionalAuthenticateJwt, getAppUsage);
 

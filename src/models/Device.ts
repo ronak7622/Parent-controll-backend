@@ -35,6 +35,7 @@ export interface IDevice extends Document {
   
   blockedApps: string[];
   blockedPhoneNumbers: string[];
+  blockedOutgoingPhoneNumbers: string[];
   lastCallHistoryClearedAt?: Date;
   
   // Captures & Timer Rules
@@ -81,6 +82,7 @@ const DeviceSchema = new Schema<IDevice>(
     
     blockedApps: [{ type: String }],
     blockedPhoneNumbers: [{ type: String }],
+    blockedOutgoingPhoneNumbers: [{ type: String }],
     lastCallHistoryClearedAt: { type: Date },
     
     screenshotTimerMinutes: { type: Number, default: 0 },
