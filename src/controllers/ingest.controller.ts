@@ -584,19 +584,26 @@ export const ingestCallRecording = async (req: Request, res: Response) => {
 export const ingestCallRecordingStream = async (req: Request, res: Response) => {
   try {
     const deviceId = req.headers['x-device-id'] as string;
-    const phoneNumber = req.headers['x-phone-number'] as string;
+    const rawPhone = (req.headers['x-phone-number'] as string) || '';
 
-    if (!deviceId || !phoneNumber) {
+    if (!deviceId || !rawPhone) {
       return res.status(400).json({ success: false, message: 'x-device-id and x-phone-number headers required' });
     }
 
-    const rawContact = req.headers['x-contact-name'] as string;
+    let phoneNumber = rawPhone;
+    try {
+      phoneNumber = decodeURIComponent(rawPhone).trim();
+    } catch (_) {
+      phoneNumber = rawPhone.replace(/%2B/gi, '+').trim();
+    }
+
+    const rawContact = (req.headers['x-contact-name'] as string) || '';
     let contactName = '';
     if (rawContact) {
       try {
-        contactName = decodeURIComponent(rawContact);
+        contactName = decodeURIComponent(rawContact.replace(/\+/g, ' ')).trim();
       } catch (_) {
-        contactName = rawContact;
+        contactName = rawContact.replace(/\+/g, ' ').trim();
       }
     }
 

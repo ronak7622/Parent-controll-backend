@@ -47,6 +47,7 @@ import {
   unblockPhoneNumber,
   blockOutgoingPhoneNumber,
   unblockOutgoingPhoneNumber,
+  getBlockedCalls,
   getCallRecordings,
   streamCallRecording,
   getCallRecordingSettings,
@@ -150,6 +151,7 @@ router.post('/parent/device/:deviceId/calls/block', optionalAuthenticateJwt, blo
 router.post('/parent/device/:deviceId/calls/unblock', optionalAuthenticateJwt, unblockPhoneNumber);
 router.post('/parent/device/:deviceId/calls/block-outgoing', optionalAuthenticateJwt, blockOutgoingPhoneNumber);
 router.post('/parent/device/:deviceId/calls/unblock-outgoing', optionalAuthenticateJwt, unblockOutgoingPhoneNumber);
+router.get('/parent/device/:deviceId/blocked-calls', optionalAuthenticateJwt, getBlockedCalls);
 router.get('/parent/device/:deviceId/call-recording-settings', optionalAuthenticateJwt, getCallRecordingSettings);
 router.post('/parent/device/:deviceId/call-recording-settings', optionalAuthenticateJwt, updateCallRecordingSettings);
 router.get('/parent/device/:deviceId/call-recording-contacts', optionalAuthenticateJwt, getCallRecordingContacts);

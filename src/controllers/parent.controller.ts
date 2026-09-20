@@ -384,14 +384,21 @@ export const getContacts = async (req: AuthRequest, res: Response) => {
     if (!total) total = contacts.length;
 
     const targetDev = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
-    const blockedIncomingSet = new Set((targetDev?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
-    const blockedOutgoingSet = new Set((targetDev?.blockedOutgoingPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
+    const blockedIncomingSet = new Set((targetDev?.blockedPhoneNumbers || []).map((n: string) => {
+      const c = n.replace(/[^0-9]/g, '');
+      return c.length >= 7 ? c.slice(-10) : c;
+    }));
+    const blockedOutgoingSet = new Set((targetDev?.blockedOutgoingPhoneNumbers || []).map((n: string) => {
+      const c = n.replace(/[^0-9]/g, '');
+      return c.length >= 7 ? c.slice(-10) : c;
+    }));
 
     const sanitizedContacts = contacts.map((c: any) => {
       const obj = c.toObject ? c.toObject() : c;
       const clean = (obj.phoneNumber || '').replace(/[^0-9]/g, '');
-      const isIncomingBlocked = (clean.length >= 10 && blockedIncomingSet.has(clean.slice(-10))) || !!obj.isBlocked;
-      const isOutgoingBlocked = (clean.length >= 10 && blockedOutgoingSet.has(clean.slice(-10))) || !!obj.isOutgoingBlocked;
+      const last10 = clean.length >= 7 ? clean.slice(-10) : clean;
+      const isIncomingBlocked = (clean.length >= 7 && blockedIncomingSet.has(last10)) || !!obj.isBlocked;
+      const isOutgoingBlocked = (clean.length >= 7 && blockedOutgoingSet.has(last10)) || !!obj.isOutgoingBlocked;
       return {
         ...obj,
         isBlocked: isIncomingBlocked,
@@ -443,7 +450,25 @@ export const getCallLogs = async (req: AuthRequest, res: Response) => {
     // Call Type filter: 'incoming' | 'outgoing' | 'missed' | 'blocked'
     if (type && type !== 'all') {
       if (type === 'blocked') {
-        query.isBlocked = true;
+        const targetDev = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
+        const devBlocked: string[] = targetDev?.blockedPhoneNumbers || [];
+        const devBlockedOutgoing: string[] = targetDev?.blockedOutgoingPhoneNumbers || [];
+        const contactBlockedDocs = await Contact.find({
+          deviceId: { $in: [deviceId, targetDeviceId] },
+          $or: [{ isBlocked: true }, { isOutgoingBlocked: true }],
+        }).select('phoneNumber');
+        const allBlockedNumbers = [...new Set([...devBlocked, ...devBlockedOutgoing, ...contactBlockedDocs.map((c: any) => c.phoneNumber).filter(Boolean)])];
+        const last10Patterns = allBlockedNumbers
+          .map((n) => n.replace(/[^0-9]/g, '').slice(-10))
+          .filter((n) => n.length >= 7);
+
+        query.$or = [
+          { isBlocked: true },
+          { isOutgoingBlocked: true },
+          { callType: 'blocked' },
+          ...(allBlockedNumbers.length > 0 ? [{ phoneNumber: { $in: allBlockedNumbers } }] : []),
+          ...(last10Patterns.length > 0 ? [{ phoneNumber: { $regex: last10Patterns.join('|') } }] : []),
+        ];
       } else {
         query.callType = type;
       }
@@ -499,16 +524,56 @@ export const getCallLogs = async (req: AuthRequest, res: Response) => {
     if (!total) total = logs.length;
 
     const targetDev = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
-    const blockedSet = new Set((targetDev?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
+    const blockedPhoneList: string[] = [...(targetDev?.blockedPhoneNumbers || [])];
+    const blockedLast10Set = new Set(blockedPhoneList.map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
+
+    // Also include contacts marked as blocked in Contact model
+    const blockedContactDocs = await Contact.find({
+      deviceId: { $in: [deviceId, targetDeviceId] },
+      isBlocked: true,
+    }).select('phoneNumber');
+    for (const bc of blockedContactDocs) {
+      if (bc.phoneNumber) {
+        blockedPhoneList.push(bc.phoneNumber);
+        const c10 = bc.phoneNumber.replace(/[^0-9]/g, '').slice(-10);
+        if (c10.length >= 7) blockedLast10Set.add(c10);
+      }
+    }
+
+    const blockedOutgoingList: string[] = [...(targetDev?.blockedOutgoingPhoneNumbers || [])];
+    const blockedOutgoingLast10Set = new Set(blockedOutgoingList.map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
+
+    const blockedOutgoingContactDocs = await Contact.find({
+      deviceId: { $in: [deviceId, targetDeviceId] },
+      isOutgoingBlocked: true,
+    }).select('phoneNumber');
+    for (const bc of blockedOutgoingContactDocs) {
+      if (bc.phoneNumber) {
+        blockedOutgoingList.push(bc.phoneNumber);
+        const c10 = bc.phoneNumber.replace(/[^0-9]/g, '').slice(-10);
+        if (c10.length >= 7) blockedOutgoingLast10Set.add(c10);
+      }
+    }
 
     const sanitizedLogs = logs.map((l: any) => {
       const obj = l.toObject ? l.toObject() : l;
       const clean = (obj.phoneNumber || '').replace(/[^0-9]/g, '');
-      const isTrulyBlocked = clean.length >= 10 && blockedSet.has(clean.slice(-10));
+      const last10 = clean.length >= 7 ? clean.slice(-10) : clean;
+      const isTrulyBlocked = obj.isBlocked === true ||
+        (clean.length >= 7 && blockedLast10Set.has(last10)) ||
+        blockedPhoneList.includes(obj.phoneNumber);
+      const isOutgoingBlocked = obj.isOutgoingBlocked === true ||
+        (clean.length >= 7 && blockedOutgoingLast10Set.has(last10)) ||
+        blockedOutgoingList.includes(obj.phoneNumber);
+
+      // Preserve actual call direction (incoming, outgoing, missed) instead of overwriting with 'blocked'
+      const resolvedType = (obj.callType === 'blocked') ? 'incoming' : (obj.callType || 'incoming');
+
       return {
         ...obj,
         isBlocked: isTrulyBlocked,
-        callType: isTrulyBlocked ? 'blocked' : (obj.callType === 'blocked' ? 'rejected' : obj.callType),
+        isOutgoingBlocked: isOutgoingBlocked,
+        callType: resolvedType,
       };
     });
 
@@ -557,6 +622,7 @@ export const blockPhoneNumber = async (req: AuthRequest, res: Response) => {
     }
 
     const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
+    const last10 = cleanNum.length >= 10 ? cleanNum.slice(-10) : cleanNum;
 
     // 1. Add to Device.blockedPhoneNumbers
     const device = await Device.findOneAndUpdate(
@@ -571,21 +637,20 @@ export const blockPhoneNumber = async (req: AuthRequest, res: Response) => {
         deviceId: { $in: [deviceId, targetDeviceId] },
         $or: [
           { phoneNumber },
-          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: last10 } }] : [])
         ]
       },
       { $set: { isBlocked: true } }
     );
 
-    // 3. Update CallLog entries if exists (only zero-duration/unconnected calls)
+    // 3. Update all CallLog entries for this number to isBlocked: true
     await CallLog.updateMany(
       {
         deviceId: { $in: [deviceId, targetDeviceId] },
         $or: [
           { phoneNumber },
-          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: last10 } }] : [])
         ],
-        durationSeconds: { $lte: 0 }
       },
       { $set: { isBlocked: true } }
     );
@@ -634,11 +699,19 @@ export const unblockPhoneNumber = async (req: AuthRequest, res: Response) => {
     }
 
     const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
+    const last10 = cleanNum.length >= 10 ? cleanNum.slice(-10) : cleanNum;
 
-    // 1. Remove from Device.blockedPhoneNumbers
+    // 1. Remove all variations of this number from Device.blockedPhoneNumbers
+    const currentDev = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] });
+    const updatedBlocked = (currentDev?.blockedPhoneNumbers || []).filter((n: string) => {
+      const c = n.replace(/[^0-9]/g, '');
+      const cLast10 = c.length >= 10 ? c.slice(-10) : c;
+      return cLast10 !== last10 && n !== phoneNumber;
+    });
+
     const device = await Device.findOneAndUpdate(
       { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
-      { $pull: { blockedPhoneNumbers: phoneNumber } },
+      { $set: { blockedPhoneNumbers: updatedBlocked } },
       { new: true }
     );
 
@@ -648,31 +721,20 @@ export const unblockPhoneNumber = async (req: AuthRequest, res: Response) => {
         deviceId: { $in: [deviceId, targetDeviceId] },
         $or: [
           { phoneNumber },
-          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: last10 } }] : [])
         ]
       },
       { $set: { isBlocked: false } }
     );
 
-    // 3. Update CallLog entries
+    // 3. Update CallLog entries to isBlocked: false
     await CallLog.updateMany(
       {
         deviceId: { $in: [deviceId, targetDeviceId] },
         $or: [
           { phoneNumber },
-          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: last10 } }] : [])
         ],
-        callType: { $in: ['blocked', 'rejected'] }
-      },
-      { $set: { isBlocked: false, callType: 'missed' } }
-    );
-    await CallLog.updateMany(
-      {
-        deviceId: { $in: [deviceId, targetDeviceId] },
-        $or: [
-          { phoneNumber },
-          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
-        ]
       },
       { $set: { isBlocked: false } }
     );
@@ -721,6 +783,7 @@ export const blockOutgoingPhoneNumber = async (req: AuthRequest, res: Response) 
     }
 
     const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
+    const last10 = cleanNum.length >= 10 ? cleanNum.slice(-10) : cleanNum;
 
     // 1. Add to Device.blockedOutgoingPhoneNumbers
     const device = await Device.findOneAndUpdate(
@@ -735,13 +798,25 @@ export const blockOutgoingPhoneNumber = async (req: AuthRequest, res: Response) 
         deviceId: { $in: [deviceId, targetDeviceId] },
         $or: [
           { phoneNumber },
-          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: last10 } }] : [])
         ]
       },
       { $set: { isOutgoingBlocked: true } }
     );
 
-    // 3. Notify Child Device via Socket.io
+    // 3. Update all CallLog entries for this number to isOutgoingBlocked: true
+    await CallLog.updateMany(
+      {
+        deviceId: { $in: [deviceId, targetDeviceId] },
+        $or: [
+          { phoneNumber },
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: last10 } }] : [])
+        ],
+      },
+      { $set: { isOutgoingBlocked: true } }
+    );
+
+    // 4. Notify Child Device via Socket.io
     const io = getSignalingIo();
     if (io) {
       io.to(targetDeviceId).emit('update-blocked-outgoing-numbers', {
@@ -785,11 +860,19 @@ export const unblockOutgoingPhoneNumber = async (req: AuthRequest, res: Response
     }
 
     const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
+    const last10 = cleanNum.length >= 10 ? cleanNum.slice(-10) : cleanNum;
 
-    // 1. Remove from Device.blockedOutgoingPhoneNumbers
+    // 1. Remove all variations of this number from Device.blockedOutgoingPhoneNumbers
+    const currentDev = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] });
+    const updatedBlocked = (currentDev?.blockedOutgoingPhoneNumbers || []).filter((n: string) => {
+      const c = n.replace(/[^0-9]/g, '');
+      const cLast10 = c.length >= 10 ? c.slice(-10) : c;
+      return cLast10 !== last10 && n !== phoneNumber;
+    });
+
     const device = await Device.findOneAndUpdate(
       { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
-      { $pull: { blockedOutgoingPhoneNumbers: phoneNumber } },
+      { $set: { blockedOutgoingPhoneNumbers: updatedBlocked } },
       { new: true }
     );
 
@@ -799,13 +882,25 @@ export const unblockOutgoingPhoneNumber = async (req: AuthRequest, res: Response
         deviceId: { $in: [deviceId, targetDeviceId] },
         $or: [
           { phoneNumber },
-          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) } }] : [])
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: last10 } }] : [])
         ]
       },
       { $set: { isOutgoingBlocked: false } }
     );
 
-    // 3. Notify Child Device via Socket.io
+    // 3. Update CallLog entries to isOutgoingBlocked: false
+    await CallLog.updateMany(
+      {
+        deviceId: { $in: [deviceId, targetDeviceId] },
+        $or: [
+          { phoneNumber },
+          ...(cleanNum.length >= 7 ? [{ phoneNumber: { $regex: last10 } }] : [])
+        ],
+      },
+      { $set: { isOutgoingBlocked: false } }
+    );
+
+    // 4. Notify Child Device via Socket.io
     const io = getSignalingIo();
     if (io) {
       io.to(targetDeviceId).emit('update-blocked-outgoing-numbers', {
@@ -822,6 +917,208 @@ export const unblockOutgoingPhoneNumber = async (req: AuthRequest, res: Response
       success: true,
       message: `Outgoing calls to ${phoneNumber} unblocked successfully`,
       blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch All Blocked Calls (both saved contacts and call history / unsaved)
+ */
+export const getBlockedCalls = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const targetDev = await Device.findOne({
+      $or: [{ deviceId }, { deviceId: targetDeviceId }],
+    });
+
+    const devBlockedIncoming: string[] = targetDev?.blockedPhoneNumbers || [];
+    const devBlockedOutgoing: string[] = targetDev?.blockedOutgoingPhoneNumbers || [];
+
+    // Also query Contact collection for blocked flags
+    const blockedContacts = await Contact.find({
+      deviceId: { $in: [deviceId, targetDeviceId] },
+      $or: [{ isBlocked: true }, { isOutgoingBlocked: true }],
+    });
+
+    // Also query CallLog collection for blocked flags
+    const blockedCallLogs = await CallLog.find({
+      deviceId: { $in: [deviceId, targetDeviceId] },
+      $or: [{ isBlocked: true }, { isOutgoingBlocked: true }],
+    }).sort({ timestamp: -1 });
+
+    // Fetch all contacts to match numbers
+    const allContacts = await Contact.find({
+      deviceId: { $in: [deviceId, targetDeviceId] },
+    });
+
+    // Contact map for matching (by clean number and last 10 digits)
+    const contactMap = new Map<string, any>();
+    for (const c of allContacts) {
+      const clean = (c.phoneNumber || '').replace(/[^0-9]/g, '');
+      if (clean) {
+        contactMap.set(clean, c);
+        if (clean.length >= 10) {
+          contactMap.set(clean.slice(-10), c);
+        }
+      }
+    }
+
+    // Call log map for names of unsaved numbers
+    const callLogMap = new Map<string, string>();
+    for (const log of blockedCallLogs) {
+      const clean = (log.phoneNumber || '').replace(/[^0-9]/g, '');
+      const name = (log as any).name || (log as any).contactName;
+      if (clean && name && typeof name === 'string' && name.trim().length > 0 && !callLogMap.has(clean)) {
+        callLogMap.set(clean, name.trim());
+        if (clean.length >= 10) {
+          callLogMap.set(clean.slice(-10), name.trim());
+        }
+      }
+    }
+
+    // Helper to resolve info for a phone number
+    const resolveNumberInfo = (rawNumber: string) => {
+      const clean = (rawNumber || '').replace(/[^0-9]/g, '');
+      const last10 = clean.length >= 10 ? clean.slice(-10) : clean;
+      const matchedContact = contactMap.get(clean) || (last10.length >= 7 ? contactMap.get(last10) : null);
+
+      if (matchedContact) {
+        return {
+          id: matchedContact._id.toString(),
+          deviceId: targetDeviceId,
+          name: matchedContact.name || 'Unknown Contact',
+          phoneNumber: matchedContact.phoneNumber || rawNumber,
+          isSavedInContacts: true,
+          photoUri: matchedContact.photoUri || '',
+          contactSource: matchedContact.contactSource || 'Device',
+          accountType: matchedContact.accountType || 'Device',
+        };
+      }
+
+      const callLogName = callLogMap.get(clean) || (last10.length >= 7 ? callLogMap.get(last10) : '') || '';
+      return {
+        id: `unsaved_${clean || rawNumber}`,
+        deviceId: targetDeviceId,
+        name: callLogName || rawNumber,
+        phoneNumber: rawNumber,
+        isSavedInContacts: false,
+        photoUri: '',
+        contactSource: 'Call History',
+        accountType: 'Call History',
+      };
+    };
+
+    // Build incoming map
+    const incomingMap = new Map<string, any>();
+
+    for (const num of devBlockedIncoming) {
+      const clean = (num || '').replace(/[^0-9]/g, '');
+      const key = clean.length >= 10 ? clean.slice(-10) : clean;
+      if (key && !incomingMap.has(key)) {
+        const info = resolveNumberInfo(num);
+        incomingMap.set(key, { ...info, isBlocked: true, isOutgoingBlocked: false });
+      }
+    }
+
+    for (const c of blockedContacts) {
+      if (c.isBlocked) {
+        const clean = (c.phoneNumber || '').replace(/[^0-9]/g, '');
+        const key = clean.length >= 10 ? clean.slice(-10) : clean;
+        if (key && !incomingMap.has(key)) {
+          incomingMap.set(key, {
+            id: c._id.toString(),
+            deviceId: targetDeviceId,
+            name: c.name || 'Unknown Contact',
+            phoneNumber: c.phoneNumber,
+            isSavedInContacts: true,
+            photoUri: c.photoUri || '',
+            contactSource: c.contactSource || 'Device',
+            accountType: c.accountType || 'Device',
+            isBlocked: true,
+            isOutgoingBlocked: !!c.isOutgoingBlocked,
+          });
+        }
+      }
+    }
+
+    for (const l of blockedCallLogs) {
+      if (l.isBlocked) {
+        const clean = (l.phoneNumber || '').replace(/[^0-9]/g, '');
+        const key = clean.length >= 10 ? clean.slice(-10) : clean;
+        if (key && !incomingMap.has(key)) {
+          const info = resolveNumberInfo(l.phoneNumber);
+          incomingMap.set(key, { ...info, isBlocked: true, isOutgoingBlocked: !!l.isOutgoingBlocked });
+        }
+      }
+    }
+
+    // Build outgoing map
+    const outgoingMap = new Map<string, any>();
+
+    for (const num of devBlockedOutgoing) {
+      const clean = (num || '').replace(/[^0-9]/g, '');
+      const key = clean.length >= 10 ? clean.slice(-10) : clean;
+      if (key && !outgoingMap.has(key)) {
+        const info = resolveNumberInfo(num);
+        outgoingMap.set(key, { ...info, isBlocked: false, isOutgoingBlocked: true });
+      }
+    }
+
+    for (const c of blockedContacts) {
+      if (c.isOutgoingBlocked) {
+        const clean = (c.phoneNumber || '').replace(/[^0-9]/g, '');
+        const key = clean.length >= 10 ? clean.slice(-10) : clean;
+        if (key && !outgoingMap.has(key)) {
+          outgoingMap.set(key, {
+            id: c._id.toString(),
+            deviceId: targetDeviceId,
+            name: c.name || 'Unknown Contact',
+            phoneNumber: c.phoneNumber,
+            isSavedInContacts: true,
+            photoUri: c.photoUri || '',
+            contactSource: c.contactSource || 'Device',
+            accountType: c.accountType || 'Device',
+            isBlocked: !!c.isBlocked,
+            isOutgoingBlocked: true,
+          });
+        }
+      }
+    }
+
+    for (const l of blockedCallLogs) {
+      if (l.isOutgoingBlocked) {
+        const clean = (l.phoneNumber || '').replace(/[^0-9]/g, '');
+        const key = clean.length >= 10 ? clean.slice(-10) : clean;
+        if (key && !outgoingMap.has(key)) {
+          const info = resolveNumberInfo(l.phoneNumber);
+          outgoingMap.set(key, { ...info, isBlocked: !!l.isBlocked, isOutgoingBlocked: true });
+        }
+      }
+    }
+
+    // Cross-link blocked states
+    for (const [key, item] of incomingMap) {
+      if (outgoingMap.has(key)) {
+        item.isOutgoingBlocked = true;
+        outgoingMap.get(key).isBlocked = true;
+      }
+    }
+
+    return res.json({
+      success: true,
+      blockedIncoming: Array.from(incomingMap.values()),
+      blockedOutgoing: Array.from(outgoingMap.values()),
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -967,6 +1264,24 @@ export const updateCallRecordingSettings = async (req: AuthRequest, res: Respons
 /**
  * Fetch Aggregated Call Recording Contacts (Distinct Contacts/Numbers that have recordings)
  */
+const cleanPhone = (p: string) => {
+  if (!p) return '';
+  try {
+    return decodeURIComponent(p).replace(/%2B/gi, '+').trim();
+  } catch {
+    return p.replace(/%2B/gi, '+').trim();
+  }
+};
+
+const cleanName = (n: string) => {
+  if (!n) return '';
+  try {
+    return decodeURIComponent(n.replace(/\+/g, ' ')).trim();
+  } catch {
+    return n.replace(/\+/g, ' ').trim();
+  }
+};
+
 export const getCallRecordingContacts = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
@@ -977,6 +1292,33 @@ export const getCallRecordingContacts = async (req: AuthRequest, res: Response) 
         targetDeviceId = dev.deviceId;
       }
     }
+
+    // Auto-clean any legacy encoded records in the database
+    CallRecording.find({
+      deviceId: { $in: [deviceId, targetDeviceId] },
+      $or: [{ phoneNumber: /%/ }, { contactName: /\+/ }],
+    }).then(async (records) => {
+      for (const rec of records) {
+        let changed = false;
+        if (rec.phoneNumber && (rec.phoneNumber.includes('%') || rec.phoneNumber.startsWith('%2B'))) {
+          const cp = cleanPhone(rec.phoneNumber);
+          if (cp !== rec.phoneNumber) {
+            rec.phoneNumber = cp;
+            changed = true;
+          }
+        }
+        if (rec.contactName && (rec.contactName.includes('+') || rec.contactName.includes('%'))) {
+          const cn = cleanName(rec.contactName);
+          if (cn !== rec.contactName) {
+            rec.contactName = cn;
+            changed = true;
+          }
+        }
+        if (changed) {
+          await rec.save();
+        }
+      }
+    }).catch((e) => console.error('Auto-clean recording error:', e));
 
     const contactsAggregation = await CallRecording.aggregate([
       { $match: { deviceId: { $in: [deviceId, targetDeviceId] } } },
@@ -997,9 +1339,15 @@ export const getCallRecordingContacts = async (req: AuthRequest, res: Response) 
       { $sort: { latestTimestamp: -1 } },
     ]);
 
+    const formattedContacts = contactsAggregation.map((c: any) => ({
+      ...c,
+      phoneNumber: cleanPhone(c.phoneNumber),
+      contactName: cleanName(c.contactName),
+    }));
+
     return res.json({
       success: true,
-      contacts: contactsAggregation,
+      contacts: formattedContacts,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -1027,11 +1375,13 @@ export const getCallRecordings = async (req: AuthRequest, res: Response) => {
     };
 
     if (phoneNumber) {
-      const cleanTarget = (phoneNumber as string).replace(/[^0-9]/g, '');
+      const decodedPhone = cleanPhone(phoneNumber as string);
+      const cleanTarget = decodedPhone.replace(/[^0-9]/g, '');
       const lastDigits = cleanTarget.length >= 10 ? cleanTarget.slice(-10) : cleanTarget;
       const flexRegex = lastDigits.split('').join('[^0-9]*');
       query.$or = [
         { phoneNumber: phoneNumber },
+        { phoneNumber: decodedPhone },
         ...(lastDigits.length >= 5 ? [{ phoneNumber: { $regex: flexRegex, $options: 'i' } }] : []),
       ];
     }
@@ -1061,6 +1411,8 @@ export const getCallRecordings = async (req: AuthRequest, res: Response) => {
       if (obj.audioUrl && obj.audioUrl.startsWith('/uploads')) {
         obj.audioUrl = `${baseUrl}${obj.audioUrl}`;
       }
+      obj.phoneNumber = cleanPhone(obj.phoneNumber);
+      obj.contactName = cleanName(obj.contactName);
       return obj;
     });
 
