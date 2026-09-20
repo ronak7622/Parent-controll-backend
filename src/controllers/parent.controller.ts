@@ -1193,12 +1193,19 @@ export const getCallRecordingSettings = async (req: AuthRequest, res: Response) 
     }
 
     const device = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] });
+    const mode = device?.callRecordingMode || 'all';
+    const recordUnknown = device?.callRecordingRecordUnknown || false;
+    const selectedNumbers = device?.callRecordingSelectedNumbers || [];
+
     return res.json({
       success: true,
       settings: {
-        mode: device?.callRecordingMode || 'all',
-        recordUnknown: device?.callRecordingRecordUnknown || false,
-        selectedNumbers: device?.callRecordingSelectedNumbers || [],
+        mode,
+        callRecordingMode: mode,
+        recordUnknown,
+        callRecordingRecordUnknown: recordUnknown,
+        selectedNumbers,
+        callRecordingSelectedNumbers: selectedNumbers,
       },
     });
   } catch (error: any) {
@@ -1212,7 +1219,13 @@ export const getCallRecordingSettings = async (req: AuthRequest, res: Response) 
 export const updateCallRecordingSettings = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { mode, recordUnknown, selectedNumbers } = req.body;
+    const mode = req.body.mode || req.body.callRecordingMode;
+    const recordUnknown = req.body.recordUnknown !== undefined 
+      ? req.body.recordUnknown 
+      : req.body.callRecordingRecordUnknown;
+    const selectedNumbers = Array.isArray(req.body.selectedNumbers)
+      ? req.body.selectedNumbers
+      : (Array.isArray(req.body.callRecordingSelectedNumbers) ? req.body.callRecordingSelectedNumbers : undefined);
 
     let targetDeviceId = deviceId;
     if (mongoose.isValidObjectId(deviceId)) {
@@ -1233,13 +1246,20 @@ export const updateCallRecordingSettings = async (req: AuthRequest, res: Respons
       { new: true }
     );
 
+    const effectiveMode = device?.callRecordingMode || 'all';
+    const effectiveRecordUnknown = device?.callRecordingRecordUnknown || false;
+    const effectiveSelectedNumbers = device?.callRecordingSelectedNumbers || [];
+
     // Notify Child Device via Socket.io
     const io = getSignalingIo();
     if (io) {
       const payload = {
-        mode: device?.callRecordingMode || 'all',
-        recordUnknown: device?.callRecordingRecordUnknown || false,
-        selectedNumbers: device?.callRecordingSelectedNumbers || [],
+        mode: effectiveMode,
+        callRecordingMode: effectiveMode,
+        recordUnknown: effectiveRecordUnknown,
+        callRecordingRecordUnknown: effectiveRecordUnknown,
+        selectedNumbers: effectiveSelectedNumbers,
+        callRecordingSelectedNumbers: effectiveSelectedNumbers,
       };
       io.to(targetDeviceId).emit('update-call-recording-settings', payload);
       if (targetDeviceId !== deviceId) {
@@ -1251,9 +1271,12 @@ export const updateCallRecordingSettings = async (req: AuthRequest, res: Respons
       success: true,
       message: 'Call recording settings updated successfully',
       settings: {
-        mode: device?.callRecordingMode || 'all',
-        recordUnknown: device?.callRecordingRecordUnknown || false,
-        selectedNumbers: device?.callRecordingSelectedNumbers || [],
+        mode: effectiveMode,
+        callRecordingMode: effectiveMode,
+        recordUnknown: effectiveRecordUnknown,
+        callRecordingRecordUnknown: effectiveRecordUnknown,
+        selectedNumbers: effectiveSelectedNumbers,
+        callRecordingSelectedNumbers: effectiveSelectedNumbers,
       },
     });
   } catch (error: any) {
