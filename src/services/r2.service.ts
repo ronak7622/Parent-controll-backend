@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { config } from '../config/env';
 import { v4 as uuidv4 } from 'uuid';
@@ -11,6 +13,17 @@ const s3Client = new S3Client({
   },
 });
 
+const saveToLocalDisk = (buffer: Buffer, folder: string, extension: string): string => {
+  const targetDir = path.join(__dirname, '../../public/uploads', folder);
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+  const filename = `${uuidv4()}.${extension}`;
+  const filePath = path.join(targetDir, filename);
+  fs.writeFileSync(filePath, buffer);
+  return `/uploads/${folder}/${filename}`;
+};
+
 export const uploadMediaToR2 = async (
   buffer: Buffer,
   folder: string,
@@ -23,8 +36,8 @@ export const uploadMediaToR2 = async (
                      config.r2.secretAccessKey.startsWith('your_');
 
   if (isDummyKey) {
-    console.warn('[R2-WARNING] R2 Credentials missing or unconfigured. Returning base64 data URI fallback.');
-    return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    console.log(`[MEDIA-STORAGE] Storing media file locally on server disk (${buffer.length} bytes): ${folder}`);
+    return saveToLocalDisk(buffer, folder, extension);
   }
 
   try {
@@ -44,7 +57,7 @@ export const uploadMediaToR2 = async (
     }
     return `https://${config.r2.bucketName}.${config.r2.accountId}.r2.cloudflarestorage.com/${filename}`;
   } catch (error: any) {
-    console.warn('[R2-ERROR] R2 Upload failed, falling back to base64 data URI:', error.message);
-    return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    console.warn('[R2-ERROR] R2 Upload failed, falling back to local server disk:', error.message);
+    return saveToLocalDisk(buffer, folder, extension);
   }
 };

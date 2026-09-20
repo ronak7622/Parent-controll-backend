@@ -1,6 +1,8 @@
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
+import path from 'path';
+import fs from 'fs';
 import { config } from './config/env';
 import { connectDatabase } from './config/database';
 import apiRoutes from './routes/api.routes';
@@ -9,10 +11,19 @@ import { setupWebRtcSignaling } from './signaling/webrtc.signaling';
 const app = express();
 const server = http.createServer(app);
 
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, '../public/uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
 // Enable CORS and JSON Body Parser
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ limit: '500mb', extended: true }));
+
+// Serve static uploads with HTTP 206 Partial Content (Range) streaming support
+app.use('/uploads', express.static(uploadsDir));
 
 // Health Check Route
 app.get('/health', (req, res) => {

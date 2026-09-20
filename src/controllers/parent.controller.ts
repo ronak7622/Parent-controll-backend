@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 import { Response } from 'express';
+import fs from 'fs';
+import path from 'path';
 import { AuthRequest } from '../middleware/auth';
 import { BrowserHistory } from '../models/BrowserHistory';
 import { YouTubeHistory } from '../models/YouTubeHistory';
@@ -510,10 +512,21 @@ export const getCallLogs = async (req: AuthRequest, res: Response) => {
       };
     });
 
+    const host = req.get('host') || 'localhost:5000';
+    const baseUrl = `${req.protocol}://${host}`;
+
+    const formattedRecordings = recordings.map((r: any) => {
+      const obj = r.toObject ? r.toObject() : r;
+      if (obj.audioUrl && obj.audioUrl.startsWith('/uploads')) {
+        obj.audioUrl = `${baseUrl}${obj.audioUrl}`;
+      }
+      return obj;
+    });
+
     return res.json({
       success: true,
       logs: sanitizedLogs,
-      recordings,
+      recordings: formattedRecordings,
       total,
       page: pageNum,
       totalPages: limitNum > 0 ? Math.ceil(total / limitNum) : 1,
@@ -1040,13 +1053,62 @@ export const getCallRecordings = async (req: AuthRequest, res: Response) => {
       CallRecording.countDocuments(query),
     ]);
 
+    const host = req.get('host') || 'localhost:5000';
+    const baseUrl = `${req.protocol}://${host}`;
+
+    const formattedRecordings = recordings.map((r: any) => {
+      const obj = r.toObject ? r.toObject() : r;
+      if (obj.audioUrl && obj.audioUrl.startsWith('/uploads')) {
+        obj.audioUrl = `${baseUrl}${obj.audioUrl}`;
+      }
+      return obj;
+    });
+
     return res.json({
       success: true,
-      recordings,
+      recordings: formattedRecordings,
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum),
     });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Stream Call Recording Audio with HTTP 206 Partial Content (Range) Support
+ * Works for both disk-based audio and legacy Base64 documents.
+ */
+export const streamCallRecording = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const recording = await CallRecording.findById(id);
+    if (!recording || !recording.audioUrl) {
+      return res.status(404).json({ success: false, message: 'Recording not found' });
+    }
+
+    if (recording.audioUrl.startsWith('/uploads')) {
+      const filePath = path.join(__dirname, '../../public', recording.audioUrl);
+      if (fs.existsSync(filePath)) {
+        return res.sendFile(filePath);
+      }
+    }
+
+    if (recording.audioUrl.startsWith('data:')) {
+      const commaIndex = recording.audioUrl.indexOf(',');
+      const base64Str = commaIndex !== -1 ? recording.audioUrl.substring(commaIndex + 1) : recording.audioUrl;
+      const buffer = Buffer.from(base64Str, 'base64');
+
+      res.set({
+        'Content-Type': 'audio/mp4',
+        'Content-Length': buffer.length.toString(),
+        'Accept-Ranges': 'bytes',
+      });
+      return res.send(buffer);
+    }
+
+    return res.redirect(recording.audioUrl);
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

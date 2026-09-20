@@ -10,6 +10,7 @@ export interface ICallLog extends Document {
   endTime?: Date;
   durationSeconds: number;
   isBlocked: boolean;
+  isVideo?: boolean;
   simDisplayName?: string;
   timestamp: Date;
 }
@@ -29,6 +30,7 @@ const CallLogSchema = new Schema<ICallLog>(
     endTime: { type: Date, default: null },
     durationSeconds: { type: Number, default: 0 },
     isBlocked: { type: Boolean, default: false },
+    isVideo: { type: Boolean, default: false },
     simDisplayName: { type: String },
     timestamp: { type: Date, required: true },
   },

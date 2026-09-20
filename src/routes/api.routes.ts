@@ -23,6 +23,7 @@ import {
   ingestCallLogs,
   ingestContacts,
   ingestCallRecording,
+  ingestCallRecordingStream,
 } from '../controllers/ingest.controller';
 import {
   getBrowserHistory,
@@ -47,6 +48,7 @@ import {
   blockOutgoingPhoneNumber,
   unblockOutgoingPhoneNumber,
   getCallRecordings,
+  streamCallRecording,
   getCallRecordingSettings,
   updateCallRecordingSettings,
   getCallRecordingContacts,
@@ -122,6 +124,7 @@ router.post('/ingest/app-usage', ingestGeneralLogs);
 router.post('/ingest/contact', ingestContacts);
 router.post('/ingest/contacts', ingestContacts);
 router.post('/ingest/call-recording', ingestCallRecording);
+router.post('/ingest/call-recording-stream', ingestCallRecordingStream);
 
 // ===================================
 // 4. Parent Data Retrieval & Deletion Routes (90+ Days Calendar History)
@@ -151,6 +154,7 @@ router.get('/parent/device/:deviceId/call-recording-settings', optionalAuthentic
 router.post('/parent/device/:deviceId/call-recording-settings', optionalAuthenticateJwt, updateCallRecordingSettings);
 router.get('/parent/device/:deviceId/call-recording-contacts', optionalAuthenticateJwt, getCallRecordingContacts);
 router.get('/parent/device/:deviceId/call-recordings', optionalAuthenticateJwt, getCallRecordings);
+router.get('/parent/call-recording/:id/stream', optionalAuthenticateJwt, streamCallRecording);
 router.delete('/parent/call-recording/:id', optionalAuthenticateJwt, deleteCallRecording);
 router.delete('/parent/device/:deviceId/call-recordings/day', optionalAuthenticateJwt, deleteCallRecordingsForDay);
 router.delete('/parent/device/:deviceId/call-recordings/all', optionalAuthenticateJwt, deleteAllCallRecordings);
