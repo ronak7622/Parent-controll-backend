@@ -60,6 +60,8 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         browserWhitelist: device.browserWhitelist || [],
         browserBlockedCategories: device.browserBlockedCategories || [],
         blockedApps: device.blockedApps || [],
+        blockedPhoneNumbers: device.blockedPhoneNumbers || [],
+        blockedOutgoingPhoneNumbers: device.blockedOutgoingPhoneNumbers || [],
       },
     });
   } catch (error: any) {

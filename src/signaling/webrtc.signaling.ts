@@ -1,5 +1,6 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
+import { Device } from '../models/Device';
 
 let signalingIo: any = null;
 
@@ -18,13 +19,33 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
     console.log(`[WEBRTC-SIGNALING] New socket connected: ${socket.id}`);
 
     // Join room identified by deviceId (Handles both 'join-room' and 'register-device')
-    const handleJoinRoom = (data: any) => {
+    const handleJoinRoom = async (data: any) => {
       const deviceId = data?.deviceId || data;
       const role = data?.role || 'unknown';
       if (deviceId) {
         socket.join(deviceId);
         console.log(`[WEBRTC-ROOM] Socket ${socket.id} (${role}) joined room: ${deviceId}`);
         socket.to(deviceId).emit('peer-joined', { socketId: socket.id, role });
+
+        if (role === 'child') {
+          try {
+            const dev = await Device.findOne({ deviceId });
+            if (dev) {
+              if (dev.blockedPhoneNumbers && dev.blockedPhoneNumbers.length > 0) {
+                socket.emit('update-blocked-numbers', {
+                  blockedPhoneNumbers: dev.blockedPhoneNumbers,
+                });
+              }
+              if (dev.blockedOutgoingPhoneNumbers && dev.blockedOutgoingPhoneNumbers.length > 0) {
+                socket.emit('update-blocked-outgoing-numbers', {
+                  blockedOutgoingPhoneNumbers: dev.blockedOutgoingPhoneNumbers,
+                });
+              }
+            }
+          } catch (err: any) {
+            console.error(`[WEBRTC-ROOM] Error syncing blocked numbers to child: ${err?.message}`);
+          }
+        }
       }
     };
 
