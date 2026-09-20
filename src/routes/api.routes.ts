@@ -12,6 +12,8 @@ import {
   updateDeviceSettings,
   sendRemoteCommand,
   disconnectDevice,
+  getChildAppLimits,
+  reportLimitReached,
 } from '../controllers/device.controller';
 import {
   updateHeartbeat,
@@ -57,6 +59,9 @@ import {
   deleteCallRecordingsForDay,
   deleteAllCallRecordings,
   getAppUsage,
+  getAppLimits,
+  saveAppLimit,
+  deleteAppLimit,
   getSocialMessages,
 } from '../controllers/parent.controller';
 import {
@@ -161,6 +166,13 @@ router.delete('/parent/call-recording/:id', optionalAuthenticateJwt, deleteCallR
 router.delete('/parent/device/:deviceId/call-recordings/day', optionalAuthenticateJwt, deleteCallRecordingsForDay);
 router.delete('/parent/device/:deviceId/call-recordings/all', optionalAuthenticateJwt, deleteAllCallRecordings);
 router.get('/parent/device/:deviceId/app-usage', optionalAuthenticateJwt, getAppUsage);
+router.get('/parent/device/:deviceId/app-limits', optionalAuthenticateJwt, getAppLimits);
+router.post('/parent/device/:deviceId/app-limits', optionalAuthenticateJwt, saveAppLimit);
+router.delete('/parent/device/:deviceId/app-limits/:packageName', optionalAuthenticateJwt, deleteAppLimit);
+
+// Child App Limits & Alert Routes
+router.get('/device/app-limits', getChildAppLimits);
+router.post('/device/limit-reached', reportLimitReached);
 
 // Wi-Fi Routes
 router.post('/ingest/wifi-log', ingestWifiLog);

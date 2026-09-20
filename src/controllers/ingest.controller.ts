@@ -276,7 +276,7 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
  */
 export const ingestGeneralLogs = async (req: Request, res: Response) => {
   try {
-    const { deviceId, contacts, callLogs, socialMessages, appUsage } = req.body;
+    const { deviceId, contacts, callLogs, socialMessages, appUsage, usageRecords } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     if (Array.isArray(contacts) && contacts.length > 0) {
@@ -317,17 +317,52 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       await SocialMessage.insertMany(docs);
     }
 
-    if (Array.isArray(appUsage) && appUsage.length > 0) {
-      const docs = appUsage.map((au) => ({
-        deviceId,
-        appName: au.appName,
-        packageName: au.packageName,
-        category: au.category,
-        usageDurationSeconds: au.usageDurationSeconds || 0,
-        date: au.date || new Date().toISOString().split('T')[0],
-        timestamp: au.timestamp ? new Date(au.timestamp) : new Date(),
-      }));
-      await AppUsage.insertMany(docs);
+    const appUsageList = Array.isArray(appUsage) ? appUsage : (Array.isArray(usageRecords) ? usageRecords : []);
+    if (appUsageList.length > 0) {
+      // Deduplicate in memory by (packageName + date) taking the maximum duration
+      const deduplicatedMap = new Map<string, any>();
+      for (const au of appUsageList) {
+        if (!au || !au.packageName) continue;
+        const packageName = String(au.packageName).trim();
+        const date = au.date || new Date().toISOString().split('T')[0];
+        const key = `${packageName}___${date}`;
+        const duration = Number(au.usageDurationSeconds) || 0;
+        const existing = deduplicatedMap.get(key);
+        if (!existing || duration >= (Number(existing.usageDurationSeconds) || 0)) {
+          deduplicatedMap.set(key, au);
+        }
+      }
+
+      const bulkOps = Array.from(deduplicatedMap.values()).map((au: any) => {
+        const date = au.date || new Date().toISOString().split('T')[0];
+        const packageName = String(au.packageName).trim();
+        const appName = au.appName ? String(au.appName).trim() : packageName;
+        const appIcon = au.appIcon ? String(au.appIcon) : undefined;
+        const usageDurationSeconds = Number(au.usageDurationSeconds) || 0;
+        const category = au.category ? String(au.category) : undefined;
+        const timestamp = au.timestamp ? new Date(au.timestamp) : new Date();
+
+        return {
+          updateOne: {
+            filter: { deviceId, packageName, date },
+            update: {
+              $set: {
+                appName,
+                ...(appIcon ? { appIcon } : {}),
+                usageDurationSeconds,
+                category,
+                date,
+                timestamp,
+              },
+            },
+            upsert: true,
+          },
+        };
+      });
+
+      if (bulkOps.length > 0) {
+        await AppUsage.bulkWrite(bulkOps, { ordered: false });
+      }
     }
 
     return res.json({ success: true, message: 'Batch logs ingested successfully.' });

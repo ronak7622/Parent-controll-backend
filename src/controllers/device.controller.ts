@@ -2,7 +2,8 @@ import mongoose from 'mongoose';
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { Device } from '../models/Device';
-import { sendFcmDataCommand } from '../services/fcm.service';
+import { AppLimit } from '../models/AppLimit';
+import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 
 /**
@@ -486,6 +487,62 @@ export const getDeviceDetails = async (req: any, res: Response) => {
       return res.status(404).json({ success: false, message: 'Device not found' });
     }
     return res.json(device);
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Child Device: Fetch active App Limits
+ */
+export const getChildAppLimits = async (req: any, res: Response) => {
+  try {
+    const deviceId = req.params.deviceId || req.query.deviceId;
+    if (!deviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    const limits = await AppLimit.find({ deviceId, isEnabled: true });
+    return res.json({ success: true, limits });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Child Device: Report App Limit Reached (Sends FCM push notification to Parent)
+ */
+export const reportLimitReached = async (req: any, res: Response) => {
+  try {
+    const { deviceId, packageName, appName, limitDurationMinutes } = req.body;
+    if (!deviceId || !packageName) {
+      return res.status(400).json({ success: false, message: 'deviceId and packageName are required' });
+    }
+
+    // Check if this limit has notifyOnLimitReached enabled
+    const limit = await AppLimit.findOne({ deviceId, packageName });
+    if (limit && limit.notifyOnLimitReached === false) {
+      return res.json({ success: true, message: 'Notification disabled by parent.' });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    const childName = device?.deviceName || 'Child Device';
+    const name = appName || limit?.appName || packageName;
+    const hours = limitDurationMinutes ? (Number(limitDurationMinutes) / 60).toFixed(1) : 'allowed';
+
+    const title = 'App Limit Reached';
+    const body = `${childName} has reached the daily limit for ${name} (${hours}h).`;
+
+    // Send to parent topic
+    if (device?.parentUserId) {
+      await sendFcmTopicNotification(`parent_${device.parentUserId}`, title, body, {
+        type: 'APP_LIMIT_REACHED',
+        deviceId,
+        packageName,
+        appName: name,
+      });
+    }
+
+    return res.json({ success: true, message: 'Limit reached reported successfully.' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

@@ -51,3 +51,40 @@ export const sendFcmDataCommand = async (
     return false;
   }
 };
+
+export const sendFcmTopicNotification = async (
+  topic: string,
+  title: string,
+  body: string,
+  data: Record<string, string> = {}
+): Promise<boolean> => {
+  if (!isFirebaseInitialized) {
+    console.log(`[FCM-MOCK] Topic '${topic}' notification: "${title}" - "${body}"`);
+    return false;
+  }
+  try {
+    const message: admin.messaging.Message = {
+      topic,
+      notification: { title, body },
+      data: {
+        title,
+        body,
+        timestamp: Date.now().toString(),
+        ...data,
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'child_protect_alerts',
+        },
+      },
+    };
+    await admin.messaging().send(message);
+    console.log(`[FCM-SENT] Notification sent to topic '${topic}': ${title}`);
+    return true;
+  } catch (error) {
+    console.error(`[FCM-ERROR] Failed to send notification to topic '${topic}':`, error);
+    return false;
+  }
+};

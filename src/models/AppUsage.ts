@@ -4,6 +4,7 @@ export interface IAppUsage extends Document {
   deviceId: string;
   appName: string;
   packageName: string;
+  appIcon?: string;
   category?: string;
   usageDurationSeconds: number;
   date: string; // YYYY-MM-DD
@@ -15,6 +16,7 @@ const AppUsageSchema = new Schema<IAppUsage>(
     deviceId: { type: String, required: true, index: true },
     appName: { type: String, required: true },
     packageName: { type: String, required: true },
+    appIcon: { type: String },
     category: { type: String },
     usageDurationSeconds: { type: Number, default: 0 },
     date: { type: String, required: true, index: true },
@@ -23,6 +25,8 @@ const AppUsageSchema = new Schema<IAppUsage>(
   { timestamps: true }
 );
 
+AppUsageSchema.index({ deviceId: 1, packageName: 1, date: 1 }, { unique: true });
+AppUsageSchema.index({ deviceId: 1, date: 1 });
 AppUsageSchema.index({ deviceId: 1, date: 1, timestamp: -1 });
 
 export const AppUsage = mongoose.model<IAppUsage>('AppUsage', AppUsageSchema);

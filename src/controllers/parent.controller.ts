@@ -10,10 +10,12 @@ import { CallLog } from '../models/CallLog';
 import { CallRecording } from '../models/CallRecording';
 import { MediaCapture } from '../models/MediaCapture';
 import { AppUsage } from '../models/AppUsage';
+import { AppLimit } from '../models/AppLimit';
 import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
 import { Device } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { sendFcmDataCommand } from '../services/fcm.service';
 
 /**
  * Fetch Browser History with date filter (90+ days calendar support)
@@ -1596,18 +1598,165 @@ export const deleteAllCallRecordings = async (req: AuthRequest, res: Response) =
 
 
 /**
- * Fetch App Usage & Screen Time
+ * Fetch App Usage & Screen Time (supports date, 90-day range startDate/endDate, and packageName)
  */
 export const getAppUsage = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { date } = req.query;
+    const { date, startDate, endDate, packageName, limit = 1000 } = req.query;
 
     const query: any = { deviceId };
-    if (date) query.date = date;
 
-    const items = await AppUsage.find(query).sort({ usageDurationSeconds: -1 });
-    return res.json({ success: true, items });
+    if (packageName) {
+      query.packageName = packageName;
+    }
+
+    if (date) {
+      query.date = date;
+    } else if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = startDate;
+      if (endDate) query.date.$lte = endDate;
+    }
+
+    const rawItems = await AppUsage.find(query)
+      .sort({ date: -1, usageDurationSeconds: -1 })
+      .limit(Number(limit));
+
+    // Deduplicate by packageName (for single date) or (packageName + date) for date ranges
+    const dedupMap = new Map<string, any>();
+    for (const item of rawItems) {
+      const key = date ? item.packageName : `${item.packageName}___${item.date}`;
+      const existing = dedupMap.get(key);
+      if (!existing) {
+        dedupMap.set(key, item);
+      } else {
+        // Keep the record with the higher duration, or prefer non-raw appName
+        const itemDur = item.usageDurationSeconds || 0;
+        const existDur = existing.usageDurationSeconds || 0;
+        if (itemDur > existDur || (itemDur === existDur && item.appName !== item.packageName && existing.appName === existing.packageName)) {
+          dedupMap.set(key, item);
+        }
+      }
+    }
+
+    const items = Array.from(dedupMap.values());
+    items.sort((a, b) => (b.usageDurationSeconds || 0) - (a.usageDurationSeconds || 0));
+
+    const totalScreenTimeSeconds = items.reduce((acc, curr) => acc + (curr.usageDurationSeconds || 0), 0);
+
+    return res.json({
+      success: true,
+      totalScreenTimeSeconds,
+      items,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch configured App Limits for a device
+ */
+export const getAppLimits = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const limits = await AppLimit.find({ deviceId }).sort({ createdAt: -1 });
+    return res.json({ success: true, limits });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Save or update an App Limit
+ */
+export const saveAppLimit = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const {
+      packageName,
+      appName,
+      isEnabled,
+      limitDurationMinutes,
+      scheduleType,
+      selectedDays,
+      selectedDate,
+      notifyOnLimitReached,
+    } = req.body;
+
+    if (!packageName) {
+      return res.status(400).json({ success: false, message: 'packageName is required' });
+    }
+
+    const limit = await AppLimit.findOneAndUpdate(
+      { deviceId, packageName },
+      {
+        $set: {
+          appName: appName || packageName,
+          isEnabled: isEnabled ?? true,
+          limitDurationMinutes: Number(limitDurationMinutes) || 240,
+          scheduleType: scheduleType || 'all_days',
+          selectedDays: Array.isArray(selectedDays) ? selectedDays : [],
+          selectedDate: selectedDate || undefined,
+          notifyOnLimitReached: notifyOnLimitReached ?? true,
+        },
+      },
+      { new: true, upsert: true }
+    );
+
+    // Fetch all active limits for this device to push to child
+    const allLimits = await AppLimit.find({ deviceId, isEnabled: true });
+
+    // Notify child device via Socket.IO
+    getSignalingIo()?.to(deviceId).emit('remote-command', {
+      command: 'UPDATE_RULES',
+      deviceId,
+      appLimits: allLimits,
+    });
+
+    // Notify child device via FCM if token available
+    const device = await Device.findOne({ deviceId });
+    if (device?.fcmToken) {
+      await sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+        action: 'UPDATE_APP_LIMITS',
+      });
+    }
+
+    return res.json({ success: true, message: 'App limit saved successfully.', limit });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete an App Limit
+ */
+export const deleteAppLimit = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId, packageName } = req.params;
+
+    await AppLimit.findOneAndDelete({ deviceId, packageName });
+
+    // Fetch remaining active limits to push to child
+    const allLimits = await AppLimit.find({ deviceId, isEnabled: true });
+
+    // Notify child device via Socket.IO
+    getSignalingIo()?.to(deviceId).emit('remote-command', {
+      command: 'UPDATE_RULES',
+      deviceId,
+      appLimits: allLimits,
+    });
+
+    // Notify child device via FCM if token available
+    const device = await Device.findOne({ deviceId });
+    if (device?.fcmToken) {
+      await sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+        action: 'UPDATE_APP_LIMITS',
+      });
+    }
+
+    return res.json({ success: true, message: 'App limit deleted successfully.' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
