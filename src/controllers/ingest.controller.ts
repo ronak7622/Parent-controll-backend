@@ -286,6 +286,7 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       appUsage,
       usageRecords,
       appSessions,
+      replaceDate,
       isSyncingPastUsage,
       pastUsageSynced,
     } = req.body;
@@ -337,6 +338,10 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       await SocialMessage.insertMany(docs);
     }
 
+    if (replaceDate && typeof replaceDate === 'string') {
+      await AppUsage.deleteMany({ deviceId, date: replaceDate });
+    }
+
     const appUsageList = Array.isArray(appUsage) ? appUsage : (Array.isArray(usageRecords) ? usageRecords : []);
     if (appUsageList.length > 0) {
       // Deduplicate in memory by (packageName + date) taking the maximum duration
@@ -386,14 +391,18 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       }
     }
 
+    if (replaceDate && typeof replaceDate === 'string') {
+      await AppSession.deleteMany({ deviceId, date: replaceDate });
+    }
+
     if (Array.isArray(appSessions) && appSessions.length > 0) {
       const sessionOps = appSessions
-        .filter((s: any) => s && s.packageName && s.startTime && s.endTime)
+        .filter((s: any) => s && s.packageName && s.startTime && s.endTime && !isIgnoredSystemPackage(String(s.packageName)))
         .map((s: any) => {
           const startTime = new Date(s.startTime);
           const endTime = new Date(s.endTime);
           const durationSeconds = Number(s.durationSeconds) || Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
-          const date = s.date || startTime.toISOString().split('T')[0];
+          const date = (s.date && String(s.date).trim()) ? String(s.date).trim() : startTime.toISOString().split('T')[0];
           const packageName = String(s.packageName).trim();
           const appName = s.appName ? String(s.appName).trim() : packageName;
 
@@ -784,7 +793,7 @@ export const ingestAppSessions = async (req: Request, res: Response) => {
           const startTime = new Date(s.startTime);
           const endTime = new Date(s.endTime);
           const durationSeconds = Number(s.durationSeconds) || Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
-          const date = s.date || startTime.toISOString().split('T')[0];
+          const date = (s.date && String(s.date).trim()) ? String(s.date).trim() : startTime.toISOString().split('T')[0];
           const packageName = String(s.packageName).trim();
           const appName = s.appName ? String(s.appName).trim() : packageName;
 

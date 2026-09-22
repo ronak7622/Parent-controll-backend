@@ -1714,47 +1714,6 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
     }
 
     let items = Array.from(dedupMap.values());
-
-    // If a specific date is requested, reconcile usageDurationSeconds with actual foreground session durations
-    if (date && typeof date === 'string') {
-      try {
-        const sessionAgg = await AppSession.aggregate([
-          {
-            $match: {
-              deviceId,
-              date: date,
-              sessionType: 'normal',
-            },
-          },
-          {
-            $group: {
-              _id: '$packageName',
-              totalSeconds: { $sum: '$durationSeconds' },
-            },
-          },
-        ]);
-
-        const sessionDurMap = new Map<string, number>();
-        for (const s of sessionAgg) {
-          if (s._id && typeof s.totalSeconds === 'number') {
-            sessionDurMap.set(s._id, s.totalSeconds);
-          }
-        }
-
-        const hasSessionRecords = (await AppSession.countDocuments({ deviceId, date })) > 0;
-
-        for (const item of items) {
-          if (hasSessionRecords) {
-            item.usageDurationSeconds = sessionDurMap.get(item.packageName) || 0;
-          } else if (sessionDurMap.has(item.packageName)) {
-            item.usageDurationSeconds = sessionDurMap.get(item.packageName) || 0;
-          }
-        }
-      } catch (aggErr) {
-        console.warn('[getAppUsage] Error aggregating sessions:', aggErr);
-      }
-    }
-
     items.sort((a, b) => (b.usageDurationSeconds || 0) - (a.usageDurationSeconds || 0));
 
     const totalScreenTimeSeconds = items.reduce((acc, curr) => acc + (curr.usageDurationSeconds || 0), 0);
