@@ -10,11 +10,13 @@ import { CallLog } from '../models/CallLog';
 import { CallRecording } from '../models/CallRecording';
 import { MediaCapture } from '../models/MediaCapture';
 import { AppUsage } from '../models/AppUsage';
+import { AppSession } from '../models/AppSession';
 import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
 import { Device } from '../models/Device';
 import { uploadMediaToR2 } from '../services/r2.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { isIgnoredSystemPackage } from './parent.controller';
 
 /**
  * Update Heartbeat & Online Status from Child Device
@@ -276,8 +278,26 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
  */
 export const ingestGeneralLogs = async (req: Request, res: Response) => {
   try {
-    const { deviceId, contacts, callLogs, socialMessages, appUsage, usageRecords } = req.body;
+    const {
+      deviceId,
+      contacts,
+      callLogs,
+      socialMessages,
+      appUsage,
+      usageRecords,
+      appSessions,
+      isSyncingPastUsage,
+      pastUsageSynced,
+    } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    // 1. Update 30-day sync status if provided
+    if (isSyncingPastUsage !== undefined || pastUsageSynced !== undefined) {
+      const updateData: any = { lastUsageSyncTime: new Date() };
+      if (isSyncingPastUsage !== undefined) updateData.isSyncingPastUsage = Boolean(isSyncingPastUsage);
+      if (pastUsageSynced !== undefined) updateData.pastUsageSynced = Boolean(pastUsageSynced);
+      await Device.findOneAndUpdate({ deviceId }, { $set: updateData });
+    }
 
     if (Array.isArray(contacts) && contacts.length > 0) {
       const docs = contacts.map((c) => ({
@@ -324,6 +344,7 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       for (const au of appUsageList) {
         if (!au || !au.packageName) continue;
         const packageName = String(au.packageName).trim();
+        if (isIgnoredSystemPackage(packageName)) continue;
         const date = au.date || new Date().toISOString().split('T')[0];
         const key = `${packageName}___${date}`;
         const duration = Number(au.usageDurationSeconds) || 0;
@@ -362,6 +383,38 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
 
       if (bulkOps.length > 0) {
         await AppUsage.bulkWrite(bulkOps, { ordered: false });
+      }
+    }
+
+    if (Array.isArray(appSessions) && appSessions.length > 0) {
+      const sessionOps = appSessions
+        .filter((s: any) => s && s.packageName && s.startTime && s.endTime)
+        .map((s: any) => {
+          const startTime = new Date(s.startTime);
+          const endTime = new Date(s.endTime);
+          const durationSeconds = Number(s.durationSeconds) || Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
+          const date = s.date || startTime.toISOString().split('T')[0];
+          const packageName = String(s.packageName).trim();
+          const appName = s.appName ? String(s.appName).trim() : packageName;
+
+          return {
+            updateOne: {
+              filter: { deviceId, packageName, startTime },
+              update: {
+                $set: {
+                  appName,
+                  endTime,
+                  durationSeconds,
+                  date,
+                },
+              },
+              upsert: true,
+            },
+          };
+        });
+
+      if (sessionOps.length > 0) {
+        await AppSession.bulkWrite(sessionOps, { ordered: false });
       }
     }
 
@@ -711,4 +764,109 @@ export const ingestCallRecordingStream = async (req: Request, res: Response) => 
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Dedicated Ingestion endpoint for App Sessions
+ */
+export const ingestAppSessions = async (req: Request, res: Response) => {
+  try {
+    const { deviceId, appSessions, replaceDate } = req.body;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    if (replaceDate) {
+      await AppSession.deleteMany({ deviceId, date: replaceDate });
+    }
+
+    if (Array.isArray(appSessions) && appSessions.length > 0) {
+      const sessionOps = appSessions
+        .filter((s: any) => s && s.packageName && s.startTime && s.endTime && !isIgnoredSystemPackage(String(s.packageName)))
+        .map((s: any) => {
+          const startTime = new Date(s.startTime);
+          const endTime = new Date(s.endTime);
+          const durationSeconds = Number(s.durationSeconds) || Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
+          const date = s.date || startTime.toISOString().split('T')[0];
+          const packageName = String(s.packageName).trim();
+          const appName = s.appName ? String(s.appName).trim() : packageName;
+
+          return {
+            updateOne: {
+              filter: { deviceId, packageName, startTime },
+              update: {
+                $set: {
+                  appName,
+                  endTime,
+                  durationSeconds,
+                  date,
+                  sessionType: s.sessionType || 'normal',
+                },
+              },
+              upsert: true,
+            },
+          };
+        });
+
+      if (sessionOps.length > 0) {
+        await AppSession.bulkWrite(sessionOps, { ordered: false });
+      }
+    }
+
+    return res.json({ success: true, message: 'App sessions ingested successfully' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Update 30-Day Historical Sync Status from Child Device
+ */
+export const updateDeviceSyncStatus = async (req: Request, res: Response) => {
+  try {
+    const { deviceId, isSyncingPastUsage, pastUsageSynced } = req.body;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const updateData: any = { lastUsageSyncTime: new Date() };
+    if (isSyncingPastUsage !== undefined) updateData.isSyncingPastUsage = Boolean(isSyncingPastUsage);
+    if (pastUsageSynced !== undefined) updateData.pastUsageSynced = Boolean(pastUsageSynced);
+
+    const device = await Device.findOneAndUpdate({ deviceId }, { $set: updateData }, { new: true });
+    return res.json({ success: true, device });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Ingest List of All Installed User-Facing Apps on Child Device
+ */
+export const ingestInstalledApps = async (req: Request, res: Response) => {
+  try {
+    const { deviceId, installedApps } = req.body;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    if (Array.isArray(installedApps)) {
+      const cleanApps = installedApps
+        .filter((a: any) => a && a.packageName)
+        .map((a: any) => ({
+          packageName: String(a.packageName).trim(),
+          appName: a.appName ? String(a.appName).trim() : String(a.packageName).trim(),
+          appIcon: a.appIcon ? String(a.appIcon) : undefined,
+          versionName: a.versionName ? String(a.versionName) : undefined,
+          versionCode: a.versionCode ? Number(a.versionCode) : undefined,
+          firstInstallTime: a.firstInstallTime ? Number(a.firstInstallTime) : undefined,
+          lastUpdateTime: a.lastUpdateTime ? Number(a.lastUpdateTime) : undefined,
+          permissions: Array.isArray(a.permissions) ? a.permissions.map(String) : [],
+        }));
+
+      await Device.findOneAndUpdate(
+        { deviceId },
+        { $set: { installedApps: cleanApps } }
+      );
+    }
+
+    return res.json({ success: true, message: 'Installed apps updated successfully.' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 

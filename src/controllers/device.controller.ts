@@ -3,6 +3,7 @@ import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { Device } from '../models/Device';
 import { AppLimit } from '../models/AppLimit';
+import { AppBlockRule } from '../models/AppBlockRule';
 import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 
@@ -532,9 +533,16 @@ export const reportLimitReached = async (req: any, res: Response) => {
     const title = 'App Limit Reached';
     const body = `${childName} has reached the daily limit for ${name} (${hours}h).`;
 
-    // Send to parent topic
+    // Send to parent topics
     if (device?.parentUserId) {
-      await sendFcmTopicNotification(`parent_${device.parentUserId}`, title, body, {
+      const parentTopic = `parent_${device.parentUserId}`;
+      await sendFcmTopicNotification(parentTopic, title, body, {
+        type: 'APP_LIMIT_REACHED',
+        deviceId,
+        packageName,
+        appName: name,
+      });
+      await sendFcmTopicNotification(`device_alerts_${deviceId}`, title, body, {
         type: 'APP_LIMIT_REACHED',
         deviceId,
         packageName,
@@ -542,7 +550,102 @@ export const reportLimitReached = async (req: any, res: Response) => {
       });
     }
 
+    // Real-time Socket.IO Alert to Parent
+    const io = getSignalingIo();
+    if (io) {
+      const alertPayload = {
+        type: 'APP_LIMIT_REACHED',
+        deviceId,
+        packageName,
+        appName: name,
+        title,
+        body,
+        timestamp: Date.now(),
+      };
+      if (device?.parentUserId) {
+        io.to(device.parentUserId.toString()).emit('app-limit-alert', alertPayload);
+      }
+      io.to(deviceId).emit('app-limit-alert', alertPayload);
+    }
+
     return res.json({ success: true, message: 'Limit reached reported successfully.' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Child Device: Report Blocked App Access Attempt (Sends FCM push notification to Parent)
+ */
+export const reportBlockedAppAttempt = async (req: any, res: Response) => {
+  try {
+    const { deviceId, packageName, appName, blockMode } = req.body;
+    if (!deviceId || !packageName) {
+      return res.status(400).json({ success: false, message: 'deviceId and packageName are required' });
+    }
+
+    const rule = await AppBlockRule.findOne({ deviceId, packageName });
+    if (rule && rule.notifyParent === false) {
+      return res.json({ success: true, message: 'Notification disabled by parent.' });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    const childName = device?.deviceName || 'Child Device';
+    const name = appName || rule?.appName || packageName;
+
+    const title = 'Blocked App Attempt';
+    const body = `${childName} attempted to open blocked app: ${name}.`;
+
+    if (device?.parentUserId) {
+      const parentTopic = `parent_${device.parentUserId}`;
+      await sendFcmTopicNotification(parentTopic, title, body, {
+        type: 'APP_BLOCK_ATTEMPT',
+        deviceId,
+        packageName,
+        appName: name,
+      });
+      await sendFcmTopicNotification(`device_alerts_${deviceId}`, title, body, {
+        type: 'APP_BLOCK_ATTEMPT',
+        deviceId,
+        packageName,
+        appName: name,
+      });
+    }
+
+    const io = getSignalingIo();
+    if (io) {
+      const alertPayload = {
+        type: 'APP_BLOCK_ATTEMPT',
+        deviceId,
+        packageName,
+        appName: name,
+        title,
+        body,
+        timestamp: Date.now(),
+      };
+      if (device?.parentUserId) {
+        io.to(device.parentUserId.toString()).emit('app-block-alert', alertPayload);
+      }
+      io.to(deviceId).emit('app-block-alert', alertPayload);
+    }
+
+    return res.json({ success: true, message: 'Blocked attempt reported successfully.' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Child Device: Get active App Block Rules
+ */
+export const getChildAppBlocks = async (req: any, res: Response) => {
+  try {
+    const deviceId = req.params.deviceId || req.query.deviceId;
+    if (!deviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    const rules = await AppBlockRule.find({ deviceId, isBlocked: true });
+    return res.json({ success: true, rules });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

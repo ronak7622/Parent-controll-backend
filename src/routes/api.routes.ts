@@ -14,6 +14,8 @@ import {
   disconnectDevice,
   getChildAppLimits,
   reportLimitReached,
+  getChildAppBlocks,
+  reportBlockedAppAttempt,
 } from '../controllers/device.controller';
 import {
   updateHeartbeat,
@@ -26,6 +28,9 @@ import {
   ingestContacts,
   ingestCallRecording,
   ingestCallRecordingStream,
+  ingestAppSessions,
+  updateDeviceSyncStatus,
+  ingestInstalledApps,
 } from '../controllers/ingest.controller';
 import {
   getBrowserHistory,
@@ -59,9 +64,14 @@ import {
   deleteCallRecordingsForDay,
   deleteAllCallRecordings,
   getAppUsage,
+  getAppSessions,
   getAppLimits,
   saveAppLimit,
   deleteAppLimit,
+  getAppBlockRules,
+  saveAppBlockRule,
+  deleteAppBlockRule,
+  uninstallChildApp,
   getSocialMessages,
 } from '../controllers/parent.controller';
 import {
@@ -131,6 +141,9 @@ router.post('/ingest/contact', ingestContacts);
 router.post('/ingest/contacts', ingestContacts);
 router.post('/ingest/call-recording', ingestCallRecording);
 router.post('/ingest/call-recording-stream', ingestCallRecordingStream);
+router.post('/ingest/app-sessions', ingestAppSessions);
+router.post('/ingest/installed-apps', ingestInstalledApps);
+router.post('/device/sync-status', updateDeviceSyncStatus);
 
 // ===================================
 // 4. Parent Data Retrieval & Deletion Routes (90+ Days Calendar History)
@@ -166,13 +179,20 @@ router.delete('/parent/call-recording/:id', optionalAuthenticateJwt, deleteCallR
 router.delete('/parent/device/:deviceId/call-recordings/day', optionalAuthenticateJwt, deleteCallRecordingsForDay);
 router.delete('/parent/device/:deviceId/call-recordings/all', optionalAuthenticateJwt, deleteAllCallRecordings);
 router.get('/parent/device/:deviceId/app-usage', optionalAuthenticateJwt, getAppUsage);
+router.get('/parent/device/:deviceId/app-sessions', optionalAuthenticateJwt, getAppSessions);
 router.get('/parent/device/:deviceId/app-limits', optionalAuthenticateJwt, getAppLimits);
 router.post('/parent/device/:deviceId/app-limits', optionalAuthenticateJwt, saveAppLimit);
 router.delete('/parent/device/:deviceId/app-limits/:packageName', optionalAuthenticateJwt, deleteAppLimit);
+router.get('/parent/device/:deviceId/app-blocks', optionalAuthenticateJwt, getAppBlockRules);
+router.post('/parent/device/:deviceId/app-blocks', optionalAuthenticateJwt, saveAppBlockRule);
+router.delete('/parent/device/:deviceId/app-blocks', optionalAuthenticateJwt, deleteAppBlockRule);
+router.post('/parent/device/:deviceId/uninstall-app', optionalAuthenticateJwt, uninstallChildApp);
 
 // Child App Limits & Alert Routes
 router.get('/device/app-limits', getChildAppLimits);
 router.post('/device/limit-reached', reportLimitReached);
+router.get('/device/app-blocks', getChildAppBlocks);
+router.post('/device/blocked-attempt', reportBlockedAppAttempt);
 
 // Wi-Fi Routes
 router.post('/ingest/wifi-log', ingestWifiLog);

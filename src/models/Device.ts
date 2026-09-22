@@ -48,6 +48,23 @@ export interface IDevice extends Document {
   frontPhotoTimerMinutes: number;
   backPhotoTimerMinutes: number;
 
+  // 30-Day Usage Sync Tracking
+  isSyncingPastUsage?: boolean;
+  pastUsageSynced?: boolean;
+  lastUsageSyncTime?: Date;
+
+  // Installed User-Facing Apps on Child Device
+  installedApps?: {
+    packageName: string;
+    appName: string;
+    appIcon?: string;
+    versionName?: string;
+    versionCode?: number;
+    firstInstallTime?: number;
+    lastUpdateTime?: number;
+    permissions?: string[];
+  }[];
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -97,6 +114,23 @@ const DeviceSchema = new Schema<IDevice>(
     screenshotTimerMinutes: { type: Number, default: 0 },
     frontPhotoTimerMinutes: { type: Number, default: 0 },
     backPhotoTimerMinutes: { type: Number, default: 0 },
+
+    isSyncingPastUsage: { type: Boolean, default: false },
+    pastUsageSynced: { type: Boolean, default: false },
+    lastUsageSyncTime: { type: Date },
+
+    installedApps: [
+      {
+        packageName: { type: String, required: true },
+        appName: { type: String, required: true },
+        appIcon: { type: String },
+        versionName: { type: String },
+        versionCode: { type: Number },
+        firstInstallTime: { type: Number },
+        lastUpdateTime: { type: Number },
+        permissions: [{ type: String }],
+      },
+    ],
   },
   { timestamps: true }
 );

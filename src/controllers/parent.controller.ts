@@ -10,7 +10,9 @@ import { CallLog } from '../models/CallLog';
 import { CallRecording } from '../models/CallRecording';
 import { MediaCapture } from '../models/MediaCapture';
 import { AppUsage } from '../models/AppUsage';
+import { AppSession } from '../models/AppSession';
 import { AppLimit } from '../models/AppLimit';
+import { AppBlockRule } from '../models/AppBlockRule';
 import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
 import { Device } from '../models/Device';
@@ -1597,6 +1599,76 @@ export const deleteAllCallRecordings = async (req: AuthRequest, res: Response) =
 };
 
 
+const IGNORED_SYSTEM_PACKAGES = new Set([
+  'com.android.launcher',
+  'com.sec.android.app.launcher',
+  'com.miui.home',
+  'com.oppo.launcher',
+  'com.bbk.launcher2',
+  'com.google.android.apps.nexuslauncher',
+  'com.android.systemui',
+  'com.google.android.permissioncontroller',
+  'com.android.permissioncontroller',
+  'com.google.android.packageinstaller',
+  'com.android.packageinstaller',
+  'com.google.android.photopicker',
+  'com.android.server.telecom',
+  'com.android.incallui',
+  'com.android.phone',
+  'com.android.settings',
+  'com.oplus.stdsp',
+  'com.oplus.wirelesssettings',
+  'com.oplus.battery',
+  'com.oplus.safecenter',
+  'com.oplus.games',
+  'com.oplus.appplatform',
+  'com.coloros.assistantscreen',
+  'com.coloros.smartslider',
+  'com.coloros.safecenter',
+  'com.oppo.quicksearchbox',
+  'com.heytap.pictorial',
+  'com.heytap.habit.analysis',
+  'com.heytap.cloud',
+  'com.heytap.mcs',
+  'com.heytap.openid',
+  'com.heytap.usercenter',
+]);
+
+export function isIgnoredSystemPackage(pkg: string): boolean {
+  if (!pkg) return true;
+  const lower = pkg.toLowerCase().trim();
+  if (IGNORED_SYSTEM_PACKAGES.has(lower)) return true;
+  if (
+    lower.includes('launcher') ||
+    lower.includes('quicksearchbox') ||
+    lower.includes('systemui') ||
+    lower.includes('assistantscreen') ||
+    lower.includes('photopicker') ||
+    lower.includes('wirelesssettings') ||
+    lower.includes('pictorial') ||
+    lower.includes('lockscreen') ||
+    lower.includes('magazine') ||
+    lower.includes('server.telecom') ||
+    lower.includes('incallui') ||
+    lower.includes('permissioncontroller') ||
+    lower.includes('packageinstaller')
+  ) {
+    return true;
+  }
+  if (
+    lower.startsWith('com.android.internal') ||
+    lower.startsWith('com.google.android.overlay') ||
+    lower.startsWith('com.android.providers.') ||
+    lower.startsWith('com.google.android.providers.') ||
+    lower.startsWith('com.heytap.') ||
+    (lower.startsWith('com.oplus.') && !lower.includes('calculator') && !lower.includes('weather') && !lower.includes('soundrecorder') && !lower.includes('compass')) ||
+    (lower.startsWith('com.coloros.') && !lower.includes('calculator') && !lower.includes('weather') && !lower.includes('soundrecorder') && !lower.includes('compass'))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Fetch App Usage & Screen Time (supports date, 90-day range startDate/endDate, and packageName)
  */
@@ -1626,6 +1698,7 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
     // Deduplicate by packageName (for single date) or (packageName + date) for date ranges
     const dedupMap = new Map<string, any>();
     for (const item of rawItems) {
+      if (isIgnoredSystemPackage(item.packageName)) continue;
       const key = date ? item.packageName : `${item.packageName}___${item.date}`;
       const existing = dedupMap.get(key);
       if (!existing) {
@@ -1640,15 +1713,178 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    const items = Array.from(dedupMap.values());
+    let items = Array.from(dedupMap.values());
+
+    // If a specific date is requested, reconcile usageDurationSeconds with actual foreground session durations
+    if (date && typeof date === 'string') {
+      try {
+        const sessionAgg = await AppSession.aggregate([
+          {
+            $match: {
+              deviceId,
+              date: date,
+              sessionType: 'normal',
+            },
+          },
+          {
+            $group: {
+              _id: '$packageName',
+              totalSeconds: { $sum: '$durationSeconds' },
+            },
+          },
+        ]);
+
+        const sessionDurMap = new Map<string, number>();
+        for (const s of sessionAgg) {
+          if (s._id && typeof s.totalSeconds === 'number') {
+            sessionDurMap.set(s._id, s.totalSeconds);
+          }
+        }
+
+        const hasSessionRecords = (await AppSession.countDocuments({ deviceId, date })) > 0;
+
+        for (const item of items) {
+          if (hasSessionRecords) {
+            item.usageDurationSeconds = sessionDurMap.get(item.packageName) || 0;
+          } else if (sessionDurMap.has(item.packageName)) {
+            item.usageDurationSeconds = sessionDurMap.get(item.packageName) || 0;
+          }
+        }
+      } catch (aggErr) {
+        console.warn('[getAppUsage] Error aggregating sessions:', aggErr);
+      }
+    }
+
     items.sort((a, b) => (b.usageDurationSeconds || 0) - (a.usageDurationSeconds || 0));
 
     const totalScreenTimeSeconds = items.reduce((acc, curr) => acc + (curr.usageDurationSeconds || 0), 0);
+
+    // Check device details & installed apps
+    const dev = await Device.findOne({ deviceId }).select('isSyncingPastUsage pastUsageSynced lastUsageSyncTime installedApps');
+    const filteredInstalled = (dev?.installedApps || []).filter((a: any) => !isIgnoredSystemPackage(a.packageName));
 
     return res.json({
       success: true,
       totalScreenTimeSeconds,
       items,
+      allInstalledApps: filteredInstalled,
+      isSyncingPastUsage: dev?.isSyncingPastUsage ?? false,
+      pastUsageSynced: dev?.pastUsageSynced ?? false,
+      lastUsageSyncTime: dev?.lastUsageSyncTime,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch granular App Open/Close Sessions and Hourly Breakdown for an app on a selected date
+ */
+export const getAppSessions = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName, date } = req.query;
+
+    if (!packageName) {
+      return res.status(400).json({ success: false, message: 'packageName is required' });
+    }
+
+    const targetDate = (date as string) || new Date().toISOString().split('T')[0];
+
+    if (isIgnoredSystemPackage(packageName as string)) {
+      return res.json({
+        success: true,
+        sessions: [],
+        hourlyTrend: new Array(24).fill(0).map((_, hour) => ({ hour, durationSeconds: 0 })),
+        totalDurationSeconds: 0,
+        date: targetDate,
+        packageName,
+      });
+    }
+
+    const rawSessions = await AppSession.find({
+      deviceId,
+      packageName,
+      date: targetDate,
+    }).sort({ startTime: 1 });
+
+    // Consolidate and merge adjacent / overlapping normal sessions (gap <= 10 seconds)
+    const mergedSessions: any[] = [];
+    for (const sess of rawSessions) {
+      const obj = sess.toObject ? sess.toObject() : { ...sess };
+      if (!obj.sessionType) {
+        obj.sessionType = 'normal';
+      }
+
+      if (mergedSessions.length === 0) {
+        mergedSessions.push(obj);
+      } else {
+        const last = mergedSessions[mergedSessions.length - 1];
+        const lastEnd = new Date(last.endTime).getTime();
+        const curStart = new Date(obj.startTime).getTime();
+        const curEnd = new Date(obj.endTime).getTime();
+        const gapSec = (curStart - lastEnd) / 1000;
+
+        // Merge only normal foreground sessions within a 10s grace gap
+        if (
+          (last.sessionType === 'normal' || !last.sessionType) &&
+          obj.sessionType === 'normal' &&
+          gapSec <= 10
+        ) {
+          const newEnd = Math.max(lastEnd, curEnd);
+          last.endTime = new Date(newEnd);
+          last.durationSeconds = Math.max(0, Math.round((newEnd - new Date(last.startTime).getTime()) / 1000));
+        } else {
+          mergedSessions.push(obj);
+        }
+      }
+    }
+
+    // Compute hourly trend (24 hours: 0 to 23) for the selected date (normal sessions only)
+    const hourlySeconds = new Array(24).fill(0);
+
+    for (const sess of mergedSessions) {
+      if (sess.sessionType && sess.sessionType !== 'normal') continue; // Do not count attempts in duration chart
+
+      const start = new Date(sess.startTime);
+      const end = new Date(sess.endTime);
+      const startH = start.getHours();
+      const endH = end.getHours();
+      const dur = sess.durationSeconds || Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
+
+      if (startH === endH) {
+        hourlySeconds[startH] += dur;
+      } else {
+        // App ran across an hour boundary - split proportionately
+        const nextHour = new Date(start);
+        nextHour.setMinutes(60, 0, 0);
+        const firstHourDur = Math.max(0, Math.round((nextHour.getTime() - start.getTime()) / 1000));
+        const remainder = Math.max(0, dur - firstHourDur);
+
+        hourlySeconds[startH] += Math.min(dur, firstHourDur);
+        hourlySeconds[endH] = (hourlySeconds[endH] || 0) + remainder;
+      }
+    }
+
+    const hourlyTrend = hourlySeconds.map((seconds, hour) => ({
+      hour,
+      durationSeconds: seconds,
+    }));
+
+    const totalDurationSeconds = mergedSessions
+      .filter((s) => !s.sessionType || s.sessionType === 'normal')
+      .reduce((sum, s) => sum + (s.durationSeconds || 0), 0);
+
+    // Return in reverse chronological order (latest session first)
+    mergedSessions.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+
+    return res.json({
+      success: true,
+      sessions: mergedSessions,
+      hourlyTrend,
+      totalDurationSeconds,
+      date: targetDate,
+      packageName,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -1901,6 +2137,167 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
     return res.json({
       success: true,
       message: 'Sync signal transmitted to child device successfully',
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch configured App Block Rules for a device
+ */
+export const getAppBlockRules = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const rules = await AppBlockRule.find({ deviceId }).sort({ createdAt: -1 });
+    return res.json({ success: true, rules });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Save or update an App Block Rule
+ */
+export const saveAppBlockRule = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const {
+      packageName,
+      appName,
+      blockType,
+      scheduleStartTime,
+      scheduleEndTime,
+      notifyParentOnAccess,
+      notifyChildOnBlock,
+      isBlocked,
+    } = req.body;
+
+    if (!packageName) {
+      return res.status(400).json({ success: false, message: 'packageName is required' });
+    }
+
+    const rule = await AppBlockRule.findOneAndUpdate(
+      { deviceId, packageName },
+      {
+        deviceId,
+        packageName,
+        appName: appName || packageName,
+        blockType: blockType || 'all_day',
+        scheduleStartTime: scheduleStartTime || '09:00',
+        scheduleEndTime: scheduleEndTime || '17:00',
+        notifyParentOnAccess: notifyParentOnAccess ?? true,
+        notifyChildOnBlock: notifyChildOnBlock ?? true,
+        isBlocked: isBlocked ?? true,
+        updatedAt: new Date(),
+      },
+      { upsert: true, new: true }
+    );
+
+    // Push updated rules to child device via WebRTC/Socket and FCM
+    const allRules = await AppBlockRule.find({ deviceId });
+    const io = getSignalingIo();
+    if (io) {
+      io.to(deviceId).emit('update-rules', {
+        type: 'UPDATE_RULES',
+        appBlockRules: allRules,
+      });
+      io.to(deviceId).emit('remote-command', {
+        command: 'UPDATE_RULES',
+        deviceId,
+        appBlockRules: allRules,
+      });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    if (device?.fcmToken) {
+      sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+        action: 'UPDATE_APP_BLOCKS',
+      }).catch((err) => console.warn('[FCM] Error pushing app block rule:', err.message));
+    }
+
+    return res.json({ success: true, rule });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete an App Block Rule
+ */
+export const deleteAppBlockRule = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName } = req.query;
+
+    if (!packageName) {
+      return res.status(400).json({ success: false, message: 'packageName is required' });
+    }
+
+    await AppBlockRule.findOneAndDelete({ deviceId, packageName: packageName as string });
+
+    const allRules = await AppBlockRule.find({ deviceId });
+    const io = getSignalingIo();
+    if (io) {
+      io.to(deviceId).emit('update-rules', {
+        type: 'UPDATE_RULES',
+        appBlockRules: allRules,
+      });
+      io.to(deviceId).emit('remote-command', {
+        command: 'UPDATE_RULES',
+        deviceId,
+        appBlockRules: allRules,
+      });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    if (device?.fcmToken) {
+      sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+        action: 'UPDATE_APP_BLOCKS',
+      }).catch((err) => console.warn('[FCM] Error pushing app block rules deletion:', err.message));
+    }
+
+    return res.json({ success: true, message: 'Block rule removed successfully' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Trigger remote uninstall intent on child device
+ */
+export const uninstallChildApp = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName } = req.body;
+
+    if (!packageName) {
+      return res.status(400).json({ success: false, message: 'packageName is required' });
+    }
+
+    const io = getSignalingIo();
+    if (io) {
+      io.to(deviceId).emit('command', {
+        type: 'UNINSTALL_APP',
+        packageName,
+      });
+      io.to(deviceId).emit('remote-command', {
+        command: 'UNINSTALL_APP',
+        deviceId,
+        packageName,
+      });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    if (device?.fcmToken) {
+      sendFcmDataCommand(device.fcmToken, 'UNINSTALL_APP', {
+        packageName: String(packageName),
+      }).catch((err) => console.warn('[FCM] Error pushing uninstall command:', err.message));
+    }
+
+    return res.json({
+      success: true,
+      message: `Uninstall request for ${packageName} sent to child device`,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
