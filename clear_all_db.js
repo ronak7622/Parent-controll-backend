@@ -22,6 +22,21 @@ async function clearAllDb() {
 
   console.log('All collections and pairing data have been completely wiped and reset!');
   await mongoose.disconnect();
+
+  // Also clean local uploaded files
+  const fs = require('fs');
+  const path = require('path');
+  const uploadsDir = path.join(__dirname, 'public/uploads');
+  if (fs.existsSync(uploadsDir)) {
+    try {
+      fs.rmSync(uploadsDir, { recursive: true, force: true });
+      fs.mkdirSync(uploadsDir, { recursive: true });
+      fs.writeFileSync(path.join(uploadsDir, '.gitkeep'), '');
+      console.log('Successfully cleaned local uploads storage!');
+    } catch (e) {
+      console.log('Error cleaning uploads:', e.message);
+    }
+  }
 }
 
 clearAllDb().catch(err => {

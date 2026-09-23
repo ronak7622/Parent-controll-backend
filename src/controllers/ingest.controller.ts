@@ -16,7 +16,9 @@ import { SocialMessage } from '../models/SocialMessage';
 import { Device } from '../models/Device';
 import { uploadMediaToR2 } from '../services/r2.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
-import { isIgnoredSystemPackage } from './parent.controller';
+import { isIgnoredSystemPackage, getISTDateString } from './parent.controller';
+
+export const getLocalDateString = getISTDateString;
 
 /**
  * Update Heartbeat & Online Status from Child Device
@@ -208,7 +210,7 @@ export const ingestYouTubeSession = async (req: Request, res: Response) => {
     const docs = rawSessions.map((item: any) => {
       const start = item.startTime ? new Date(item.startTime) : new Date();
       const end = item.endTime ? new Date(item.endTime) : new Date();
-      const dateStr = item.date || start.toISOString().split('T')[0];
+      const dateStr = (item.date && String(item.date).trim()) ? String(item.date).trim() : getLocalDateString(item.startTime || start);
       return {
         deviceId: item.deviceId || topDeviceId,
         startTime: start,
@@ -350,7 +352,7 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
         if (!au || !au.packageName) continue;
         const packageName = String(au.packageName).trim();
         if (isIgnoredSystemPackage(packageName)) continue;
-        const date = au.date || new Date().toISOString().split('T')[0];
+        const date = (au.date && String(au.date).trim()) ? String(au.date).trim() : getLocalDateString(au.timestamp);
         const key = `${packageName}___${date}`;
         const duration = Number(au.usageDurationSeconds) || 0;
         const existing = deduplicatedMap.get(key);
@@ -360,7 +362,7 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       }
 
       const bulkOps = Array.from(deduplicatedMap.values()).map((au: any) => {
-        const date = au.date || new Date().toISOString().split('T')[0];
+        const date = (au.date && String(au.date).trim()) ? String(au.date).trim() : getLocalDateString(au.timestamp);
         const packageName = String(au.packageName).trim();
         const appName = au.appName ? String(au.appName).trim() : packageName;
         const appIcon = au.appIcon ? String(au.appIcon) : undefined;
@@ -388,6 +390,10 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
 
       if (bulkOps.length > 0) {
         await AppUsage.bulkWrite(bulkOps, { ordered: false });
+        console.log(`[INGEST-APP-USAGE] Device: ${deviceId}, Ingested ${bulkOps.length} usage records. ReplaceDate: ${replaceDate || 'none'}`);
+        for (const item of Array.from(deduplicatedMap.values())) {
+          console.log(`  -> ${item.packageName} | date=${item.date} | duration=${item.usageDurationSeconds}s`);
+        }
       }
     }
 
@@ -396,13 +402,12 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
     }
 
     if (Array.isArray(appSessions) && appSessions.length > 0) {
-      const sessionOps = appSessions
-        .filter((s: any) => s && s.packageName && s.startTime && s.endTime && !isIgnoredSystemPackage(String(s.packageName)))
-        .map((s: any) => {
+      const filteredSessions = appSessions.filter((s: any) => s && s.packageName && s.startTime && s.endTime && !isIgnoredSystemPackage(String(s.packageName)));
+      const sessionOps = filteredSessions.map((s: any) => {
           const startTime = new Date(s.startTime);
           const endTime = new Date(s.endTime);
           const durationSeconds = Number(s.durationSeconds) || Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
-          const date = (s.date && String(s.date).trim()) ? String(s.date).trim() : startTime.toISOString().split('T')[0];
+          const date = (s.date && String(s.date).trim()) ? String(s.date).trim() : getLocalDateString(s.startTime);
           const packageName = String(s.packageName).trim();
           const appName = s.appName ? String(s.appName).trim() : packageName;
 
@@ -424,6 +429,10 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
 
       if (sessionOps.length > 0) {
         await AppSession.bulkWrite(sessionOps, { ordered: false });
+        console.log(`[INGEST-APP-SESSIONS] Device: ${deviceId}, Ingested ${sessionOps.length} sessions. ReplaceDate: ${replaceDate || 'none'}`);
+        for (const s of filteredSessions) {
+          console.log(`  -> ${s.packageName} | ${s.startTime} -> ${s.endTime} (${s.durationSeconds}s) | date=${s.date}`);
+        }
       }
     }
 
@@ -793,7 +802,7 @@ export const ingestAppSessions = async (req: Request, res: Response) => {
           const startTime = new Date(s.startTime);
           const endTime = new Date(s.endTime);
           const durationSeconds = Number(s.durationSeconds) || Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
-          const date = (s.date && String(s.date).trim()) ? String(s.date).trim() : startTime.toISOString().split('T')[0];
+          const date = (s.date && String(s.date).trim()) ? String(s.date).trim() : getLocalDateString(s.startTime);
           const packageName = String(s.packageName).trim();
           const appName = s.appName ? String(s.appName).trim() : packageName;
 

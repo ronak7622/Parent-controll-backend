@@ -19,6 +19,23 @@ import { Device } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
 
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC+5:30
+
+export function toIST(date: Date): Date {
+  return new Date(date.getTime() + IST_OFFSET_MS);
+}
+
+export function getISTDateString(val?: any): string {
+  if (typeof val === 'string' && val.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(val)) {
+    return val.substring(0, 10);
+  }
+  const dateObj = val ? new Date(val) : new Date();
+  if (!isNaN(dateObj.getTime())) {
+    return toIST(dateObj).toISOString().split('T')[0];
+  }
+  return toIST(new Date()).toISOString().split('T')[0];
+}
+
 /**
  * Fetch Browser History with date filter (90+ days calendar support)
  */
@@ -1718,6 +1735,11 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
 
     const totalScreenTimeSeconds = items.reduce((acc, curr) => acc + (curr.usageDurationSeconds || 0), 0);
 
+    console.log(`[PARENT-GET-APP-USAGE] Device: ${deviceId}, Date: ${date || 'range'}, TotalScreenTime: ${totalScreenTimeSeconds}s, AppCount: ${items.length}`);
+    for (const item of items) {
+      console.log(`  -> ${item.packageName} (${item.appName}): ${item.usageDurationSeconds}s | date=${item.date}`);
+    }
+
     // Check device details & installed apps
     const dev = await Device.findOne({ deviceId }).select('isSyncingPastUsage pastUsageSynced lastUsageSyncTime installedApps');
     const filteredInstalled = (dev?.installedApps || []).filter((a: any) => !isIgnoredSystemPackage(a.packageName));
@@ -1748,7 +1770,7 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'packageName is required' });
     }
 
-    const targetDate = (date as string) || new Date().toISOString().split('T')[0];
+    const targetDate = (date && String(date).trim()) ? String(date).trim() : getISTDateString();
 
     if (isIgnoredSystemPackage(packageName as string)) {
       return res.json({
@@ -1767,7 +1789,7 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
       date: targetDate,
     }).sort({ startTime: 1 });
 
-    // Consolidate and merge adjacent / overlapping normal sessions (gap <= 10 seconds)
+    // Consolidate overlapping sessions only (gap <= 0 seconds) to preserve exact session boundaries
     const mergedSessions: any[] = [];
     for (const sess of rawSessions) {
       const obj = sess.toObject ? sess.toObject() : { ...sess };
@@ -1784,11 +1806,11 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
         const curEnd = new Date(obj.endTime).getTime();
         const gapSec = (curStart - lastEnd) / 1000;
 
-        // Merge only normal foreground sessions within a 10s grace gap
+        // Merge only overlapping foreground session ranges (gapSec <= 0)
         if (
           (last.sessionType === 'normal' || !last.sessionType) &&
           obj.sessionType === 'normal' &&
-          gapSec <= 10
+          gapSec <= 0
         ) {
           const newEnd = Math.max(lastEnd, curEnd);
           last.endTime = new Date(newEnd);
@@ -1807,21 +1829,24 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
 
       const start = new Date(sess.startTime);
       const end = new Date(sess.endTime);
-      const startH = start.getHours();
-      const endH = end.getHours();
-      const dur = sess.durationSeconds || Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
+      if (isNaN(start.getTime()) || isNaN(end.getTime()) || start.getTime() >= end.getTime()) continue;
 
-      if (startH === endH) {
-        hourlySeconds[startH] += dur;
-      } else {
-        // App ran across an hour boundary - split proportionately
-        const nextHour = new Date(start);
-        nextHour.setMinutes(60, 0, 0);
-        const firstHourDur = Math.max(0, Math.round((nextHour.getTime() - start.getTime()) / 1000));
-        const remainder = Math.max(0, dur - firstHourDur);
+      let curr = new Date(start.getTime());
+      while (curr.getTime() < end.getTime()) {
+        const istCurr = toIST(curr);
+        const currH = istCurr.getUTCHours(); // Server-independent IST hour (0..23)
 
-        hourlySeconds[startH] += Math.min(dur, firstHourDur);
-        hourlySeconds[endH] = (hourlySeconds[endH] || 0) + remainder;
+        const nextIstBoundary = new Date(istCurr);
+        nextIstBoundary.setUTCMinutes(60, 0, 0);
+        const nextTimeAbsolute = nextIstBoundary.getTime() - IST_OFFSET_MS;
+
+        const nextTime = Math.min(end.getTime(), nextTimeAbsolute);
+        const chunkSec = Math.max(0, Math.round((nextTime - curr.getTime()) / 1000));
+
+        if (currH >= 0 && currH < 24) {
+          hourlySeconds[currH] += chunkSec;
+        }
+        curr = new Date(nextTime);
       }
     }
 
@@ -1833,6 +1858,11 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
     const totalDurationSeconds = mergedSessions
       .filter((s) => !s.sessionType || s.sessionType === 'normal')
       .reduce((sum, s) => sum + (s.durationSeconds || 0), 0);
+
+    console.log(`[PARENT-GET-APP-SESSIONS] Device: ${deviceId}, Package: ${packageName}, Date: ${targetDate}, TotalSessions: ${mergedSessions.length}, TotalDuration: ${totalDurationSeconds}s`);
+    for (const s of mergedSessions) {
+      console.log(`  -> Session: ${s.startTime} -> ${s.endTime} (${s.durationSeconds}s)`);
+    }
 
     // Return in reverse chronological order (latest session first)
     mergedSessions.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
