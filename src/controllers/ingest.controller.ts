@@ -340,10 +340,6 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       await SocialMessage.insertMany(docs);
     }
 
-    if (replaceDate && typeof replaceDate === 'string') {
-      await AppUsage.deleteMany({ deviceId, date: replaceDate });
-    }
-
     const appUsageList = Array.isArray(appUsage) ? appUsage : (Array.isArray(usageRecords) ? usageRecords : []);
     if (appUsageList.length > 0) {
       // Deduplicate in memory by (packageName + date) taking the maximum duration
@@ -395,10 +391,6 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
           console.log(`  -> ${item.packageName} | date=${item.date} | duration=${item.usageDurationSeconds}s`);
         }
       }
-    }
-
-    if (replaceDate && typeof replaceDate === 'string') {
-      await AppSession.deleteMany({ deviceId, date: replaceDate });
     }
 
     if (Array.isArray(appSessions) && appSessions.length > 0) {
@@ -790,10 +782,6 @@ export const ingestAppSessions = async (req: Request, res: Response) => {
   try {
     const { deviceId, appSessions, replaceDate } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
-
-    if (replaceDate) {
-      await AppSession.deleteMany({ deviceId, date: replaceDate });
-    }
 
     if (Array.isArray(appSessions) && appSessions.length > 0) {
       const sessionOps = appSessions

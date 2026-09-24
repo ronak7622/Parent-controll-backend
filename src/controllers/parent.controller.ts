@@ -1632,7 +1632,6 @@ const IGNORED_SYSTEM_PACKAGES = new Set([
   'com.android.server.telecom',
   'com.android.incallui',
   'com.android.phone',
-  'com.android.settings',
   'com.oplus.stdsp',
   'com.oplus.wirelesssettings',
   'com.oplus.battery',
@@ -1654,6 +1653,22 @@ const IGNORED_SYSTEM_PACKAGES = new Set([
 export function isIgnoredSystemPackage(pkg: string): boolean {
   if (!pkg) return true;
   const lower = pkg.toLowerCase().trim();
+
+  // Explicitly allow Camera and Settings apps
+  if (
+    lower.includes('camera') ||
+    lower.includes('settings') ||
+    lower.includes('calculator') ||
+    lower.includes('weather') ||
+    lower.includes('gallery') ||
+    lower.includes('photos') ||
+    lower.includes('clock')
+  ) {
+    if (!lower.includes('wirelesssettings') && !lower.includes('permissioncontroller')) {
+      return false;
+    }
+  }
+
   if (IGNORED_SYSTEM_PACKAGES.has(lower)) return true;
   if (
     lower.includes('launcher') ||
@@ -1661,7 +1676,6 @@ export function isIgnoredSystemPackage(pkg: string): boolean {
     lower.includes('systemui') ||
     lower.includes('assistantscreen') ||
     lower.includes('photopicker') ||
-    lower.includes('wirelesssettings') ||
     lower.includes('pictorial') ||
     lower.includes('lockscreen') ||
     lower.includes('magazine') ||
@@ -1678,8 +1692,8 @@ export function isIgnoredSystemPackage(pkg: string): boolean {
     lower.startsWith('com.android.providers.') ||
     lower.startsWith('com.google.android.providers.') ||
     lower.startsWith('com.heytap.') ||
-    (lower.startsWith('com.oplus.') && !lower.includes('calculator') && !lower.includes('weather') && !lower.includes('soundrecorder') && !lower.includes('compass')) ||
-    (lower.startsWith('com.coloros.') && !lower.includes('calculator') && !lower.includes('weather') && !lower.includes('soundrecorder') && !lower.includes('compass'))
+    (lower.startsWith('com.oplus.') && !lower.includes('camera') && !lower.includes('settings') && !lower.includes('calculator') && !lower.includes('weather') && !lower.includes('soundrecorder') && !lower.includes('compass')) ||
+    (lower.startsWith('com.coloros.') && !lower.includes('camera') && !lower.includes('settings') && !lower.includes('calculator') && !lower.includes('weather') && !lower.includes('soundrecorder') && !lower.includes('compass'))
   ) {
     return true;
   }
@@ -2118,9 +2132,16 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
     const io = getSignalingIo();
     if (io) {
       io.to(targetDeviceId).emit('trigger-sync', { force: true });
+      io.to(targetDeviceId).emit('remote-command', { command: 'TRIGGER_SYNC', deviceId: targetDeviceId });
       if (targetDeviceId !== deviceId) {
         io.to(deviceId).emit('trigger-sync', { force: true });
+        io.to(deviceId).emit('remote-command', { command: 'TRIGGER_SYNC', deviceId });
       }
+    }
+
+    const device = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
+    if (device?.fcmToken) {
+      await sendFcmDataCommand(device.fcmToken, 'TRIGGER_SYNC', { force: 'true' }).catch((e) => console.error('FCM sync error:', e));
     }
 
     return res.json({
