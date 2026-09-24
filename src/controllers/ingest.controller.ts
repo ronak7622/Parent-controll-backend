@@ -294,13 +294,11 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
     } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
-    // 1. Update 30-day sync status if provided
-    if (isSyncingPastUsage !== undefined || pastUsageSynced !== undefined) {
-      const updateData: any = { lastUsageSyncTime: new Date() };
-      if (isSyncingPastUsage !== undefined) updateData.isSyncingPastUsage = Boolean(isSyncingPastUsage);
-      if (pastUsageSynced !== undefined) updateData.pastUsageSynced = Boolean(pastUsageSynced);
-      await Device.findOneAndUpdate({ deviceId }, { $set: updateData });
-    }
+    // 1. Always update lastUsageSyncTime & 30-day sync status on Device
+    const updateData: any = { lastUsageSyncTime: new Date() };
+    if (isSyncingPastUsage !== undefined) updateData.isSyncingPastUsage = Boolean(isSyncingPastUsage);
+    if (pastUsageSynced !== undefined) updateData.pastUsageSynced = Boolean(pastUsageSynced);
+    await Device.findOneAndUpdate({ deviceId }, { $set: updateData });
 
     if (Array.isArray(contacts) && contacts.length > 0) {
       const docs = contacts.map((c) => ({
@@ -813,6 +811,7 @@ export const ingestAppSessions = async (req: Request, res: Response) => {
 
       if (sessionOps.length > 0) {
         await AppSession.bulkWrite(sessionOps, { ordered: false });
+        await Device.findOneAndUpdate({ deviceId }, { $set: { lastUsageSyncTime: new Date() } });
       }
     }
 

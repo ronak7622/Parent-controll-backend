@@ -1881,6 +1881,8 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
     // Return in reverse chronological order (latest session first)
     mergedSessions.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
+    const dev = await Device.findOne({ deviceId }).select('lastUsageSyncTime');
+
     return res.json({
       success: true,
       sessions: mergedSessions,
@@ -1888,6 +1890,7 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
       totalDurationSeconds,
       date: targetDate,
       packageName,
+      lastUsageSyncTime: dev?.lastUsageSyncTime,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
