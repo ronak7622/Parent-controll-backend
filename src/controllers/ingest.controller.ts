@@ -214,7 +214,7 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
         const byDevice = new Map<string, any>();
         for (const bd of blockedDocs) byDevice.set(bd.deviceId, bd);
         for (const [deviceId, bd] of byDevice) {
-          sendYoutubeBlockedPush(deviceId, !!bd.isShorts, bd.blockReason).catch((err) =>
+          sendYoutubeBlockedPush(deviceId, 'keyword', !!bd.isShorts, bd.blockReason).catch((err) =>
             console.warn('[FCM] blocked-youtube push error:', err?.message)
           );
         }
@@ -228,13 +228,27 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
   }
 };
 
-async function sendYoutubeBlockedPush(deviceId: string, isShorts: boolean, blockReason?: string) {
+/**
+ * - 'app': the YouTube app block is an App Management rule; its alert is sent by
+ *   reportBlockedAppAttempt, which honours that rule's "notify me" toggle. Sending here too
+ *   ignored the toggle (and duplicated the alert), so nothing is sent from here.
+ * - 'shorts': only when the Shorts block's "Show notification while attempt" toggle is ON.
+ * - 'keyword': keyword-restricted videos have no separate toggle, always notify.
+ */
+async function sendYoutubeBlockedPush(
+  deviceId: string,
+  kind: 'app' | 'shorts' | 'keyword',
+  isShorts: boolean,
+  blockReason?: string
+) {
+  if (kind === 'app') return;
   const device = await Device.findOne({ deviceId });
   if (!device?.parentUserId) return;
 
-  const schedule: any = isShorts ? device.youtubeShortsBlockSchedule : device.youtubeBlockSchedule;
-  const notify = schedule?.notifyOnAttempt ?? true;
-  if (!notify) return;
+  if (kind === 'shorts') {
+    const schedule: any = device.youtubeShortsBlockSchedule;
+    if (schedule?.notifyOnAttempt !== true) return;
+  }
 
   const childName = device.deviceName || 'Child Device';
   const title = isShorts ? 'Blocked Shorts Access' : 'Blocked YouTube Access';
@@ -287,7 +301,7 @@ export const ingestYouTubeSession = async (req: Request, res: Response) => {
         for (const bd of blockedDocs) byDevice.set(bd.deviceId, bd);
         for (const [deviceId, bd] of byDevice) {
           const isShorts = !!(bd.blockReason && String(bd.blockReason).toLowerCase().includes('short'));
-          sendYoutubeBlockedPush(deviceId, isShorts, bd.blockReason).catch((err) =>
+          sendYoutubeBlockedPush(deviceId, isShorts ? 'shorts' : 'app', isShorts, bd.blockReason).catch((err) =>
             console.warn('[FCM] blocked-youtube-session push error:', err?.message)
           );
         }
