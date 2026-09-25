@@ -53,6 +53,7 @@ export interface IDevice extends Document {
   pastUsageSynced?: boolean;
   lastUsageSyncTime?: Date;
   lastNotificationSyncTime?: Date;
+  lastYoutubeSyncTime?: Date;
 
   // Installed User-Facing Apps on Child Device
   installedApps?: {
@@ -129,6 +130,7 @@ const DeviceSchema = new Schema<IDevice>(
     pastUsageSynced: { type: Boolean, default: false },
     lastUsageSyncTime: { type: Date },
     lastNotificationSyncTime: { type: Date },
+    lastYoutubeSyncTime: { type: Date },
 
     installedApps: [
       {

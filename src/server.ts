@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { config } from './config/env';
 import { connectDatabase } from './config/database';
+import { migrateYoutubeAppBlockToAppRule } from './migrations/youtubeAppBlockToAppRule';
 import apiRoutes from './routes/api.routes';
 import { setupWebRtcSignaling } from './signaling/webrtc.signaling';
 
@@ -43,6 +44,7 @@ setupWebRtcSignaling(server);
 // Start Server
 const startServer = async () => {
   await connectDatabase();
+  await migrateYoutubeAppBlockToAppRule();
   server.listen(config.port, '0.0.0.0', () => {
     console.log(`=======================================================`);
     console.log(`🚀 CHILD PROTECT BACKEND SERVER IS RUNNING ON PORT ${config.port}`);

@@ -225,7 +225,8 @@ export const getYouTubeHistory = async (req: AuthRequest, res: Response) => {
       .sort({ timestamp: -1 })
       .limit(Number(limit));
 
-    return res.json({ success: true, items, events: items });
+    const dev = await Device.findOne({ deviceId }).select('lastYoutubeSyncTime');
+    return res.json({ success: true, items, events: items, lastSyncTime: dev?.lastYoutubeSyncTime });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -248,7 +249,8 @@ export const getYouTubeSessions = async (req: AuthRequest, res: Response) => {
       .sort({ startTime: -1 })
       .limit(Number(limit));
 
-    return res.json({ success: true, sessions, items: sessions });
+    const dev = await Device.findOne({ deviceId }).select('lastYoutubeSyncTime');
+    return res.json({ success: true, sessions, items: sessions, lastSyncTime: dev?.lastYoutubeSyncTime });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -1899,6 +1901,47 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
 };
 
 /**
+ * Delete a single app usage session by ID
+ */
+export const deleteAppSession = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await AppSession.deleteMany({ $or: [{ _id: id }, { id }] });
+    return res.json({ success: true, message: 'Session deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete app usage history (sessions + daily usage totals) on a device - for one app when
+ * packageName is given, otherwise for every app - optionally filtered to a single date.
+ */
+export const deleteAppUsageForDevice = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName, date } = req.query;
+
+    const query: any = { deviceId };
+    if (packageName) query.packageName = packageName as string;
+    if (date) query.date = date as string;
+
+    const [sessionResult, usageResult] = await Promise.all([
+      AppSession.deleteMany(query),
+      AppUsage.deleteMany(query),
+    ]);
+
+    return res.json({
+      success: true,
+      deletedSessions: sessionResult.deletedCount,
+      deletedUsageRecords: usageResult.deletedCount,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
  * Fetch configured App Limits for a device
  */
 export const getAppLimits = async (req: AuthRequest, res: Response) => {
@@ -2411,10 +2454,10 @@ export const deleteAllNotificationsForApp = async (req: AuthRequest, res: Respon
   try {
     const { deviceId } = req.params;
     const { packageName } = req.query;
-    if (!packageName) {
-      return res.status(400).json({ success: false, message: 'packageName is required' });
-    }
-    const result = await ChildNotification.deleteMany({ deviceId, packageName });
+    // With packageName: that one app's notifications. Without: every notification on the device.
+    const query: any = { deviceId };
+    if (packageName) query.packageName = packageName as string;
+    const result = await ChildNotification.deleteMany(query);
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

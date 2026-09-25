@@ -66,6 +66,8 @@ import {
   deleteAllCallRecordings,
   getAppUsage,
   getAppSessions,
+  deleteAppSession,
+  deleteAppUsageForDevice,
   getAppLimits,
   saveAppLimit,
   deleteAppLimit,
@@ -188,6 +190,8 @@ router.delete('/parent/device/:deviceId/call-recordings/day', optionalAuthentica
 router.delete('/parent/device/:deviceId/call-recordings/all', optionalAuthenticateJwt, deleteAllCallRecordings);
 router.get('/parent/device/:deviceId/app-usage', optionalAuthenticateJwt, getAppUsage);
 router.get('/parent/device/:deviceId/app-sessions', optionalAuthenticateJwt, getAppSessions);
+router.delete('/parent/app-session/:id', optionalAuthenticateJwt, deleteAppSession);
+router.delete('/parent/device/:deviceId/app-usage', optionalAuthenticateJwt, deleteAppUsageForDevice);
 router.get('/parent/device/:deviceId/app-limits', optionalAuthenticateJwt, getAppLimits);
 router.post('/parent/device/:deviceId/app-limits', optionalAuthenticateJwt, saveAppLimit);
 router.delete('/parent/device/:deviceId/app-limits/:packageName', optionalAuthenticateJwt, deleteAppLimit);

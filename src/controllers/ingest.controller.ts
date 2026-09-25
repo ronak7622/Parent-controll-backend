@@ -221,6 +221,7 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
       }
     }
 
+    if (topDeviceId) await Device.findOneAndUpdate({ deviceId: topDeviceId }, { $set: { lastYoutubeSyncTime: new Date() } });
     return res.json({ success: true, count: docs.length });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -293,6 +294,7 @@ export const ingestYouTubeSession = async (req: Request, res: Response) => {
       }
     }
 
+    if (topDeviceId) await Device.findOneAndUpdate({ deviceId: topDeviceId }, { $set: { lastYoutubeSyncTime: new Date() } });
     return res.json({ success: true, count: docs.length });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -896,8 +898,10 @@ export const ingestNotifications = async (req: Request, res: Response) => {
                 number: typeof n.number === 'number' && n.number > 0 ? n.number : undefined,
                 messages: asStringArray(n.messages, 50),
                 actionLabels: asStringArray(n.actionLabels, 10),
-                imageBase64: n.imageBase64 ? String(n.imageBase64) : undefined,
               },
+              // A chat app often re-posts the same message a moment later with its photo attached,
+              // so the image is $set (not insert-only) to fill it in on the already-saved row.
+              ...(n.imageBase64 ? { $set: { imageBase64: String(n.imageBase64) } } : {}),
             },
             upsert: true,
           },
