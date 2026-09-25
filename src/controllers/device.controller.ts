@@ -7,6 +7,22 @@ import { AppBlockRule } from '../models/AppBlockRule';
 import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 
+// "1h 5m" / "45m" / "30s"
+const formatDurationShort = (totalSeconds: number): string => {
+  const sec = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return `${m}m`;
+  return `${sec}s`;
+};
+
+// Child sends its local time ("04:35 PM"); fall back to IST server time
+const resolveEventTime = (localTime?: string): string => {
+  if (localTime && String(localTime).trim()) return String(localTime).trim();
+  return new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+};
+
 /**
  * Generate/Register 6-digit Pairing Code for Child device
  */
@@ -514,7 +530,7 @@ export const getChildAppLimits = async (req: any, res: Response) => {
  */
 export const reportLimitReached = async (req: any, res: Response) => {
   try {
-    const { deviceId, packageName, appName, limitDurationMinutes } = req.body;
+    const { deviceId, packageName, appName, limitDurationMinutes, usedSeconds, localTime } = req.body;
     if (!deviceId || !packageName) {
       return res.status(400).json({ success: false, message: 'deviceId and packageName are required' });
     }
@@ -528,10 +544,13 @@ export const reportLimitReached = async (req: any, res: Response) => {
     const device = await Device.findOne({ deviceId });
     const childName = device?.deviceName || 'Child Device';
     const name = appName || limit?.appName || packageName;
-    const hours = limitDurationMinutes ? (Number(limitDurationMinutes) / 60).toFixed(1) : 'allowed';
+    const limitMinutes = Number(limitDurationMinutes || limit?.limitDurationMinutes || 0);
+    const limitText = limitMinutes > 0 ? formatDurationShort(limitMinutes * 60) : 'daily';
+    const usedSec = Number(usedSeconds) || limitMinutes * 60;
+    const eventTime = resolveEventTime(localTime);
 
-    const title = 'App Limit Reached';
-    const body = `${childName} has reached the daily limit for ${name} (${hours}h).`;
+    const title = `App Limit Reached: ${name}`;
+    const body = `${childName} crossed the ${limitText} daily limit for ${name} at ${eventTime}. Used today: ${formatDurationShort(usedSec)}.`;
 
     // Send to parent topics
     if (device?.parentUserId) {
@@ -550,24 +569,6 @@ export const reportLimitReached = async (req: any, res: Response) => {
       });
     }
 
-    // Real-time Socket.IO Alert to Parent
-    const io = getSignalingIo();
-    if (io) {
-      const alertPayload = {
-        type: 'APP_LIMIT_REACHED',
-        deviceId,
-        packageName,
-        appName: name,
-        title,
-        body,
-        timestamp: Date.now(),
-      };
-      if (device?.parentUserId) {
-        io.to(device.parentUserId.toString()).emit('app-limit-alert', alertPayload);
-      }
-      io.to(deviceId).emit('app-limit-alert', alertPayload);
-    }
-
     return res.json({ success: true, message: 'Limit reached reported successfully.' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -579,22 +580,24 @@ export const reportLimitReached = async (req: any, res: Response) => {
  */
 export const reportBlockedAppAttempt = async (req: any, res: Response) => {
   try {
-    const { deviceId, packageName, appName, blockMode } = req.body;
+    const { deviceId, packageName, appName, scheduleLabel, localTime } = req.body;
     if (!deviceId || !packageName) {
       return res.status(400).json({ success: false, message: 'deviceId and packageName are required' });
     }
 
     const rule = await AppBlockRule.findOne({ deviceId, packageName });
-    if (rule && rule.notifyParent === false) {
+    if (rule && rule.notifyParentOnAccess === false) {
       return res.json({ success: true, message: 'Notification disabled by parent.' });
     }
 
     const device = await Device.findOne({ deviceId });
     const childName = device?.deviceName || 'Child Device';
     const name = appName || rule?.appName || packageName;
+    const eventTime = resolveEventTime(localTime);
+    const scheduleText = scheduleLabel ? ` (Block: ${scheduleLabel})` : '';
 
-    const title = 'Blocked App Attempt';
-    const body = `${childName} attempted to open blocked app: ${name}.`;
+    const title = `Blocked App Opened: ${name}`;
+    const body = `${childName} tried to open ${name} at ${eventTime}. It was blocked${scheduleText}.`;
 
     if (device?.parentUserId) {
       const parentTopic = `parent_${device.parentUserId}`;
@@ -610,23 +613,6 @@ export const reportBlockedAppAttempt = async (req: any, res: Response) => {
         packageName,
         appName: name,
       });
-    }
-
-    const io = getSignalingIo();
-    if (io) {
-      const alertPayload = {
-        type: 'APP_BLOCK_ATTEMPT',
-        deviceId,
-        packageName,
-        appName: name,
-        title,
-        body,
-        timestamp: Date.now(),
-      };
-      if (device?.parentUserId) {
-        io.to(device.parentUserId.toString()).emit('app-block-alert', alertPayload);
-      }
-      io.to(deviceId).emit('app-block-alert', alertPayload);
     }
 
     return res.json({ success: true, message: 'Blocked attempt reported successfully.' });

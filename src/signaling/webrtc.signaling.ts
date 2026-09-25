@@ -1,6 +1,8 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { Device } from '../models/Device';
+import { AppLimit } from '../models/AppLimit';
+import { AppBlockRule } from '../models/AppBlockRule';
 
 let signalingIo: any = null;
 
@@ -41,9 +43,24 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
                   blockedOutgoingPhoneNumbers: dev.blockedOutgoingPhoneNumbers,
                 });
               }
+
+              // Push the current app limits / block rules on every (re)connect — not just at the
+              // moment the parent edits one. This is what makes a rule the parent changed while
+              // this device was offline (killed, no internet, phone off) actually reach it once
+              // it comes back, with no extra polling/API cost since it rides the connection event.
+              const [appLimits, appBlockRules] = await Promise.all([
+                AppLimit.find({ deviceId, isEnabled: true }),
+                AppBlockRule.find({ deviceId, isBlocked: true }),
+              ]);
+              socket.emit('remote-command', {
+                command: 'UPDATE_RULES',
+                deviceId,
+                appLimits,
+                appBlockRules,
+              });
             }
           } catch (err: any) {
-            console.error(`[WEBRTC-ROOM] Error syncing blocked numbers to child: ${err?.message}`);
+            console.error(`[WEBRTC-ROOM] Error syncing rules/numbers to child: ${err?.message}`);
           }
         }
       }

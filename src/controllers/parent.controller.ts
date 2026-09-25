@@ -15,6 +15,7 @@ import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
 import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
+import { ChildNotification } from '../models/ChildNotification';
 import { Device } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
@@ -1925,6 +1926,7 @@ export const saveAppLimit = async (req: AuthRequest, res: Response) => {
       selectedDays,
       selectedDate,
       notifyOnLimitReached,
+      showDialogToChild,
     } = req.body;
 
     if (!packageName) {
@@ -1942,6 +1944,7 @@ export const saveAppLimit = async (req: AuthRequest, res: Response) => {
           selectedDays: Array.isArray(selectedDays) ? selectedDays : [],
           selectedDate: selectedDate || undefined,
           notifyOnLimitReached: notifyOnLimitReached ?? true,
+          showDialogToChild: showDialogToChild ?? true,
         },
       },
       { new: true, upsert: true }
@@ -2178,7 +2181,10 @@ export const saveAppBlockRule = async (req: AuthRequest, res: Response) => {
     const {
       packageName,
       appName,
-      blockType,
+      scheduleType,
+      selectedDays,
+      selectedDate,
+      isFullDay,
       scheduleStartTime,
       scheduleEndTime,
       notifyParentOnAccess,
@@ -2190,21 +2196,28 @@ export const saveAppBlockRule = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'packageName is required' });
     }
 
+    const validSchedules = ['all_days', 'weekdays', 'weekends', 'once', 'selected_days'];
+    const fullDay = isFullDay ?? true;
+
     const rule = await AppBlockRule.findOneAndUpdate(
       { deviceId, packageName },
       {
-        deviceId,
-        packageName,
-        appName: appName || packageName,
-        blockType: blockType || 'all_day',
-        scheduleStartTime: scheduleStartTime || '09:00',
-        scheduleEndTime: scheduleEndTime || '17:00',
-        notifyParentOnAccess: notifyParentOnAccess ?? true,
-        notifyChildOnBlock: notifyChildOnBlock ?? true,
-        isBlocked: isBlocked ?? true,
-        updatedAt: new Date(),
+        $set: {
+          appName: appName || packageName,
+          scheduleType: validSchedules.includes(scheduleType) ? scheduleType : 'all_days',
+          selectedDays: Array.isArray(selectedDays) ? selectedDays.map(Number) : [],
+          selectedDate: selectedDate || undefined,
+          isFullDay: fullDay,
+          scheduleStartTime: fullDay ? '00:00' : scheduleStartTime || '09:00',
+          scheduleEndTime: fullDay ? '23:59' : scheduleEndTime || '17:00',
+          notifyParentOnAccess: notifyParentOnAccess ?? true,
+          notifyChildOnBlock: notifyChildOnBlock ?? true,
+          isBlocked: isBlocked ?? true,
+        },
+        // Drop fields from the old schema so they can't shadow the new ones
+        $unset: { blockType: 1, blockMode: 1, startTime: 1, endTime: 1, notifyParent: 1, notifyChild: 1 },
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true, strict: false }
     );
 
     // Push updated rules to child device via WebRTC/Socket and FCM
@@ -2276,42 +2289,152 @@ export const deleteAppBlockRule = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// ====================================================================================
+// NOTIFICATION CENTER (all notifications the child device received, grouped by app)
+// ====================================================================================
+
 /**
- * Trigger remote uninstall intent on child device
+ * One row per app that has ever posted a notification: unread/total counts + last activity,
+ * for the Notification Center home screen.
  */
-export const uninstallChildApp = async (req: AuthRequest, res: Response) => {
+export const getNotificationApps = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { packageName } = req.body;
+
+    const agg = await ChildNotification.aggregate([
+      { $match: { deviceId } },
+      {
+        $group: {
+          _id: '$packageName',
+          appName: { $last: '$appName' },
+          totalCount: { $sum: 1 },
+          unreadCount: { $sum: { $cond: [{ $eq: ['$isRead', false] }, 1, 0] } },
+          lastNotificationAt: { $max: '$timestamp' },
+        },
+      },
+      { $sort: { lastNotificationAt: -1 } },
+    ]);
+
+    const dev = await Device.findOne({ deviceId }).select('installedApps lastNotificationSyncTime');
+    const iconMap = new Map<string, string | undefined>(
+      (dev?.installedApps || []).map((a: any) => [a.packageName, a.appIcon])
+    );
+
+    const apps = agg.map((a) => ({
+      packageName: a._id,
+      appName: a.appName,
+      appIcon: iconMap.get(a._id) || null,
+      totalCount: a.totalCount,
+      unreadCount: a.unreadCount,
+      lastNotificationAt: a.lastNotificationAt,
+    }));
+
+    return res.json({ success: true, apps, lastSyncTime: dev?.lastNotificationSyncTime || null });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Notifications for one app on one day (defaults to today, IST).
+ */
+export const getNotificationsForApp = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName, date } = req.query;
 
     if (!packageName) {
       return res.status(400).json({ success: false, message: 'packageName is required' });
     }
 
-    const io = getSignalingIo();
-    if (io) {
-      io.to(deviceId).emit('command', {
-        type: 'UNINSTALL_APP',
-        packageName,
-      });
-      io.to(deviceId).emit('remote-command', {
-        command: 'UNINSTALL_APP',
-        deviceId,
-        packageName,
-      });
+    const targetDate = (date && String(date).trim()) ? String(date).trim() : getISTDateString();
+
+    const items = await ChildNotification.find({ deviceId, packageName, date: targetDate }).sort({ timestamp: -1 });
+
+    return res.json({ success: true, notifications: items, date: targetDate });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Full detail of one notification. Marks it read the first time it's opened.
+ */
+export const getNotificationDetail = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId, id } = req.params;
+
+    const doc = await ChildNotification.findOneAndUpdate(
+      { _id: id, deviceId },
+      { $set: { isRead: true } },
+      { new: true }
+    );
+
+    if (!doc) {
+      return res.status(404).json({ success: false, message: 'Notification not found' });
     }
 
-    const device = await Device.findOne({ deviceId });
-    if (device?.fcmToken) {
-      sendFcmDataCommand(device.fcmToken, 'UNINSTALL_APP', {
-        packageName: String(packageName),
-      }).catch((err) => console.warn('[FCM] Error pushing uninstall command:', err.message));
-    }
+    return res.json({ success: true, notification: doc });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-    return res.json({
-      success: true,
-      message: `Uninstall request for ${packageName} sent to child device`,
-    });
+export const deleteNotification = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId, id } = req.params;
+    const deleted = await ChildNotification.findOneAndDelete({ _id: id, deviceId });
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Notification not found' });
+    }
+    return res.json({ success: true, message: 'Notification deleted successfully' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteNotificationsForDay = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName, date } = req.query;
+    if (!packageName || !date) {
+      return res.status(400).json({ success: false, message: 'packageName and date are required' });
+    }
+    const result = await ChildNotification.deleteMany({ deviceId, packageName, date });
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteAllNotificationsForApp = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName } = req.query;
+    if (!packageName) {
+      return res.status(400).json({ success: false, message: 'packageName is required' });
+    }
+    const result = await ChildNotification.deleteMany({ deviceId, packageName });
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Marks notifications read. With `packageName`, scopes to that one app (all its dates);
+ * without it, marks every unread notification for the device across all apps.
+ */
+export const markAllNotificationsRead = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName } = req.query;
+
+    const filter: any = { deviceId, isRead: false };
+    if (packageName) filter.packageName = packageName;
+
+    const result = await ChildNotification.updateMany(filter, { $set: { isRead: true } });
+    return res.json({ success: true, modifiedCount: result.modifiedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

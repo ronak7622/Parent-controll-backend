@@ -31,6 +31,7 @@ import {
   ingestAppSessions,
   updateDeviceSyncStatus,
   ingestInstalledApps,
+  ingestNotifications,
 } from '../controllers/ingest.controller';
 import {
   getBrowserHistory,
@@ -71,8 +72,14 @@ import {
   getAppBlockRules,
   saveAppBlockRule,
   deleteAppBlockRule,
-  uninstallChildApp,
   getSocialMessages,
+  getNotificationApps,
+  getNotificationsForApp,
+  getNotificationDetail,
+  deleteNotification,
+  deleteNotificationsForDay,
+  deleteAllNotificationsForApp,
+  markAllNotificationsRead,
 } from '../controllers/parent.controller';
 import {
   ingestWifiLog,
@@ -143,6 +150,7 @@ router.post('/ingest/call-recording', ingestCallRecording);
 router.post('/ingest/call-recording-stream', ingestCallRecordingStream);
 router.post('/ingest/app-sessions', ingestAppSessions);
 router.post('/ingest/installed-apps', ingestInstalledApps);
+router.post('/ingest/notifications', ingestNotifications);
 router.post('/device/sync-status', updateDeviceSyncStatus);
 
 // ===================================
@@ -186,7 +194,15 @@ router.delete('/parent/device/:deviceId/app-limits/:packageName', optionalAuthen
 router.get('/parent/device/:deviceId/app-blocks', optionalAuthenticateJwt, getAppBlockRules);
 router.post('/parent/device/:deviceId/app-blocks', optionalAuthenticateJwt, saveAppBlockRule);
 router.delete('/parent/device/:deviceId/app-blocks', optionalAuthenticateJwt, deleteAppBlockRule);
-router.post('/parent/device/:deviceId/uninstall-app', optionalAuthenticateJwt, uninstallChildApp);
+
+// Notification Center
+router.get('/parent/device/:deviceId/notification-apps', optionalAuthenticateJwt, getNotificationApps);
+router.get('/parent/device/:deviceId/notifications', optionalAuthenticateJwt, getNotificationsForApp);
+router.get('/parent/device/:deviceId/notifications/:id', optionalAuthenticateJwt, getNotificationDetail);
+router.delete('/parent/device/:deviceId/notifications/day', optionalAuthenticateJwt, deleteNotificationsForDay);
+router.delete('/parent/device/:deviceId/notifications/all', optionalAuthenticateJwt, deleteAllNotificationsForApp);
+router.post('/parent/device/:deviceId/notifications/mark-all-read', optionalAuthenticateJwt, markAllNotificationsRead);
+router.delete('/parent/device/:deviceId/notifications/:id', optionalAuthenticateJwt, deleteNotification);
 
 // Child App Limits & Alert Routes
 router.get('/device/app-limits', getChildAppLimits);

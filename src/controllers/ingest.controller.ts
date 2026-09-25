@@ -13,10 +13,21 @@ import { AppUsage } from '../models/AppUsage';
 import { AppSession } from '../models/AppSession';
 import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
+import { ChildNotification } from '../models/ChildNotification';
 import { Device } from '../models/Device';
 import { uploadMediaToR2 } from '../services/r2.service';
-import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { sendFcmTopicNotification } from '../services/fcm.service';
 import { isIgnoredSystemPackage, getISTDateString } from './parent.controller';
+
+// "1h 5m" / "45m" / "30s"
+const formatDurationShortIngest = (totalSeconds: number): string => {
+  const sec = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return `${m}m`;
+  return `${sec}s`;
+};
 
 export const getLocalDateString = getISTDateString;
 
@@ -133,11 +144,12 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
 
     const blockedDocs = insertedOrUpdated.filter((d: any) => d.blocked);
     if (blockedDocs.length > 0) {
-      const io = getSignalingIo();
-      if (io) {
-        blockedDocs.forEach((bd: any) => {
-          io.to(bd.deviceId).emit('blocked-attempt', bd);
-        });
+      // Real push via FCM (works even if the parent app is backgrounded/killed), one per device
+      // so a batch of several blocked URLs on the same device only sends the most recent one.
+      const byDevice = new Map<string, any>();
+      for (const bd of blockedDocs) byDevice.set(bd.deviceId, bd);
+      for (const [deviceId, bd] of byDevice) {
+        sendBlockedUrlPush(deviceId, bd).catch((err) => console.warn('[FCM] blocked-url push error:', err?.message));
       }
     }
 
@@ -146,6 +158,24 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+async function sendBlockedUrlPush(deviceId: string, doc: any) {
+  const device = await Device.findOne({ deviceId });
+  if (!device?.parentUserId) return;
+  if (device.notifyOnBlockedUrlAttempt === false) return;
+
+  const childName = device.deviceName || 'Child Device';
+  const target = doc.url || doc.domain || 'a website';
+  const reason = doc.blockReason ? String(doc.blockReason) : 'the Blacklist';
+  const title = 'Blocked URL Access';
+  const body = `${childName} attempted to access "${target}" in ${reason}`;
+
+  await sendFcmTopicNotification(`parent_${device.parentUserId}`, title, body, {
+    type: 'BLOCKED_URL_ACCESS',
+    deviceId,
+    url: target,
+  });
+}
 
 /**
  * Batch Upload YouTube History Logs
@@ -181,11 +211,12 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
       const inserted = await YouTubeHistory.insertMany(docs);
       const blockedDocs = inserted.filter((d: any) => d.blocked);
       if (blockedDocs.length > 0) {
-        const io = getSignalingIo();
-        if (io) {
-          blockedDocs.forEach((bd: any) => {
-            io.to(bd.deviceId).emit('blocked-attempt', bd);
-          });
+        const byDevice = new Map<string, any>();
+        for (const bd of blockedDocs) byDevice.set(bd.deviceId, bd);
+        for (const [deviceId, bd] of byDevice) {
+          sendYoutubeBlockedPush(deviceId, !!bd.isShorts, bd.blockReason).catch((err) =>
+            console.warn('[FCM] blocked-youtube push error:', err?.message)
+          );
         }
       }
     }
@@ -195,6 +226,28 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+async function sendYoutubeBlockedPush(deviceId: string, isShorts: boolean, blockReason?: string) {
+  const device = await Device.findOne({ deviceId });
+  if (!device?.parentUserId) return;
+
+  const schedule: any = isShorts ? device.youtubeShortsBlockSchedule : device.youtubeBlockSchedule;
+  const notify = schedule?.notifyOnAttempt ?? true;
+  if (!notify) return;
+
+  const childName = device.deviceName || 'Child Device';
+  const title = isShorts ? 'Blocked Shorts Access' : 'Blocked YouTube Access';
+  const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+  const body = isShorts
+    ? `${childName} attempted to access YouTube Shorts at ${timeStr} while blocked`
+    : `${childName} attempted to open YouTube App at ${timeStr} while blocked`;
+
+  await sendFcmTopicNotification(`parent_${device.parentUserId}`, title, body, {
+    type: isShorts ? 'YOUTUBE_SHORTS_BLOCKED' : 'YOUTUBE_APP_BLOCKED',
+    deviceId,
+    reason: blockReason || '',
+  });
+}
 
 /**
  * Batch Upload YouTube App Open/Close Sessions
@@ -226,6 +279,18 @@ export const ingestYouTubeSession = async (req: Request, res: Response) => {
 
     if (docs.length > 0) {
       await YouTubeSession.insertMany(docs);
+
+      const blockedDocs = docs.filter((d: any) => d.blocked);
+      if (blockedDocs.length > 0) {
+        const byDevice = new Map<string, any>();
+        for (const bd of blockedDocs) byDevice.set(bd.deviceId, bd);
+        for (const [deviceId, bd] of byDevice) {
+          const isShorts = !!(bd.blockReason && String(bd.blockReason).toLowerCase().includes('short'));
+          sendYoutubeBlockedPush(deviceId, isShorts, bd.blockReason).catch((err) =>
+            console.warn('[FCM] blocked-youtube-session push error:', err?.message)
+          );
+        }
+      }
     }
 
     return res.json({ success: true, count: docs.length });
@@ -776,6 +841,80 @@ export const ingestCallRecordingStream = async (req: Request, res: Response) => 
 /**
  * Dedicated Ingestion endpoint for App Sessions
  */
+/**
+ * Dedicated Ingestion endpoint for the Notification Center. The child batches notifications
+ * locally (hourly, on manual "Sync Now", or on reconnect) instead of sending one request per
+ * notification, so a chatty/repeating notification never causes a request storm.
+ */
+export const ingestNotifications = async (req: Request, res: Response) => {
+  try {
+    const { deviceId, notifications } = req.body;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    // Marks that a sync actually happened, for the parent's "Last Synced" label - even calls with
+    // nothing new still confirm the child is reachable and up to date.
+    await Device.findOneAndUpdate({ deviceId }, { $set: { lastNotificationSyncTime: new Date() } });
+
+    if (!Array.isArray(notifications) || notifications.length === 0) {
+      return res.json({ success: true, message: 'No notifications to ingest.' });
+    }
+
+    const asStringArray = (v: any, max: number): string[] | undefined => {
+      if (!Array.isArray(v) || v.length === 0) return undefined;
+      return v.filter((x) => x != null).map((x) => String(x).slice(0, 500)).slice(0, max);
+    };
+
+    const ops = notifications
+      .filter((n: any) => n && n.packageName && n.timestamp)
+      .slice(0, 500)
+      .map((n: any) => {
+        const timestamp = new Date(n.timestamp);
+        const packageName = String(n.packageName).trim();
+        const appName = n.appName ? String(n.appName).trim() : packageName;
+        const title = n.title ? String(n.title).slice(0, 500) : '';
+        const body = n.body ? String(n.body).slice(0, 2000) : '';
+        const date = (n.date && String(n.date).trim()) || getLocalDateString(n.timestamp);
+
+        return {
+          updateOne: {
+            filter: { deviceId, packageName, timestamp, title, body },
+            update: {
+              $setOnInsert: {
+                deviceId,
+                packageName,
+                appName,
+                timestamp,
+                date,
+                title,
+                body,
+                isRead: false,
+                subText: n.subText ? String(n.subText).slice(0, 500) : undefined,
+                bigText: n.bigText ? String(n.bigText).slice(0, 4000) : undefined,
+                summaryText: n.summaryText ? String(n.summaryText).slice(0, 500) : undefined,
+                infoText: n.infoText ? String(n.infoText).slice(0, 500) : undefined,
+                category: n.category ? String(n.category).slice(0, 100) : undefined,
+                number: typeof n.number === 'number' && n.number > 0 ? n.number : undefined,
+                messages: asStringArray(n.messages, 50),
+                actionLabels: asStringArray(n.actionLabels, 10),
+                imageBase64: n.imageBase64 ? String(n.imageBase64) : undefined,
+              },
+            },
+            upsert: true,
+          },
+        };
+      });
+
+    if (ops.length > 0) {
+      await ChildNotification.bulkWrite(ops, { ordered: false });
+    }
+
+    return res.json({ success: true, message: `Ingested ${ops.length} notifications.` });
+  } catch (error: any) {
+    console.error('[NOTIFICATIONS] Ingest error:', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const ingestAppSessions = async (req: Request, res: Response) => {
   try {
     const { deviceId, appSessions, replaceDate } = req.body;
@@ -860,6 +999,15 @@ export const ingestInstalledApps = async (req: Request, res: Response) => {
           firstInstallTime: a.firstInstallTime ? Number(a.firstInstallTime) : undefined,
           lastUpdateTime: a.lastUpdateTime ? Number(a.lastUpdateTime) : undefined,
           permissions: Array.isArray(a.permissions) ? a.permissions.map(String) : [],
+          grantedPermissions: Array.isArray(a.grantedPermissions) ? a.grantedPermissions.map(String) : [],
+          isSystemApp: typeof a.isSystemApp === 'boolean' ? a.isSystemApp : undefined,
+          category: a.category ? String(a.category) : undefined,
+          targetSdkVersion: a.targetSdkVersion ? Number(a.targetSdkVersion) : undefined,
+          minSdkVersion: a.minSdkVersion ? Number(a.minSdkVersion) : undefined,
+          installerPackage: a.installerPackage ? String(a.installerPackage) : undefined,
+          apkSizeBytes: a.apkSizeBytes ? Number(a.apkSizeBytes) : undefined,
+          apkDownloadSizeBytes: a.apkDownloadSizeBytes ? Number(a.apkDownloadSizeBytes) : undefined,
+          isEnabled: typeof a.isEnabled === 'boolean' ? a.isEnabled : undefined,
         }));
 
       await Device.findOneAndUpdate(

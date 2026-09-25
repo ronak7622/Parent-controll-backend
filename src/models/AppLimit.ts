@@ -10,6 +10,7 @@ export interface IAppLimit extends Document {
   selectedDays: number[]; // 1 = Mon, 7 = Sun
   selectedDate?: string; // YYYY-MM-DD (for 'once')
   notifyOnLimitReached: boolean;
+  showDialogToChild: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +30,7 @@ const AppLimitSchema = new Schema<IAppLimit>(
     selectedDays: [{ type: Number }],
     selectedDate: { type: String },
     notifyOnLimitReached: { type: Boolean, default: true },
+    showDialogToChild: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

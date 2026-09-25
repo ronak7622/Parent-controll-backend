@@ -15,7 +15,7 @@ export interface IDevice extends Document {
   isOnline: boolean;
   lastSeenAt: Date;
   fcmToken?: string;
-  
+
   // Settings & Restrictions
   youtubeBlocked: boolean;
   youtubeShortsBlocked: boolean;
@@ -52,6 +52,7 @@ export interface IDevice extends Document {
   isSyncingPastUsage?: boolean;
   pastUsageSynced?: boolean;
   lastUsageSyncTime?: Date;
+  lastNotificationSyncTime?: Date;
 
   // Installed User-Facing Apps on Child Device
   installedApps?: {
@@ -63,6 +64,15 @@ export interface IDevice extends Document {
     firstInstallTime?: number;
     lastUpdateTime?: number;
     permissions?: string[];
+    grantedPermissions?: string[];
+    isSystemApp?: boolean;
+    category?: string;
+    targetSdkVersion?: number;
+    minSdkVersion?: number;
+    installerPackage?: string;
+    apkSizeBytes?: number; // actual on-disk installed size (can be larger than Play Store's download size)
+    apkDownloadSizeBytes?: number; // approx. compressed transfer size (closer to what Play Store shows)
+    isEnabled?: boolean;
   }[];
 
   createdAt: Date;
@@ -85,7 +95,7 @@ const DeviceSchema = new Schema<IDevice>(
     isOnline: { type: Boolean, default: false },
     lastSeenAt: { type: Date, default: Date.now },
     fcmToken: { type: String },
-    
+
     youtubeBlocked: { type: Boolean, default: false },
     youtubeShortsBlocked: { type: Boolean, default: false },
     youtubeBlockSchedule: { type: Schema.Types.Mixed, default: null },
@@ -118,6 +128,7 @@ const DeviceSchema = new Schema<IDevice>(
     isSyncingPastUsage: { type: Boolean, default: false },
     pastUsageSynced: { type: Boolean, default: false },
     lastUsageSyncTime: { type: Date },
+    lastNotificationSyncTime: { type: Date },
 
     installedApps: [
       {
@@ -129,6 +140,15 @@ const DeviceSchema = new Schema<IDevice>(
         firstInstallTime: { type: Number },
         lastUpdateTime: { type: Number },
         permissions: [{ type: String }],
+        grantedPermissions: [{ type: String }],
+        isSystemApp: { type: Boolean },
+        category: { type: String },
+        targetSdkVersion: { type: Number },
+        minSdkVersion: { type: Number },
+        installerPackage: { type: String },
+        apkSizeBytes: { type: Number },
+        apkDownloadSizeBytes: { type: Number },
+        isEnabled: { type: Boolean },
       },
     ],
   },
