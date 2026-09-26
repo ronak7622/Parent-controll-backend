@@ -16,6 +16,7 @@ import { AppBlockRule } from '../models/AppBlockRule';
 import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
 import { ChildNotification } from '../models/ChildNotification';
+import { LocationLog } from '../models/LocationLog';
 import { Device } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
@@ -2485,3 +2486,164 @@ export const markAllNotificationsRead = async (req: AuthRequest, res: Response) 
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Fetch Location History with Date Filter for Parent App
+ */
+export const getLocationHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date, limit = 1000 } = req.query;
+
+    const query: any = { deviceId };
+    if (date) {
+      query.date = date as string;
+    }
+
+    const logs = await LocationLog.find(query)
+      .sort({ timestamp: -1 })
+      .limit(Number(limit));
+
+    const dev = await Device.findOne({ deviceId }).select('lastLocationSyncTime lastLocation isOnline batteryLevel');
+
+    // Calculate total distance & stats
+    let totalDistanceKm = 0;
+    let maxSpeedKmH = 0;
+    let movingCount = 0;
+
+    for (let i = 0; i < logs.length; i++) {
+      const log = logs[i];
+      if (log.speed && log.speed > maxSpeedKmH) maxSpeedKmH = log.speed;
+      if (log.isMoving) movingCount++;
+
+      if (i > 0) {
+        const prev = logs[i - 1];
+        const dist = calculateHaversineDistance(
+          prev.latitude,
+          prev.longitude,
+          log.latitude,
+          log.longitude
+        );
+        totalDistanceKm += dist;
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: logs,
+      items: logs,
+      totalCount: logs.length,
+      lastSyncTime: dev?.lastLocationSyncTime,
+      lastLocation: dev?.lastLocation,
+      isOnline: dev?.isOnline || false,
+      batteryLevel: dev?.batteryLevel || 100,
+      summary: {
+        totalDistanceKm: Number(totalDistanceKm.toFixed(2)),
+        maxSpeedKmH: Number(maxSpeedKmH.toFixed(1)),
+        movingCount,
+        totalPoints: logs.length,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Get Child Live Location State
+ */
+export const getLiveLocation = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+
+    const dev = await Device.findOne({ deviceId }).select('lastLocation lastLocationSyncTime isOnline batteryLevel deviceName');
+    const latestLog = await LocationLog.findOne({ deviceId }).sort({ timestamp: -1 });
+
+    const liveData = dev?.lastLocation || (latestLog ? {
+      latitude: latestLog.latitude,
+      longitude: latestLog.longitude,
+      altitude: latestLog.altitude,
+      speed: latestLog.speed,
+      heading: latestLog.heading,
+      accuracy: latestLog.accuracy,
+      address: latestLog.locationAddress || latestLog.locationName,
+      activityType: latestLog.activityType,
+      isMoving: latestLog.isMoving,
+      updatedAt: latestLog.timestamp,
+    } : null);
+
+    return res.json({
+      success: true,
+      liveLocation: liveData,
+      isOnline: dev?.isOnline || false,
+      batteryLevel: dev?.batteryLevel || 100,
+      lastSyncTime: dev?.lastLocationSyncTime,
+      deviceName: dev?.deviceName || 'Child Device',
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete Location History for a specific date
+ */
+export const deleteLocationHistoryForDay = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ success: false, message: 'date query parameter is required' });
+    }
+
+    const result = await LocationLog.deleteMany({ deviceId, date: date as string });
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete All Location History for a device
+ */
+export const deleteAllLocationHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const result = await LocationLog.deleteMany({ deviceId });
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete a single Location log item by ID
+ */
+export const deleteLocationLogItem = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await LocationLog.deleteMany({ $or: [{ _id: id }, { id }] });
+    return res.json({ success: true, message: 'Location log entry deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Helper: Haversine distance formula between 2 (lat, lng) points in kilometers
+ */
+function calculateHaversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth radius in km
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) *
+      Math.cos(lat2 * (Math.PI / 180)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+

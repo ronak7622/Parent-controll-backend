@@ -14,6 +14,7 @@ import { AppSession } from '../models/AppSession';
 import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
 import { ChildNotification } from '../models/ChildNotification';
+import { LocationLog } from '../models/LocationLog';
 import { Device } from '../models/Device';
 import { uploadMediaToR2 } from '../services/r2.service';
 import { sendFcmTopicNotification } from '../services/fcm.service';
@@ -1039,5 +1040,177 @@ export const ingestInstalledApps = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Batch Ingest Location History from Child App (5-minute periodic queue or hourly sync)
+ */
+export const ingestLocationHistory = async (req: Request, res: Response) => {
+  try {
+    const rawItems = req.body.locations || req.body.logs || req.body.data || (Array.isArray(req.body) ? req.body : [req.body]);
+    const topDeviceId = req.body.deviceId;
+
+    if (!Array.isArray(rawItems) || rawItems.length === 0) {
+      return res.status(400).json({ success: false, message: 'Invalid or empty location payload' });
+    }
+
+    const docsToInsert: any[] = [];
+    let latestLoc: any = null;
+
+    for (const item of rawItems) {
+      const deviceId = item.deviceId || topDeviceId;
+      if (!deviceId || typeof item.latitude !== 'number' || typeof item.longitude !== 'number') continue;
+
+      const ts = item.timestamp ? new Date(item.timestamp) : new Date();
+      const dateStr = (item.date && String(item.date).trim()) ? String(item.date).trim() : getLocalDateString(ts);
+      const speed = typeof item.speed === 'number' ? Math.max(0, item.speed) : 0;
+
+      const doc = {
+        deviceId,
+        latitude: item.latitude,
+        longitude: item.longitude,
+        altitude: item.altitude || 0,
+        speed,
+        heading: item.heading || item.bearing || 0,
+        accuracy: item.accuracy || 0,
+        locationName: item.locationName || item.address || '',
+        locationAddress: item.locationAddress || item.locationName || item.address || '',
+        activityType: item.activityType || (speed > 5 ? 'IN_VEHICLE' : (speed > 1.5 ? 'WALKING' : 'STILL')),
+        isMoving: typeof item.isMoving === 'boolean' ? item.isMoving : speed > 1.5,
+        isLive: !!item.isLive,
+        date: dateStr,
+        timestamp: ts,
+      };
+
+      docsToInsert.push(doc);
+
+      if (!latestLoc || ts.getTime() > latestLoc.updatedAt.getTime()) {
+        latestLoc = {
+          latitude: item.latitude,
+          longitude: item.longitude,
+          altitude: item.altitude || 0,
+          speed,
+          heading: item.heading || item.bearing || 0,
+          accuracy: item.accuracy || 0,
+          address: doc.locationAddress,
+          activityType: doc.activityType,
+          isMoving: doc.isMoving,
+          batteryLevel: item.batteryLevel,
+          updatedAt: ts,
+        };
+      }
+    }
+
+    if (docsToInsert.length > 0) {
+      const ops = docsToInsert.map((doc) => ({
+        updateOne: {
+          filter: { deviceId: doc.deviceId, timestamp: doc.timestamp },
+          update: { $set: doc },
+          upsert: true,
+        },
+      }));
+      await LocationLog.bulkWrite(ops, { ordered: false });
+    }
+
+    const targetDeviceId = topDeviceId || (docsToInsert[0]?.deviceId);
+    if (targetDeviceId && latestLoc) {
+      await Device.findOneAndUpdate(
+        { deviceId: targetDeviceId },
+        {
+          $set: {
+            lastLocationSyncTime: new Date(),
+            lastLocation: latestLoc,
+          },
+        }
+      );
+    }
+
+    return res.json({ success: true, count: docsToInsert.length });
+  } catch (error: any) {
+    console.error('[INGEST-LOCATION-HISTORY] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Ingest Real-Time Live Location Point from Child Device (High precision stream during live view)
+ */
+export const ingestLiveLocation = async (req: Request, res: Response) => {
+  try {
+    const {
+      deviceId,
+      latitude,
+      longitude,
+      altitude,
+      speed,
+      heading,
+      accuracy,
+      locationName,
+      locationAddress,
+      activityType,
+      isMoving,
+      batteryLevel,
+      timestamp,
+    } = req.body;
+
+    if (!deviceId || typeof latitude !== 'number' || typeof longitude !== 'number') {
+      return res.status(400).json({ success: false, message: 'deviceId, latitude, and longitude are required' });
+    }
+
+    const ts = timestamp ? new Date(timestamp) : new Date();
+    const dateStr = getLocalDateString(ts);
+    const speedVal = typeof speed === 'number' ? Math.max(0, speed) : 0;
+    const addressStr = locationAddress || locationName || '';
+    const resolvedActivity = activityType || (speedVal > 5 ? 'IN_VEHICLE' : (speedVal > 1.5 ? 'WALKING' : 'STILL'));
+
+    const doc = new LocationLog({
+      deviceId,
+      latitude,
+      longitude,
+      altitude: altitude || 0,
+      speed: speedVal,
+      heading: heading || 0,
+      accuracy: accuracy || 0,
+      locationName: addressStr,
+      locationAddress: addressStr,
+      activityType: resolvedActivity,
+      isMoving: typeof isMoving === 'boolean' ? isMoving : speedVal > 1.5,
+      isLive: true,
+      date: dateStr,
+      timestamp: ts,
+    });
+
+    await doc.save();
+
+    const lastLocObj = {
+      latitude,
+      longitude,
+      altitude: altitude || 0,
+      speed: speedVal,
+      heading: heading || 0,
+      accuracy: accuracy || 0,
+      address: addressStr,
+      activityType: resolvedActivity,
+      isMoving: typeof isMoving === 'boolean' ? isMoving : speedVal > 1.5,
+      batteryLevel: batteryLevel || 100,
+      updatedAt: ts,
+    };
+
+    await Device.findOneAndUpdate(
+      { deviceId },
+      {
+        $set: {
+          lastLocationSyncTime: new Date(),
+          lastLocation: lastLocObj,
+        },
+      }
+    );
+
+    return res.json({ success: true, location: doc, lastLocation: lastLocObj });
+  } catch (error: any) {
+    console.error('[INGEST-LIVE-LOCATION] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 
 

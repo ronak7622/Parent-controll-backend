@@ -32,6 +32,8 @@ import {
   updateDeviceSyncStatus,
   ingestInstalledApps,
   ingestNotifications,
+  ingestLocationHistory,
+  ingestLiveLocation,
 } from '../controllers/ingest.controller';
 import {
   ingestMessages,
@@ -91,6 +93,11 @@ import {
   deleteNotificationsForDay,
   deleteAllNotificationsForApp,
   markAllNotificationsRead,
+  getLocationHistory,
+  getLiveLocation,
+  deleteLocationHistoryForDay,
+  deleteAllLocationHistory,
+  deleteLocationLogItem,
 } from '../controllers/parent.controller';
 import {
   ingestWifiLog,
@@ -245,5 +252,14 @@ router.get('/parent/device/:deviceId/internet-history', optionalAuthenticateJwt,
 router.delete('/parent/device/:deviceId/internet-history/day', optionalAuthenticateJwt, deleteInternetHistoryDay);
 router.delete('/parent/device/:deviceId/internet-history/all', optionalAuthenticateJwt, deleteInternetHistoryAll);
 router.delete('/parent/internet-history/:id', optionalAuthenticateJwt, deleteInternetLogItem);
+
+// Location Tracker & History Routes
+router.post('/ingest/location-history', ingestLocationHistory);
+router.post('/ingest/location-live', ingestLiveLocation);
+router.get('/parent/device/:deviceId/location-history', optionalAuthenticateJwt, getLocationHistory);
+router.get('/parent/device/:deviceId/location-live', optionalAuthenticateJwt, getLiveLocation);
+router.delete('/parent/device/:deviceId/location-history/day', optionalAuthenticateJwt, deleteLocationHistoryForDay);
+router.delete('/parent/device/:deviceId/location-history/all', optionalAuthenticateJwt, deleteAllLocationHistory);
+router.delete('/parent/location-history/:id', optionalAuthenticateJwt, deleteLocationLogItem);
 
 export default router;

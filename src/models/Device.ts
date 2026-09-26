@@ -55,6 +55,20 @@ export interface IDevice extends Document {
   lastNotificationSyncTime?: Date;
   lastYoutubeSyncTime?: Date;
   lastMessageSyncTime?: Date;
+  lastLocationSyncTime?: Date;
+  lastLocation?: {
+    latitude: number;
+    longitude: number;
+    altitude?: number;
+    speed?: number;
+    heading?: number;
+    accuracy?: number;
+    address?: string;
+    activityType?: string;
+    isMoving?: boolean;
+    batteryLevel?: number;
+    updatedAt: Date;
+  };
 
   // Installed User-Facing Apps on Child Device
   installedApps?: {
@@ -133,6 +147,20 @@ const DeviceSchema = new Schema<IDevice>(
     lastNotificationSyncTime: { type: Date },
     lastYoutubeSyncTime: { type: Date },
     lastMessageSyncTime: { type: Date },
+    lastLocationSyncTime: { type: Date },
+    lastLocation: {
+      latitude: { type: Number },
+      longitude: { type: Number },
+      altitude: { type: Number },
+      speed: { type: Number },
+      heading: { type: Number },
+      accuracy: { type: Number },
+      address: { type: String },
+      activityType: { type: String },
+      isMoving: { type: Boolean },
+      batteryLevel: { type: Number },
+      updatedAt: { type: Date, default: Date.now },
+    },
 
     installedApps: [
       {
