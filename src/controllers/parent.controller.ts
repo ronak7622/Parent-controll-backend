@@ -2390,11 +2390,14 @@ export const getNotificationsForApp = async (req: AuthRequest, res: Response) =>
       return res.status(400).json({ success: false, message: 'packageName is required' });
     }
 
-    const targetDate = (date && String(date).trim()) ? String(date).trim() : getISTDateString();
+    const query: any = { deviceId, packageName };
+    if (date && String(date).trim() !== '' && String(date).toLowerCase() !== 'all') {
+      query.date = String(date).trim();
+    }
 
-    const items = await ChildNotification.find({ deviceId, packageName, date: targetDate }).sort({ timestamp: -1 });
+    const items = await ChildNotification.find(query).sort({ timestamp: -1 });
 
-    return res.json({ success: true, notifications: items, date: targetDate });
+    return res.json({ success: true, notifications: items, date: query.date || 'all' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

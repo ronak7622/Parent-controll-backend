@@ -54,6 +54,7 @@ export interface IDevice extends Document {
   lastUsageSyncTime?: Date;
   lastNotificationSyncTime?: Date;
   lastYoutubeSyncTime?: Date;
+  lastMessageSyncTime?: Date;
 
   // Installed User-Facing Apps on Child Device
   installedApps?: {
@@ -131,6 +132,7 @@ const DeviceSchema = new Schema<IDevice>(
     lastUsageSyncTime: { type: Date },
     lastNotificationSyncTime: { type: Date },
     lastYoutubeSyncTime: { type: Date },
+    lastMessageSyncTime: { type: Date },
 
     installedApps: [
       {

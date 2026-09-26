@@ -34,6 +34,15 @@ import {
   ingestNotifications,
 } from '../controllers/ingest.controller';
 import {
+  ingestMessages,
+  getConversations,
+  getMessagesForConversation,
+  getMessageDetail,
+  markAllMessagesRead,
+  deleteMessage,
+  deleteMessagesForDevice,
+} from '../controllers/message.controller';
+import {
   getBrowserHistory,
   deleteBrowserHistory,
   deleteBrowserHistoryBatch,
@@ -153,6 +162,7 @@ router.post('/ingest/call-recording-stream', ingestCallRecordingStream);
 router.post('/ingest/app-sessions', ingestAppSessions);
 router.post('/ingest/installed-apps', ingestInstalledApps);
 router.post('/ingest/notifications', ingestNotifications);
+router.post('/ingest/messages', ingestMessages);
 router.post('/device/sync-status', updateDeviceSyncStatus);
 
 // ===================================
@@ -207,6 +217,14 @@ router.delete('/parent/device/:deviceId/notifications/day', optionalAuthenticate
 router.delete('/parent/device/:deviceId/notifications/all', optionalAuthenticateJwt, deleteAllNotificationsForApp);
 router.post('/parent/device/:deviceId/notifications/mark-all-read', optionalAuthenticateJwt, markAllNotificationsRead);
 router.delete('/parent/device/:deviceId/notifications/:id', optionalAuthenticateJwt, deleteNotification);
+
+// Messages (SMS/MMS)
+router.get('/parent/device/:deviceId/messages', optionalAuthenticateJwt, getConversations);
+router.get('/parent/device/:deviceId/messages/thread', optionalAuthenticateJwt, getMessagesForConversation);
+router.post('/parent/device/:deviceId/messages/mark-all-read', optionalAuthenticateJwt, markAllMessagesRead);
+router.delete('/parent/device/:deviceId/messages', optionalAuthenticateJwt, deleteMessagesForDevice);
+router.get('/parent/message/:id', optionalAuthenticateJwt, getMessageDetail);
+router.delete('/parent/message/:id', optionalAuthenticateJwt, deleteMessage);
 
 // Child App Limits & Alert Routes
 router.get('/device/app-limits', getChildAppLimits);
