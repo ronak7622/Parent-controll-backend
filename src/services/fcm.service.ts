@@ -30,9 +30,8 @@ export const sendFcmDataCommand = async (
     return false;
   }
 
-  // Fire-and-forget with 2.5s timeout so HTTP API endpoints return in 0.1s instantly
-  Promise.race([
-    admin.messaging().send({
+  try {
+    const message: admin.messaging.Message = {
       token: fcmToken,
       data: {
         command: commandType,
@@ -42,15 +41,15 @@ export const sendFcmDataCommand = async (
       android: {
         priority: 'high',
       },
-    }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('FCM Timeout')), 2500))
-  ]).then(() => {
-    console.log(`[FCM-SENT] High-priority command '${commandType}' sent via FCM.`);
-  }).catch((error: any) => {
-    console.warn(`[FCM-NOTICE] FCM command '${commandType}' background result: ${error?.message}`);
-  });
+    };
 
-  return true;
+    await admin.messaging().send(message);
+    console.log(`[FCM-SENT] High-priority command '${commandType}' sent via FCM.`);
+    return true;
+  } catch (error) {
+    console.error(`[FCM-ERROR] Failed to send FCM command '${commandType}':`, error);
+    return false;
+  }
 };
 
 export const sendFcmTopicNotification = async (
@@ -63,9 +62,8 @@ export const sendFcmTopicNotification = async (
     console.log(`[FCM-MOCK] Topic '${topic}' notification: "${title}" - "${body}"`);
     return false;
   }
-
-  Promise.race([
-    admin.messaging().send({
+  try {
+    const message: admin.messaging.Message = {
       topic,
       notification: { title, body },
       data: {
@@ -81,13 +79,12 @@ export const sendFcmTopicNotification = async (
           channelId: 'child_protect_alerts',
         },
       },
-    }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('FCM Timeout')), 2500))
-  ]).then(() => {
+    };
+    await admin.messaging().send(message);
     console.log(`[FCM-SENT] Notification sent to topic '${topic}': ${title}`);
-  }).catch((error: any) => {
-    console.warn(`[FCM-NOTICE] FCM topic '${topic}' background result: ${error?.message}`);
-  });
-
-  return true;
+    return true;
+  } catch (error) {
+    console.error(`[FCM-ERROR] Failed to send notification to topic '${topic}':`, error);
+    return false;
+  }
 };
