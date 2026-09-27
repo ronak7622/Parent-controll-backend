@@ -17,6 +17,8 @@ import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
 import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
+import { DrivingTrip } from '../models/DrivingTrip';
+import { KeyboardLog } from '../models/KeyboardLog';
 import { Device } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
@@ -2652,51 +2654,36 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
       query.date = date as string;
     }
 
-    const logs = await LocationLog.find(query).sort({ timestamp: 1 });
     const dev = await Device.findOne({ deviceId }).select('lastLocationSyncTime isOnline batteryLevel');
+    const dbTrips = await DrivingTrip.find(query).sort({ startTime: -1 });
 
-    const trips: any[] = [];
-    let currentTripLogs: any[] = [];
-
-    for (let i = 0; i < logs.length; i++) {
-      const log = logs[i];
-      const speed = log.speed || 0;
-      const isMoving = log.isMoving || speed > 1.5 || log.activityType === 'IN_VEHICLE' || log.activityType === 'RUNNING';
-
-      if (isMoving) {
-        if (currentTripLogs.length === 0) {
-          currentTripLogs.push(log);
-        } else {
-          const lastLog = currentTripLogs[currentTripLogs.length - 1];
-          const timeDiffMinutes = (new Date(log.timestamp).getTime() - new Date(lastLog.timestamp).getTime()) / 60000;
-          if (timeDiffMinutes <= 15) {
-            currentTripLogs.push(log);
-          } else {
-            if (currentTripLogs.length >= 2) {
-              trips.push(buildDrivingTripFromLogs(currentTripLogs, trips.length + 1));
-            }
-            currentTripLogs = [log];
-          }
-        }
-      } else {
-        if (currentTripLogs.length >= 2) {
-          trips.push(buildDrivingTripFromLogs(currentTripLogs, trips.length + 1));
-        }
-        currentTripLogs = [];
-      }
-    }
-    if (currentTripLogs.length >= 2) {
-      trips.push(buildDrivingTripFromLogs(currentTripLogs, trips.length + 1));
-    }
-
-    // Sort trips descending (newest first)
-    trips.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+    const finalTrips = (dbTrips || []).map((dt) => ({
+      id: dt._id.toString(),
+      tripId: dt.tripId,
+      status: dt.status,
+      activityMode: dt.activityMode || (dt.avgSpeedKmH <= 12 ? 'RUNNING' : 'DRIVING'),
+      distanceKm: dt.distanceKm,
+      durationSeconds: dt.durationSeconds,
+      durationText: dt.durationText,
+      avgSpeedKmH: dt.avgSpeedKmH,
+      maxSpeedKmH: dt.maxSpeedKmH,
+      startTime: dt.startTime,
+      endTime: dt.endTime,
+      startAddress: dt.startAddress,
+      endAddress: dt.endAddress,
+      startLat: dt.startLat,
+      startLng: dt.startLng,
+      endLat: dt.endLat,
+      endLng: dt.endLng,
+      routePoints: dt.routePoints || [],
+      date: dt.date,
+    }));
 
     return res.json({
       success: true,
-      trips,
-      items: trips,
-      totalCount: trips.length,
+      trips: finalTrips,
+      items: finalTrips,
+      totalCount: finalTrips.length,
       lastSyncTime: dev?.lastLocationSyncTime,
     });
   } catch (error: any) {
@@ -2704,93 +2691,238 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
   }
 };
 
-function buildDrivingTripFromLogs(logs: any[], index: number): any {
-  const startLog = logs[0];
-  const endLog = logs[logs.length - 1];
 
-  let totalDistanceKm = 0;
-  let maxSpeedKmH = 0;
-  let speedSum = 0;
-
-  for (let i = 0; i < logs.length; i++) {
-    const sp = logs[i].speed || 0;
-    if (sp > maxSpeedKmH) maxSpeedKmH = sp;
-    speedSum += sp;
-
-    if (i > 0) {
-      const prev = logs[i - 1];
-      totalDistanceKm += calculateHaversineDistance(
-        prev.latitude,
-        prev.longitude,
-        logs[i].latitude,
-        logs[i].longitude
-      );
-    }
-  }
-
-  const durationMs = new Date(endLog.timestamp).getTime() - new Date(startLog.timestamp).getTime();
-  const durationSeconds = Math.max(60, Math.floor(durationMs / 1000));
-  const durationText = formatDurationText(durationSeconds);
-  const avgSpeedKmH = Math.round(speedSum / logs.length) || Math.round((totalDistanceKm / (durationSeconds / 3600))) || 30;
-  if (maxSpeedKmH < avgSpeedKmH) maxSpeedKmH = avgSpeedKmH + 15;
-
-  const routePoints = logs.map((l) => ({
-    latitude: l.latitude,
-    longitude: l.longitude,
-    speed: l.speed || 0,
-    timestamp: l.timestamp,
-    address: l.locationAddress || l.locationName || '',
-  }));
-
-  const isRecent = (Date.now() - new Date(endLog.timestamp).getTime()) < 10 * 60 * 1000;
-  const status = (isRecent && endLog.isMoving) ? 'Driving' : 'Completed';
-
-  return {
-    id: endLog._id ? endLog._id.toString() : `trip_${index}_${Date.now()}`,
-    status,
-    distanceKm: Number(totalDistanceKm.toFixed(2)),
-    durationSeconds,
-    durationText,
-    avgSpeedKmH: Math.round(avgSpeedKmH),
-    maxSpeedKmH: Math.round(maxSpeedKmH),
-    startTime: startLog.timestamp,
-    endTime: endLog.timestamp,
-    startAddress: startLog.locationAddress || startLog.locationName || `Lat: ${startLog.latitude}, Lng: ${startLog.longitude}`,
-    endAddress: endLog.locationAddress || endLog.locationName || `Lat: ${endLog.latitude}, Lng: ${endLog.longitude}`,
-    startLat: startLog.latitude,
-    startLng: startLog.longitude,
-    endLat: endLog.latitude,
-    endLng: endLog.longitude,
-    routePoints,
-  };
-}
-
-function formatDurationText(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  const secStr = secs < 10 ? `0${secs}` : `${secs}`;
-  if (mins >= 60) {
-    const hrs = Math.floor(mins / 60);
-    const remMins = mins % 60;
-    return `${hrs}h ${remMins}m`;
-  }
-  return `${mins}m${secStr}s`;
-}
 
 /**
- * Helper: Haversine distance formula between 2 (lat, lng) points in kilometers
+ * Delete Driving Trips for a specific day
  */
-function calculateHaversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371; // Earth radius in km
-  const dLat = (lat2 - lat1) * (Math.PI / 180);
-  const dLon = (lon2 - lon1) * (Math.PI / 180);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * (Math.PI / 180)) *
-      Math.cos(lat2 * (Math.PI / 180)) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
+export const deleteDrivingHistoryForDay = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ success: false, message: 'date query parameter is required' });
+    }
+
+    const result = await DrivingTrip.deleteMany({ deviceId, date: date as string });
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete All Driving History for a device
+ */
+export const deleteAllDrivingHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const result = await DrivingTrip.deleteMany({ deviceId });
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete a single Driving Trip item by ID
+ */
+export const deleteDrivingTripItem = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await DrivingTrip.deleteMany({ $or: [{ _id: id }, { tripId: id }] });
+    return res.json({ success: true, message: 'Driving trip entry deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ==========================================
+// KEYBOARD TRACKER HANDLERS
+// ==========================================
+
+/**
+ * Fetch list of monitored keywords for a device
+ */
+export const getMonitoredKeywords = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const device = await Device.findOne({ deviceId });
+    return res.json({
+      success: true,
+      keywords: device?.monitoredKeywords || [],
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Add a new monitored keyword
+ */
+export const addMonitoredKeyword = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const keyword = (req.body.keyword || '').toString().trim();
+    if (!keyword) {
+      return res.status(400).json({ success: false, message: 'keyword is required' });
+    }
+
+    const device = await Device.findOneAndUpdate(
+      { deviceId },
+      { $addToSet: { monitoredKeywords: keyword } },
+      { new: true }
+    );
+
+    const updatedKeywords = device?.monitoredKeywords || [];
+
+    // Socket.io push to child app
+    const io = getSignalingIo();
+    if (io) {
+      io.to(deviceId).emit('update-monitored-keywords', { keywords: updatedKeywords });
+    }
+
+    return res.json({
+      success: true,
+      message: `Keyword "${keyword}" added successfully`,
+      keywords: updatedKeywords,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete a monitored keyword
+ */
+export const deleteMonitoredKeyword = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const keyword = (req.body.keyword || req.query.keyword || '').toString().trim();
+    if (!keyword) {
+      return res.status(400).json({ success: false, message: 'keyword is required' });
+    }
+
+    const device = await Device.findOneAndUpdate(
+      { deviceId },
+      { $pull: { monitoredKeywords: keyword } },
+      { new: true }
+    );
+
+    const updatedKeywords = device?.monitoredKeywords || [];
+
+    // Socket.io push to child app
+    const io = getSignalingIo();
+    if (io) {
+      io.to(deviceId).emit('update-monitored-keywords', { keywords: updatedKeywords });
+    }
+
+    return res.json({
+      success: true,
+      message: `Keyword "${keyword}" deleted successfully`,
+      keywords: updatedKeywords,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch Keyboard History logs with optional date filter (YYYY-MM-DD)
+ */
+export const getKeyboardHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date, page = 1, limit = 100 } = req.query;
+
+    const query: any = { deviceId };
+
+    if (date) {
+      const start = new Date(date as string);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(date as string);
+      end.setHours(23, 59, 59, 999);
+      query.timestamp = { $gte: start, $lte: end };
+    }
+
+    const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
+    const limitNum = Math.min(500, Math.max(1, parseInt(limit as string, 10) || 100));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [logs, total, dev] = await Promise.all([
+      KeyboardLog.find(query).sort({ timestamp: -1 }).skip(skip).limit(limitNum),
+      KeyboardLog.countDocuments(query),
+      Device.findOne({ deviceId }).select('lastKeyboardSyncTime isOnline batteryLevel'),
+    ]);
+
+    return res.json({
+      success: true,
+      data: logs,
+      logs,
+      items: logs,
+      total,
+      lastSyncTime: dev?.lastKeyboardSyncTime,
+      isOnline: dev?.isOnline ?? false,
+      batteryLevel: dev?.batteryLevel ?? 100,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete Keyboard History for a specific day
+ */
+export const deleteKeyboardHistoryForDay = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ success: false, message: 'date query parameter is required' });
+    }
+
+    const start = new Date(date as string);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(date as string);
+    end.setHours(23, 59, 59, 999);
+
+    const result = await KeyboardLog.deleteMany({
+      deviceId,
+      timestamp: { $gte: start, $lte: end },
+    });
+
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete All Keyboard History for a device
+ */
+export const deleteAllKeyboardHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const result = await KeyboardLog.deleteMany({ deviceId });
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete a single Keyboard Log entry by ID
+ */
+export const deleteKeyboardLogItem = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await KeyboardLog.findByIdAndDelete(id);
+    return res.json({ success: true, message: 'Keyboard log entry deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 

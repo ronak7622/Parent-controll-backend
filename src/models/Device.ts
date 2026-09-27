@@ -23,6 +23,7 @@ export interface IDevice extends Document {
   youtubeShortsBlockSchedule?: any;
   youtubeRestrictedMode: boolean;
   youtubeBlockedKeywords: string[];
+  monitoredKeywords?: string[];
   
   preventNotificationDisable: boolean;
   preventLocationDisable: boolean;
@@ -61,6 +62,7 @@ export interface IDevice extends Document {
   lastYoutubeSyncTime?: Date;
   lastMessageSyncTime?: Date;
   lastLocationSyncTime?: Date;
+  lastKeyboardSyncTime?: Date;
   lastLocation?: {
     latitude: number;
     longitude: number;
@@ -123,6 +125,7 @@ const DeviceSchema = new Schema<IDevice>(
     youtubeShortsBlockSchedule: { type: Schema.Types.Mixed, default: null },
     youtubeRestrictedMode: { type: Boolean, default: false },
     youtubeBlockedKeywords: [{ type: String }],
+    monitoredKeywords: [{ type: String }],
     
     preventNotificationDisable: { type: Boolean, default: false },
     preventLocationDisable: { type: Boolean, default: true },
@@ -158,6 +161,7 @@ const DeviceSchema = new Schema<IDevice>(
     lastYoutubeSyncTime: { type: Date },
     lastMessageSyncTime: { type: Date },
     lastLocationSyncTime: { type: Date },
+    lastKeyboardSyncTime: { type: Date },
     lastLocation: {
       latitude: { type: Number },
       longitude: { type: Number },

