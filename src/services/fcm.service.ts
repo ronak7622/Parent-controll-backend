@@ -30,8 +30,9 @@ export const sendFcmDataCommand = async (
     return false;
   }
 
-  try {
-    const message: admin.messaging.Message = {
+  // Fire-and-forget with 2.5s timeout so HTTP API endpoints return in 0.1s instantly
+  Promise.race([
+    admin.messaging().send({
       token: fcmToken,
       data: {
         command: commandType,
@@ -41,15 +42,15 @@ export const sendFcmDataCommand = async (
       android: {
         priority: 'high',
       },
-    };
-
-    await admin.messaging().send(message);
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('FCM Timeout')), 2500))
+  ]).then(() => {
     console.log(`[FCM-SENT] High-priority command '${commandType}' sent via FCM.`);
-    return true;
-  } catch (error) {
-    console.error(`[FCM-ERROR] Failed to send FCM command '${commandType}':`, error);
-    return false;
-  }
+  }).catch((error: any) => {
+    console.warn(`[FCM-NOTICE] FCM command '${commandType}' background result: ${error?.message}`);
+  });
+
+  return true;
 };
 
 export const sendFcmTopicNotification = async (
@@ -62,8 +63,9 @@ export const sendFcmTopicNotification = async (
     console.log(`[FCM-MOCK] Topic '${topic}' notification: "${title}" - "${body}"`);
     return false;
   }
-  try {
-    const message: admin.messaging.Message = {
+
+  Promise.race([
+    admin.messaging().send({
       topic,
       notification: { title, body },
       data: {
@@ -79,12 +81,13 @@ export const sendFcmTopicNotification = async (
           channelId: 'child_protect_alerts',
         },
       },
-    };
-    await admin.messaging().send(message);
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('FCM Timeout')), 2500))
+  ]).then(() => {
     console.log(`[FCM-SENT] Notification sent to topic '${topic}': ${title}`);
-    return true;
-  } catch (error) {
-    console.error(`[FCM-ERROR] Failed to send notification to topic '${topic}':`, error);
-    return false;
-  }
+  }).catch((error: any) => {
+    console.warn(`[FCM-NOTICE] FCM topic '${topic}' background result: ${error?.message}`);
+  });
+
+  return true;
 };
