@@ -2655,7 +2655,7 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
     }
 
     const dev = await Device.findOne({ deviceId }).select('lastLocationSyncTime isOnline batteryLevel');
-    const dbTrips = await DrivingTrip.find(query).sort({ startTime: -1 });
+    const dbTrips = await DrivingTrip.find(query).sort({ startTime: -1 }).lean();
 
     const finalTrips = (dbTrips || []).map((dt) => ({
       id: dt._id.toString(),
