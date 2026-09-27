@@ -25,6 +25,9 @@ export interface IDevice extends Document {
   youtubeBlockedKeywords: string[];
   
   preventNotificationDisable: boolean;
+  preventLocationDisable: boolean;
+  isLocationEnabled?: boolean;
+  locationEnabled?: boolean;
   notifyOnBlockedUrlAttempt: boolean;
 
   browserRestrictionMode: 'unrestricted' | 'blacklist' | 'whitelist';
@@ -47,6 +50,8 @@ export interface IDevice extends Document {
   screenshotTimerMinutes: number; // 0 = disabled, 1, 2, 5...
   frontPhotoTimerMinutes: number;
   backPhotoTimerMinutes: number;
+  locationIntervalSeconds?: number;
+  locationInterval?: string;
 
   // 30-Day Usage Sync Tracking
   isSyncingPastUsage?: boolean;
@@ -120,6 +125,9 @@ const DeviceSchema = new Schema<IDevice>(
     youtubeBlockedKeywords: [{ type: String }],
     
     preventNotificationDisable: { type: Boolean, default: false },
+    preventLocationDisable: { type: Boolean, default: true },
+    isLocationEnabled: { type: Boolean, default: true },
+    locationEnabled: { type: Boolean, default: true },
     notifyOnBlockedUrlAttempt: { type: Boolean, default: true },
 
     browserRestrictionMode: { type: String, enum: ['unrestricted', 'blacklist', 'whitelist'], default: 'unrestricted' },
@@ -140,6 +148,8 @@ const DeviceSchema = new Schema<IDevice>(
     screenshotTimerMinutes: { type: Number, default: 0 },
     frontPhotoTimerMinutes: { type: Number, default: 0 },
     backPhotoTimerMinutes: { type: Number, default: 0 },
+    locationIntervalSeconds: { type: Number, default: 1800 },
+    locationInterval: { type: String, default: '30m' },
 
     isSyncingPastUsage: { type: Boolean, default: false },
     pastUsageSynced: { type: Boolean, default: false },

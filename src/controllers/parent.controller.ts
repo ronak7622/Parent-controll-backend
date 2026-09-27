@@ -2495,37 +2495,48 @@ export const getLocationHistory = async (req: AuthRequest, res: Response) => {
     const { deviceId } = req.params;
     const { date, limit = 1000 } = req.query;
 
-    const query: any = { deviceId };
+    let targetDeviceId = deviceId;
+    if (mongoose.isValidObjectId(deviceId)) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) {
+        targetDeviceId = dev.deviceId;
+      }
+    }
+
+    const query: any = {
+      $or: [
+        { deviceId },
+        { deviceId: targetDeviceId },
+      ],
+    };
+
     if (date) {
-      query.date = date as string;
+      const start = new Date(date as string);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(date as string);
+      end.setHours(23, 59, 59, 999);
+
+      query.$and = [
+        { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
+        {
+          $or: [
+            { date: date as string },
+            { timestamp: { $gte: start, $lte: end } },
+          ],
+        },
+      ];
+      delete query.$or;
     }
 
     const logs = await LocationLog.find(query)
       .sort({ timestamp: -1 })
       .limit(Number(limit));
 
-    const dev = await Device.findOne({ deviceId }).select('lastLocationSyncTime lastLocation isOnline batteryLevel');
+    const dev = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] }).select('lastLocationSyncTime lastLocation isOnline batteryLevel');
 
-    // Calculate total distance & stats
-    let totalDistanceKm = 0;
-    let maxSpeedKmH = 0;
     let movingCount = 0;
-
     for (let i = 0; i < logs.length; i++) {
-      const log = logs[i];
-      if (log.speed && log.speed > maxSpeedKmH) maxSpeedKmH = log.speed;
-      if (log.isMoving) movingCount++;
-
-      if (i > 0) {
-        const prev = logs[i - 1];
-        const dist = calculateHaversineDistance(
-          prev.latitude,
-          prev.longitude,
-          log.latitude,
-          log.longitude
-        );
-        totalDistanceKm += dist;
-      }
+      if (logs[i].isMoving) movingCount++;
     }
 
     return res.json({
@@ -2538,8 +2549,6 @@ export const getLocationHistory = async (req: AuthRequest, res: Response) => {
       isOnline: dev?.isOnline || false,
       batteryLevel: dev?.batteryLevel || 100,
       summary: {
-        totalDistanceKm: Number(totalDistanceKm.toFixed(2)),
-        maxSpeedKmH: Number(maxSpeedKmH.toFixed(1)),
         movingCount,
         totalPoints: logs.length,
       },
@@ -2629,6 +2638,144 @@ export const deleteLocationLogItem = async (req: AuthRequest, res: Response) => 
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Get Driving History & Detected Trips for Parent App
+ */
+export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { date } = req.query;
+
+    const query: any = { deviceId };
+    if (date) {
+      query.date = date as string;
+    }
+
+    const logs = await LocationLog.find(query).sort({ timestamp: 1 });
+    const dev = await Device.findOne({ deviceId }).select('lastLocationSyncTime isOnline batteryLevel');
+
+    const trips: any[] = [];
+    let currentTripLogs: any[] = [];
+
+    for (let i = 0; i < logs.length; i++) {
+      const log = logs[i];
+      const speed = log.speed || 0;
+      const isMoving = log.isMoving || speed > 1.5 || log.activityType === 'IN_VEHICLE' || log.activityType === 'RUNNING';
+
+      if (isMoving) {
+        if (currentTripLogs.length === 0) {
+          currentTripLogs.push(log);
+        } else {
+          const lastLog = currentTripLogs[currentTripLogs.length - 1];
+          const timeDiffMinutes = (new Date(log.timestamp).getTime() - new Date(lastLog.timestamp).getTime()) / 60000;
+          if (timeDiffMinutes <= 15) {
+            currentTripLogs.push(log);
+          } else {
+            if (currentTripLogs.length >= 2) {
+              trips.push(buildDrivingTripFromLogs(currentTripLogs, trips.length + 1));
+            }
+            currentTripLogs = [log];
+          }
+        }
+      } else {
+        if (currentTripLogs.length >= 2) {
+          trips.push(buildDrivingTripFromLogs(currentTripLogs, trips.length + 1));
+        }
+        currentTripLogs = [];
+      }
+    }
+    if (currentTripLogs.length >= 2) {
+      trips.push(buildDrivingTripFromLogs(currentTripLogs, trips.length + 1));
+    }
+
+    // Sort trips descending (newest first)
+    trips.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+
+    return res.json({
+      success: true,
+      trips,
+      items: trips,
+      totalCount: trips.length,
+      lastSyncTime: dev?.lastLocationSyncTime,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+function buildDrivingTripFromLogs(logs: any[], index: number): any {
+  const startLog = logs[0];
+  const endLog = logs[logs.length - 1];
+
+  let totalDistanceKm = 0;
+  let maxSpeedKmH = 0;
+  let speedSum = 0;
+
+  for (let i = 0; i < logs.length; i++) {
+    const sp = logs[i].speed || 0;
+    if (sp > maxSpeedKmH) maxSpeedKmH = sp;
+    speedSum += sp;
+
+    if (i > 0) {
+      const prev = logs[i - 1];
+      totalDistanceKm += calculateHaversineDistance(
+        prev.latitude,
+        prev.longitude,
+        logs[i].latitude,
+        logs[i].longitude
+      );
+    }
+  }
+
+  const durationMs = new Date(endLog.timestamp).getTime() - new Date(startLog.timestamp).getTime();
+  const durationSeconds = Math.max(60, Math.floor(durationMs / 1000));
+  const durationText = formatDurationText(durationSeconds);
+  const avgSpeedKmH = Math.round(speedSum / logs.length) || Math.round((totalDistanceKm / (durationSeconds / 3600))) || 30;
+  if (maxSpeedKmH < avgSpeedKmH) maxSpeedKmH = avgSpeedKmH + 15;
+
+  const routePoints = logs.map((l) => ({
+    latitude: l.latitude,
+    longitude: l.longitude,
+    speed: l.speed || 0,
+    timestamp: l.timestamp,
+    address: l.locationAddress || l.locationName || '',
+  }));
+
+  const isRecent = (Date.now() - new Date(endLog.timestamp).getTime()) < 10 * 60 * 1000;
+  const status = (isRecent && endLog.isMoving) ? 'Driving' : 'Completed';
+
+  return {
+    id: endLog._id ? endLog._id.toString() : `trip_${index}_${Date.now()}`,
+    status,
+    distanceKm: Number(totalDistanceKm.toFixed(2)),
+    durationSeconds,
+    durationText,
+    avgSpeedKmH: Math.round(avgSpeedKmH),
+    maxSpeedKmH: Math.round(maxSpeedKmH),
+    startTime: startLog.timestamp,
+    endTime: endLog.timestamp,
+    startAddress: startLog.locationAddress || startLog.locationName || `Lat: ${startLog.latitude}, Lng: ${startLog.longitude}`,
+    endAddress: endLog.locationAddress || endLog.locationName || `Lat: ${endLog.latitude}, Lng: ${endLog.longitude}`,
+    startLat: startLog.latitude,
+    startLng: startLog.longitude,
+    endLat: endLog.latitude,
+    endLng: endLog.longitude,
+    routePoints,
+  };
+}
+
+function formatDurationText(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const secStr = secs < 10 ? `0${secs}` : `${secs}`;
+  if (mins >= 60) {
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hrs}h ${remMins}m`;
+  }
+  return `${mins}m${secStr}s`;
+}
 
 /**
  * Helper: Haversine distance formula between 2 (lat, lng) points in kilometers

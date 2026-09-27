@@ -15,6 +15,7 @@ import { Contact } from '../models/Contact';
 import { SocialMessage } from '../models/SocialMessage';
 import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
+import { DrivingTrip } from '../models/DrivingTrip';
 import { Device } from '../models/Device';
 import { uploadMediaToR2 } from '../services/r2.service';
 import { sendFcmTopicNotification } from '../services/fcm.service';
@@ -37,20 +38,26 @@ export const getLocalDateString = getISTDateString;
  */
 export const updateHeartbeat = async (req: Request, res: Response) => {
   try {
-    const { deviceId, batteryLevel, isCharging } = req.body;
+    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const mongoSet: any = {
+      batteryLevel: batteryLevel ?? 100,
+      isCharging: isCharging ?? false,
+      isOnline: true,
+      lastSeenAt: new Date(),
+    };
+
+    if (typeof isLocationEnabled !== 'undefined' || typeof locationEnabled !== 'undefined') {
+      const locVal = typeof isLocationEnabled !== 'undefined' ? isLocationEnabled : locationEnabled;
+      mongoSet.isLocationEnabled = locVal;
+      mongoSet.locationEnabled = locVal;
+    }
 
     const isObjId = mongoose.isValidObjectId(deviceId);
     const device = await Device.findOneAndUpdate(
       { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
-      {
-        $set: {
-          batteryLevel: batteryLevel ?? 100,
-          isCharging: isCharging ?? false,
-          isOnline: true,
-          lastSeenAt: new Date(),
-        },
-      },
+      { $set: mongoSet },
       { new: true }
     );
 
@@ -69,6 +76,9 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         youtubeRestrictedMode: device.youtubeRestrictedMode ?? false,
         youtubeBlockedKeywords: device.youtubeBlockedKeywords || [],
         preventNotificationDisable: device.preventNotificationDisable ?? false,
+        preventLocationDisable: device.preventLocationDisable ?? true,
+        isLocationEnabled: device.isLocationEnabled ?? device.locationEnabled ?? true,
+        locationEnabled: device.isLocationEnabled ?? device.locationEnabled ?? true,
         notifyOnBlockedUrlAttempt: device.notifyOnBlockedUrlAttempt ?? true,
         browserRestrictionMode: device.browserRestrictionMode || device.browserRestrictionsMode || 'unrestricted',
         browserRestrictionsMode: device.browserRestrictionsMode || device.browserRestrictionMode || 'unrestricted',
@@ -1211,6 +1221,67 @@ export const ingestLiveLocation = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Batch Ingest Real Driving Trips from Child App
+ */
+export const ingestDrivingTrips = async (req: Request, res: Response) => {
+  try {
+    const rawTrips = req.body.trips || req.body.drivingTrips || (Array.isArray(req.body) ? req.body : []);
+    const topDeviceId = req.body.deviceId;
+    if (!Array.isArray(rawTrips) || rawTrips.length === 0) {
+      return res.status(400).json({ success: false, message: 'Invalid or empty driving trips payload' });
+    }
+
+    const insertedOrUpdated: any[] = [];
+    for (const item of rawTrips) {
+      const deviceId = item.deviceId || topDeviceId;
+      if (!deviceId || !item.tripId) continue;
+
+      const startTime = item.startTime ? new Date(item.startTime) : new Date();
+      const endTime = item.endTime ? new Date(item.endTime) : new Date();
+      const dateStr = item.date || getLocalDateString(startTime);
+
+      const docData: any = {
+        deviceId,
+        tripId: item.tripId,
+        status: item.status || 'Completed',
+        distanceKm: Number(item.distanceKm) || 0,
+        durationSeconds: Number(item.durationSeconds) || 0,
+        durationText: item.durationText || '0m00s',
+        avgSpeedKmH: Number(item.avgSpeedKmH) || 0,
+        maxSpeedKmH: Number(item.maxSpeedKmH) || 0,
+        startTime,
+        endTime,
+        startAddress: item.startAddress || '',
+        endAddress: item.endAddress || '',
+        startLat: Number(item.startLat) || 0,
+        startLng: Number(item.startLng) || 0,
+        endLat: Number(item.endLat) || 0,
+        endLng: Number(item.endLng) || 0,
+        routePoints: Array.isArray(item.routePoints) ? item.routePoints : [],
+        date: dateStr,
+      };
+
+      const resDoc = await DrivingTrip.findOneAndUpdate(
+        { deviceId, tripId: item.tripId },
+        { $set: docData },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      if (resDoc) insertedOrUpdated.push(resDoc);
+    }
+
+    if (topDeviceId) {
+      await Device.findOneAndUpdate({ deviceId: topDeviceId }, { $set: { lastDrivingSyncTime: new Date() } });
+    }
+
+    return res.json({ success: true, count: insertedOrUpdated.length });
+  } catch (error: any) {
+    console.error('[INGEST-DRIVING-TRIPS] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 
 
 

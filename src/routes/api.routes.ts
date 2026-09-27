@@ -34,6 +34,7 @@ import {
   ingestNotifications,
   ingestLocationHistory,
   ingestLiveLocation,
+  ingestDrivingTrips,
 } from '../controllers/ingest.controller';
 import {
   ingestMessages,
@@ -95,6 +96,7 @@ import {
   markAllNotificationsRead,
   getLocationHistory,
   getLiveLocation,
+  getDrivingHistory,
   deleteLocationHistoryForDay,
   deleteAllLocationHistory,
   deleteLocationLogItem,
@@ -256,8 +258,11 @@ router.delete('/parent/internet-history/:id', optionalAuthenticateJwt, deleteInt
 // Location Tracker & History Routes
 router.post('/ingest/location-history', ingestLocationHistory);
 router.post('/ingest/location-live', ingestLiveLocation);
+router.post('/ingest/driving-trips', ingestDrivingTrips);
+router.post('/child/ingest-driving-trips', ingestDrivingTrips);
 router.get('/parent/device/:deviceId/location-history', optionalAuthenticateJwt, getLocationHistory);
 router.get('/parent/device/:deviceId/location-live', optionalAuthenticateJwt, getLiveLocation);
+router.get('/parent/device/:deviceId/driving-history', optionalAuthenticateJwt, getDrivingHistory);
 router.delete('/parent/device/:deviceId/location-history/day', optionalAuthenticateJwt, deleteLocationHistoryForDay);
 router.delete('/parent/device/:deviceId/location-history/all', optionalAuthenticateJwt, deleteAllLocationHistory);
 router.delete('/parent/location-history/:id', optionalAuthenticateJwt, deleteLocationLogItem);

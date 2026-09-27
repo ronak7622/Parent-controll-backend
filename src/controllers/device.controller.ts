@@ -345,6 +345,12 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       updates.browserRestrictionMode = mode;
     }
 
+    if (typeof updates.locationEnabled !== 'undefined' || typeof updates.isLocationEnabled !== 'undefined') {
+      const locVal = typeof updates.locationEnabled !== 'undefined' ? updates.locationEnabled : updates.isLocationEnabled;
+      updates.locationEnabled = locVal;
+      updates.isLocationEnabled = locVal;
+    }
+
     if (updates.addBlacklist) {
       mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
       mongoUpdate['$addToSet']['browserBlacklist'] = updates.addBlacklist;
@@ -390,10 +396,6 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ success: false, message: 'Device not found.' });
     }
 
-    if (device.fcmToken) {
-      await sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {});
-    }
-
     const restrictions = {
       youtubeBlocked: device.youtubeBlocked ?? false,
       youtubeShortsBlocked: device.youtubeShortsBlocked ?? false,
@@ -402,6 +404,10 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       youtubeRestrictedMode: device.youtubeRestrictedMode ?? false,
       youtubeBlockedKeywords: device.youtubeBlockedKeywords || [],
       preventNotificationDisable: device.preventNotificationDisable ?? false,
+      preventLocationDisable: device.preventLocationDisable ?? true,
+      preventLocationTurnOff: device.preventLocationDisable ?? true,
+      isLocationEnabled: device.isLocationEnabled ?? device.locationEnabled ?? true,
+      locationEnabled: device.isLocationEnabled ?? device.locationEnabled ?? true,
       notifyOnBlockedUrlAttempt: device.notifyOnBlockedUrlAttempt ?? true,
       browserRestrictionMode: device.browserRestrictionMode || device.browserRestrictionsMode || 'unrestricted',
       browserRestrictionsMode: device.browserRestrictionsMode || device.browserRestrictionMode || 'unrestricted',
@@ -409,7 +415,15 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       browserWhitelist: device.browserWhitelist || [],
       browserBlockedCategories: device.browserBlockedCategories || [],
       blockedApps: device.blockedApps || [],
+      locationIntervalSeconds: device.locationIntervalSeconds ?? 1800,
+      locationInterval: device.locationInterval ?? '30m',
     };
+
+    if (device.fcmToken) {
+      await sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+        restrictions: JSON.stringify(restrictions),
+      });
+    }
 
     getSignalingIo()?.to(device.deviceId).emit('remote-command', {
       command: 'UPDATE_RULES',
