@@ -35,6 +35,14 @@ app.get('/health', (req, res) => {
   });
 });
 
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'online',
+    system: 'Child Protect Backend API Engine',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // API Routes
 app.use('/api', apiRoutes);
 
