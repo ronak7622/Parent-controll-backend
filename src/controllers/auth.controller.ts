@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import { User } from '../models/User';
 import { config } from '../config/env';
 import { SmsService } from '../services/sms.service';
+import { connectDatabase } from '../config/database';
 
 /**
  * Send OTP to Parent Phone Number
@@ -11,6 +13,16 @@ import { SmsService } from '../services/sms.service';
  */
 export const requestOtp = async (req: Request, res: Response) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      await connectDatabase();
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database is connecting to cloud server. Please try again in 5 seconds.',
+      });
+    }
+
     const rawPhone = req.body.phoneNumber || req.body.phone;
     if (!rawPhone || String(rawPhone).trim().length < 8) {
       return res.status(400).json({ success: false, message: 'Valid phone number is required.' });

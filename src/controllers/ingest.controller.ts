@@ -1239,21 +1239,39 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
       const deviceId = item.deviceId || topDeviceId;
       if (!deviceId || !item.tripId) continue;
 
+      const distKm = Number(item.distanceKm) || 0;
+      const durationSeconds = Number(item.durationSeconds) || 0;
+
+      // Filter out false positive/minor trips (< 50 meters or < 30 seconds)
+      if (distKm < 0.05 || durationSeconds < 30) {
+        console.log(`[INGEST-DRIVING-TRIPS] Discarded minor/false trip ${item.tripId} (dist: ${distKm}km, dur: ${durationSeconds}s)`);
+        continue;
+      }
+
       const startTime = item.startTime ? new Date(item.startTime) : new Date();
       const endTime = item.endTime ? new Date(item.endTime) : new Date();
       const dateStr = item.date || getLocalDateString(startTime);
 
-      const avgSpd = Number(item.avgSpeedKmH) || 0;
+      const avgSpd = Math.min(120, Number(item.avgSpeedKmH) || 0);
+      const rawMaxSpd = Number(item.maxSpeedKmH) || 0;
+      const maxSpd = Math.min(120, Math.max(avgSpd, rawMaxSpd));
+
+      const rawMode = String(item.activityMode || '').toUpperCase();
+      const activityMode = (rawMode === 'RUNNING' || rawMode === 'WALKING' || avgSpd <= 15) ? 'WALKING' : 'DRIVING';
+
+      const rawRoute = Array.isArray(item.routePoints) ? item.routePoints : [];
+      const cleanRoute = rawRoute.filter((p: any) => p && typeof p.latitude === 'number' && typeof p.longitude === 'number');
+
       const docData: any = {
         deviceId,
         tripId: item.tripId,
         status: item.status || 'Completed',
-        activityMode: item.activityMode || (avgSpd > 0 && avgSpd <= 12 ? 'RUNNING' : 'DRIVING'),
-        distanceKm: Number(item.distanceKm) || 0,
-        durationSeconds: Number(item.durationSeconds) || 0,
+        activityMode,
+        distanceKm: Math.round(distKm * 100.0) / 100.0,
+        durationSeconds,
         durationText: item.durationText || '0m00s',
         avgSpeedKmH: avgSpd,
-        maxSpeedKmH: Number(item.maxSpeedKmH) || 0,
+        maxSpeedKmH: maxSpd,
         startTime,
         endTime,
         startAddress: item.startAddress || '',
@@ -1262,7 +1280,7 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
         startLng: Number(item.startLng) || 0,
         endLat: Number(item.endLat) || 0,
         endLng: Number(item.endLng) || 0,
-        routePoints: Array.isArray(item.routePoints) ? item.routePoints : [],
+        routePoints: cleanRoute,
         date: dateStr,
       };
 

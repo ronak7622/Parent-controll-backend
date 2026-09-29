@@ -2657,27 +2657,33 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
     const dev = await Device.findOne({ deviceId }).select('lastLocationSyncTime isOnline batteryLevel');
     const dbTrips = await DrivingTrip.find(query).sort({ startTime: -1 }).lean();
 
-    const finalTrips = (dbTrips || []).map((dt) => ({
-      id: dt._id.toString(),
-      tripId: dt.tripId,
-      status: dt.status,
-      activityMode: dt.activityMode || (dt.avgSpeedKmH <= 12 ? 'RUNNING' : 'DRIVING'),
-      distanceKm: dt.distanceKm,
-      durationSeconds: dt.durationSeconds,
-      durationText: dt.durationText,
-      avgSpeedKmH: dt.avgSpeedKmH,
-      maxSpeedKmH: dt.maxSpeedKmH,
-      startTime: dt.startTime,
-      endTime: dt.endTime,
-      startAddress: dt.startAddress,
-      endAddress: dt.endAddress,
-      startLat: dt.startLat,
-      startLng: dt.startLng,
-      endLat: dt.endLat,
-      endLng: dt.endLng,
-      routePoints: dt.routePoints || [],
-      date: dt.date,
-    }));
+    const filteredTrips = (dbTrips || []).filter((dt) => (dt.distanceKm >= 0.05 || dt.durationSeconds >= 30));
+
+    const finalTrips = filteredTrips.map((dt) => {
+      const rawMode = String(dt.activityMode || '').toUpperCase();
+      const mode = (rawMode === 'RUNNING' || rawMode === 'WALKING' || (dt.avgSpeedKmH || 0) <= 15) ? 'WALKING' : 'DRIVING';
+      return {
+        id: dt._id.toString(),
+        tripId: dt.tripId,
+        status: dt.status,
+        activityMode: mode,
+        distanceKm: Math.round((dt.distanceKm || 0) * 100.0) / 100.0,
+        durationSeconds: dt.durationSeconds,
+        durationText: dt.durationText,
+        avgSpeedKmH: Math.min(120, dt.avgSpeedKmH || 0),
+        maxSpeedKmH: Math.min(120, Math.max(dt.avgSpeedKmH || 0, dt.maxSpeedKmH || 0)),
+        startTime: dt.startTime,
+        endTime: dt.endTime,
+        startAddress: dt.startAddress,
+        endAddress: dt.endAddress,
+        startLat: dt.startLat,
+        startLng: dt.startLng,
+        endLat: dt.endLat,
+        endLng: dt.endLng,
+        routePoints: Array.isArray(dt.routePoints) ? dt.routePoints : [],
+        date: dt.date,
+      };
+    });
 
     return res.json({
       success: true,
@@ -2767,6 +2773,17 @@ export const addMonitoredKeyword = async (req: AuthRequest, res: Response) => {
     const keyword = (req.body.keyword || '').toString().trim();
     if (!keyword) {
       return res.status(400).json({ success: false, message: 'keyword is required' });
+    }
+
+    const existingDevice = await Device.findOne({ deviceId });
+    if (existingDevice && existingDevice.monitoredKeywords && existingDevice.monitoredKeywords.length >= 50) {
+      if (!existingDevice.monitoredKeywords.includes(keyword)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Maximum limit of 50 monitored keywords reached for this device',
+          keywords: existingDevice.monitoredKeywords,
+        });
+      }
     }
 
     const device = await Device.findOneAndUpdate(
