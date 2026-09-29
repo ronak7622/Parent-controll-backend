@@ -1262,6 +1262,17 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
       const rawRoute = Array.isArray(item.routePoints) ? item.routePoints : [];
       const cleanRoute = rawRoute.filter((p: any) => p && typeof p.latitude === 'number' && typeof p.longitude === 'number');
 
+      const rawStops = Array.isArray(item.stops) ? item.stops : [];
+      const cleanStops = rawStops.filter((s: any) => s && typeof s.latitude === 'number' && typeof s.longitude === 'number').map((s: any) => ({
+        latitude: Number(s.latitude),
+        longitude: Number(s.longitude),
+        startTime: s.startTime ? new Date(s.startTime) : new Date(),
+        endTime: s.endTime ? new Date(s.endTime) : new Date(),
+        durationSeconds: Number(s.durationSeconds) || 0,
+        durationText: s.durationText || '0m00s',
+        address: s.address || '',
+      }));
+
       const docData: any = {
         deviceId,
         tripId: item.tripId,
@@ -1281,6 +1292,7 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
         endLat: Number(item.endLat) || 0,
         endLng: Number(item.endLng) || 0,
         routePoints: cleanRoute,
+        stops: cleanStops,
         date: dateStr,
       };
 

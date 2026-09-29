@@ -25,6 +25,15 @@ export interface IDrivingTrip extends Document {
     timestamp: Date;
     address?: string;
   }>;
+  stops?: Array<{
+    latitude: number;
+    longitude: number;
+    startTime: Date;
+    endTime: Date;
+    durationSeconds: number;
+    durationText: string;
+    address?: string;
+  }>;
   date: string; // YYYY-MM-DD
 }
 
@@ -53,6 +62,17 @@ const DrivingTripSchema: Schema = new Schema(
         longitude: { type: Number, required: true },
         speed: { type: Number, default: 0 },
         timestamp: { type: Date, default: Date.now },
+        address: { type: String, default: '' },
+      },
+    ],
+    stops: [
+      {
+        latitude: { type: Number, required: true },
+        longitude: { type: Number, required: true },
+        startTime: { type: Date, required: true },
+        endTime: { type: Date, required: true },
+        durationSeconds: { type: Number, default: 0 },
+        durationText: { type: String, default: '0m00s' },
         address: { type: String, default: '' },
       },
     ],
