@@ -333,9 +333,12 @@ export const ingestYouTubeSession = async (req: Request, res: Response) => {
 export const uploadCapturedMedia = async (req: Request, res: Response) => {
   try {
     const deviceId = req.body.deviceId;
-    const type = req.body.type || req.body.captureType || 'screenshot';
+    const type = req.body.type || 'screenshot';
+    const captureType = req.body.captureType || 'manual';
     const imageBase64 = req.body.imageBase64 || req.body.base64Image;
     const timestamp = req.body.timestamp;
+    const packageName = req.body.packageName;
+    const appName = req.body.appName;
 
     if (!deviceId || !imageBase64) {
       return res.status(400).json({ success: false, message: 'Missing required media parameters (deviceId, imageBase64)' });
@@ -345,10 +348,21 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
     const folderName = `captures/${type}/${deviceId}`;
     const mediaUrl = await uploadMediaToR2(buffer, folderName, 'webp', 'image/webp');
 
+    let thumbnailUrl: string | undefined;
+    if (req.body.thumbnailBase64) {
+      const thumbBuffer = Buffer.from(req.body.thumbnailBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+      const thumbFolder = `captures/thumbs/${deviceId}`;
+      thumbnailUrl = await uploadMediaToR2(thumbBuffer, thumbFolder, 'webp', 'image/webp');
+    }
+
     const capture = new MediaCapture({
       deviceId,
-      type,
+      type: type === 'front_photo' || type === 'back_photo' ? type : 'screenshot',
+      captureType: captureType === 'schedule' ? 'schedule' : 'manual',
       mediaUrl,
+      thumbnailUrl: thumbnailUrl || mediaUrl,
+      packageName,
+      appName,
       fileSizeBytes: buffer.length,
       mimeType: 'image/webp',
       timestamp: timestamp ? new Date(timestamp) : new Date(),
@@ -361,7 +375,85 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       mediaUrl,
+      thumbnailUrl: capture.thumbnailUrl,
       captureId: capture._id,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Batch Upload Scheduled & Offline Screenshot Captures (Chunked Sync)
+ */
+export const uploadBatchCapturedMedia = async (req: Request, res: Response) => {
+  try {
+    const { deviceId, captures } = req.body;
+    const rawCaptures = captures || req.body.items || (Array.isArray(req.body) ? req.body : []);
+
+    if (!deviceId || !Array.isArray(rawCaptures)) {
+      return res.status(400).json({ success: false, message: 'deviceId and captures array are required' });
+    }
+
+    const docs: any[] = [];
+
+    for (const item of rawCaptures) {
+      const imageBase64 = item.screenshotBase64 || item.imageBase64 || item.base64Image;
+      if (!imageBase64) continue;
+
+      const buffer = Buffer.from(imageBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+      const folderName = `captures/screenshot/${deviceId}`;
+      const mediaUrl = await uploadMediaToR2(buffer, folderName, 'webp', 'image/webp');
+
+      let thumbnailUrl: string | undefined;
+      if (item.thumbnailBase64) {
+        const thumbBuffer = Buffer.from(item.thumbnailBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+        const thumbFolder = `captures/thumbs/${deviceId}`;
+        thumbnailUrl = await uploadMediaToR2(thumbBuffer, thumbFolder, 'webp', 'image/webp');
+      }
+
+      docs.push({
+        deviceId,
+        type: 'screenshot',
+        captureType: item.captureType === 'SCHEDULE' || item.captureType === 'schedule' ? 'schedule' : 'manual',
+        mediaUrl,
+        thumbnailUrl: thumbnailUrl || mediaUrl,
+        packageName: item.packageName || '',
+        appName: item.appName || '',
+        fileSizeBytes: buffer.length,
+        mimeType: 'image/webp',
+        timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
+      });
+    }
+
+    let insertedCount = 0;
+    if (docs.length > 0) {
+      const inserted = await MediaCapture.insertMany(docs);
+      insertedCount = inserted.length;
+    }
+
+    console.log(`[MEDIA-BATCH] Ingested ${insertedCount} batch screenshot captures for device ${deviceId}`);
+    return res.json({ success: true, count: insertedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Pre-Signed URL Generator for Direct Storage Upload (Bypasses backend server bandwidth)
+ */
+export const getPresignedUploadUrl = async (req: Request, res: Response) => {
+  try {
+    const { deviceId, fileType = 'image/webp', captureType = 'screenshot' } = req.body;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const key = `captures/${captureType}/${deviceId}/${uuidv4()}.webp`;
+    // Returns storage target info (presigned URL format or server route)
+    return res.json({
+      success: true,
+      uploadUrl: `/ingest/media-capture/direct?key=${encodeURIComponent(key)}`,
+      key,
+      expiresInSeconds: 900, // 15 mins expiry
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

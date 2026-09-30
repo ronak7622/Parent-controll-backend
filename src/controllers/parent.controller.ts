@@ -9,6 +9,7 @@ import { YouTubeSession } from '../models/YouTubeSession';
 import { CallLog } from '../models/CallLog';
 import { CallRecording } from '../models/CallRecording';
 import { MediaCapture } from '../models/MediaCapture';
+import { ScheduleConfig } from '../models/ScheduleConfig';
 import { AppUsage } from '../models/AppUsage';
 import { AppSession } from '../models/AppSession';
 import { AppLimit } from '../models/AppLimit';
@@ -331,10 +332,11 @@ export const deleteYouTubeHistoryForDevice = async (req: AuthRequest, res: Respo
 export const getCapturedMedia = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { type, date, limit = 100 } = req.query;
+    const { type, captureType, date, limit = 100 } = req.query;
 
     const query: any = { deviceId };
     if (type) query.type = type;
+    if (captureType) query.captureType = captureType;
     if (date) {
       const start = new Date(date as string);
       start.setHours(0, 0, 0, 0);
@@ -347,7 +349,95 @@ export const getCapturedMedia = async (req: AuthRequest, res: Response) => {
       .sort({ timestamp: -1 })
       .limit(Number(limit));
 
-    return res.json({ success: true, items, captures: items });
+    const host = req.get('host') || 'localhost:5000';
+    const baseUrl = `${req.protocol}://${host}`;
+
+    const formattedItems = items.map((doc) => {
+      const obj = doc.toObject ? doc.toObject() : doc;
+      if (obj.mediaUrl && obj.mediaUrl.startsWith('/uploads')) {
+        obj.mediaUrl = `${baseUrl}${obj.mediaUrl}`;
+      }
+      if (obj.thumbnailUrl && obj.thumbnailUrl.startsWith('/uploads')) {
+        obj.thumbnailUrl = `${baseUrl}${obj.thumbnailUrl}`;
+      }
+      if (!obj.thumbnailUrl) {
+        obj.thumbnailUrl = obj.mediaUrl;
+      }
+      return obj;
+    });
+
+    return res.json({ success: true, items: formattedItems, captures: formattedItems });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch Screenshot Schedule Config for Device
+ */
+export const getScheduleConfig = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    let config = await ScheduleConfig.findOne({ deviceId });
+    if (!config) {
+      config = new ScheduleConfig({ deviceId });
+    }
+    return res.json({ success: true, config });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Save / Update Screenshot Schedule Config for Device
+ */
+export const updateScheduleConfig = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const updateData = req.body;
+
+    const config = await ScheduleConfig.findOneAndUpdate(
+      { deviceId },
+      { $set: updateData },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    // Notify Child Device via Socket.io
+    const io = getSignalingIo();
+    if (io) {
+      io.to(deviceId).emit('update-schedule-config', config);
+    }
+
+    return res.json({ success: true, message: 'Schedule configuration updated', config });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Delete Captured Media (Single ID, Selected Date, or All)
+ */
+export const deleteCapturedMedia = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { id, date, all, deleteAll } = req.query;
+
+    const query: any = { deviceId };
+
+    if (id) {
+      query._id = id;
+    } else if (date) {
+      const start = new Date(date as string);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(date as string);
+      end.setHours(23, 59, 59, 999);
+      query.timestamp = { $gte: start, $lte: end };
+    } else if (all !== 'true' && deleteAll !== 'true') {
+      return res.status(400).json({ success: false, message: 'Specify id, date, or all=true' });
+    }
+
+    const result = await MediaCapture.deleteMany(query);
+    return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -2382,7 +2472,30 @@ export const getNotificationApps = async (req: AuthRequest, res: Response) => {
 };
 
 /**
+ * Fetch all installed apps on the child device
+ */
+export const getInstalledApps = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const device = await Device.findOne({ deviceId }).select('installedApps');
+    if (!device) {
+      return res.status(404).json({ success: false, message: 'Device not found', apps: [] });
+    }
+    const apps = (device.installedApps || []).map((a: any) => ({
+      packageName: a.packageName,
+      appName: a.appName || a.packageName,
+      appIcon: a.appIcon || null,
+      isSystemApp: a.isSystemApp || false,
+    }));
+    return res.json({ success: true, apps });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message, apps: [] });
+  }
+};
+
+/**
  * Notifications for one app on one day (defaults to today, IST).
+
  */
 export const getNotificationsForApp = async (req: AuthRequest, res: Response) => {
   try {
@@ -2941,5 +3054,7 @@ export const deleteKeyboardLogItem = async (req: AuthRequest, res: Response) => 
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+
 
 

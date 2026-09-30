@@ -23,6 +23,8 @@ import {
   ingestYouTubeHistory,
   ingestYouTubeSession,
   uploadCapturedMedia,
+  uploadBatchCapturedMedia,
+  getPresignedUploadUrl,
   ingestGeneralLogs,
   ingestCallLogs,
   ingestContacts,
@@ -58,6 +60,9 @@ import {
   deleteYouTubeHistory,
   deleteYouTubeHistoryForDevice,
   getCapturedMedia,
+  getScheduleConfig,
+  updateScheduleConfig,
+  deleteCapturedMedia,
   getContacts,
   deleteContact,
   getCallLogs,
@@ -89,6 +94,7 @@ import {
   deleteAppBlockRule,
   getSocialMessages,
   getNotificationApps,
+  getInstalledApps,
   getNotificationsForApp,
   getNotificationDetail,
   deleteNotification,
@@ -112,6 +118,8 @@ import {
   deleteAllKeyboardHistory,
   deleteKeyboardLogItem,
 } from '../controllers/parent.controller';
+
+
 import {
   ingestWifiLog,
   getWifiHistory,
@@ -159,7 +167,14 @@ router.post('/device/:deviceId/command', optionalAuthenticateJwt, sendRemoteComm
 router.post('/parent/device/:deviceId/disconnect', optionalAuthenticateJwt, disconnectDevice);
 router.post('/device/unpair', disconnectDevice);
 router.delete('/device/:deviceId', optionalAuthenticateJwt, disconnectDevice);
-router.post('/parent/device/:deviceId/request-screenshot', optionalAuthenticateJwt, sendRemoteCommand);
+router.get('/parent/device/:deviceId/schedule-config', optionalAuthenticateJwt, getScheduleConfig);
+router.post('/parent/device/:deviceId/schedule-config', optionalAuthenticateJwt, updateScheduleConfig);
+router.put('/parent/device/:deviceId/schedule-config', optionalAuthenticateJwt, updateScheduleConfig);
+router.get('/device/:deviceId/schedule-config', optionalAuthenticateJwt, getScheduleConfig);
+router.post('/device/:deviceId/schedule-config', optionalAuthenticateJwt, updateScheduleConfig);
+router.get('/parent/device/:deviceId/installed-apps', optionalAuthenticateJwt, getInstalledApps);
+router.get('/device/:deviceId/installed-apps', optionalAuthenticateJwt, getInstalledApps);
+
 
 // ===================================
 // 3. Child App Data Ingestion Routes
@@ -170,6 +185,8 @@ router.post('/ingest/browser-history', ingestBrowserHistory);
 router.post('/ingest/youtube-history', ingestYouTubeHistory);
 router.post('/ingest/youtube-session', ingestYouTubeSession);
 router.post('/ingest/media-capture', uploadCapturedMedia);
+router.post('/ingest/media-captures/batch', uploadBatchCapturedMedia);
+router.post('/ingest/media-captures/presigned-url', getPresignedUploadUrl);
 router.post('/ingest/general-logs', ingestGeneralLogs);
 router.post('/ingest/social-message', ingestGeneralLogs);
 router.post('/ingest/call-log', ingestCallLogs);
@@ -199,6 +216,9 @@ router.delete('/parent/device/:deviceId/youtube-sessions', optionalAuthenticateJ
 router.delete('/parent/youtube-history/:id', optionalAuthenticateJwt, deleteYouTubeHistory);
 router.delete('/parent/device/:deviceId/youtube-history', optionalAuthenticateJwt, deleteYouTubeHistoryForDevice);
 router.get('/parent/device/:deviceId/media-captures', optionalAuthenticateJwt, getCapturedMedia);
+router.delete('/parent/device/:deviceId/media-captures', optionalAuthenticateJwt, deleteCapturedMedia);
+router.get('/parent/device/:deviceId/screenshot-schedule', optionalAuthenticateJwt, getScheduleConfig);
+router.post('/parent/device/:deviceId/screenshot-schedule', optionalAuthenticateJwt, updateScheduleConfig);
 router.get('/parent/device/:deviceId/contacts', optionalAuthenticateJwt, getContacts);
 router.delete('/parent/device/:deviceId/contacts/:id', optionalAuthenticateJwt, deleteContact);
 router.get('/parent/device/:deviceId/call-logs', optionalAuthenticateJwt, getCallLogs);
