@@ -241,6 +241,15 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       }
     });
 
+    // Camera Status Relay (e.g. CAMERA_IN_USE, CAMERA_RESUMED)
+    socket.on('camera-status', (data: any) => {
+      const deviceId = data?.deviceId;
+      console.log(`[WEBRTC-CAMERA-STATUS] Relaying status for room: ${deviceId}, status: ${data?.status}`);
+      if (deviceId) {
+        socket.to(deviceId).emit('camera-status', data);
+      }
+    });
+
     socket.on('disconnect', () => {
       console.log(`[WEBRTC-DISCONNECT] Socket disconnected: ${socket.id}`);
     });

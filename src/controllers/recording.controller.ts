@@ -320,6 +320,9 @@ export const getActiveRecordingStatus = async (req: Request, res: Response) => {
       session: {
         sessionId: currentActive.sessionId,
         recordingType: currentActive.recordingType,
+        cameraPosition: currentActive.cameraPosition,
+        quality: currentActive.quality,
+        triggerSource: currentActive.triggerSource,
         status: currentActive.status,
         durationSeconds: currentActive.durationSeconds,
         elapsedSeconds,
