@@ -25,6 +25,7 @@ app.use(express.urlencoded({ limit: '500mb', extended: true }));
 
 // Serve static uploads with HTTP 206 Partial Content (Range) streaming support
 app.use('/uploads', express.static(uploadsDir));
+app.use('/api/uploads', express.static(uploadsDir));
 
 // Health Check Route
 app.get('/health', (req, res) => {

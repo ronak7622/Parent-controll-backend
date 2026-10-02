@@ -135,8 +135,11 @@ import {
   deleteInternetLogItem,
 } from '../controllers/internet.controller';
 import { authenticateJwt, optionalAuthenticateJwt } from '../middleware/auth';
+import recordingRoutes from './recording.routes';
 
 const router = Router();
+router.use('/', recordingRoutes);
+
 
 // ===================================
 // 1. Auth Routes (Parent App & Web)

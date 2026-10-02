@@ -1363,6 +1363,13 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
         durationSeconds: Number(s.durationSeconds) || 0,
         durationText: s.durationText || '0m00s',
         address: s.address || '',
+        hasWalking: s.hasWalking === true || s.hasWalking === 'true',
+        startWalkTime: s.startWalkTime ? new Date(s.startWalkTime) : undefined,
+        endWalkTime: s.endWalkTime ? new Date(s.endWalkTime) : undefined,
+        walkDurationSeconds: Number(s.walkDurationSeconds) || 0,
+        walkDurationText: s.walkDurationText || '0m00s',
+        walkDistanceMeters: Number(s.walkDistanceMeters) || 0,
+        walkRadiusMeters: Number(s.walkRadiusMeters) || 0,
       }));
 
       const docData: any = {

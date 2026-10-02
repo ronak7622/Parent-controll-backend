@@ -33,6 +33,13 @@ export interface IDrivingTrip extends Document {
     durationSeconds: number;
     durationText: string;
     address?: string;
+    hasWalking?: boolean;
+    startWalkTime?: Date;
+    endWalkTime?: Date;
+    walkDurationSeconds?: number;
+    walkDurationText?: string;
+    walkDistanceMeters?: number;
+    walkRadiusMeters?: number;
   }>;
   date: string; // YYYY-MM-DD
 }
@@ -74,6 +81,13 @@ const DrivingTripSchema: Schema = new Schema(
         durationSeconds: { type: Number, default: 0 },
         durationText: { type: String, default: '0m00s' },
         address: { type: String, default: '' },
+        hasWalking: { type: Boolean, default: false },
+        startWalkTime: { type: Date },
+        endWalkTime: { type: Date },
+        walkDurationSeconds: { type: Number, default: 0 },
+        walkDurationText: { type: String, default: '0m00s' },
+        walkDistanceMeters: { type: Number, default: 0 },
+        walkRadiusMeters: { type: Number, default: 0 },
       },
     ],
     date: { type: String, required: true, index: true },
