@@ -2245,7 +2245,44 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
       { $unset: { lastCallHistoryClearedAt: 1 } }
     );
 
+    // Optional per-feature sync: parent can request ONLY one feature's pending data
+    // (e.g. { feature: "wifi" }) so opening the Wi-Fi screen doesn't flush everything.
+    // When no feature is given, behaviour is the original full device sync.
+    const feature = (req.body && req.body.feature) ? String(req.body.feature) : '';
     const io = getSignalingIo();
+
+    // Is the child's realtime socket currently connected? Good proxy for "reachable now".
+    // If the child has no internet / is powered off, it will NOT be in the signaling room,
+    // so we must NOT pretend the sync happened (the parent relies on this to avoid showing
+    // a fresh "last synced" time when nothing actually synced).
+    let childOnline = false;
+    if (io) {
+      const room = (io.adapter?.rooms?.get(targetDeviceId)) || (io.adapter?.rooms?.get(deviceId));
+      if (room) {
+        for (const sid of room) {
+          const s: any = io.sockets?.get(sid);
+          if (s && s.data?.role === 'child') { childOnline = true; break; }
+        }
+      }
+    }
+
+    if (feature) {
+      if (!childOnline) {
+        return res.json({
+          success: true,
+          online: false,
+          delivered: false,
+          message: 'Child device is offline or has no internet connection',
+        });
+      }
+      io.to(targetDeviceId).emit('remote-command', { command: 'SYNC_FEATURE', deviceId: targetDeviceId, feature });
+      if (targetDeviceId !== deviceId) {
+        io.to(deviceId).emit('remote-command', { command: 'SYNC_FEATURE', deviceId, feature });
+      }
+      return res.json({ success: true, online: true, delivered: true, message: 'Feature sync signal sent' });
+    }
+
+    // ---- Full device sync (legacy / full "Sync Now") ----
     if (io) {
       io.to(targetDeviceId).emit('trigger-sync', { force: true });
       io.to(targetDeviceId).emit('remote-command', { command: 'TRIGGER_SYNC', deviceId: targetDeviceId });
@@ -2262,6 +2299,7 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
 
     return res.json({
       success: true,
+      online: childOnline,
       message: 'Sync signal transmitted to child device successfully',
     });
   } catch (error: any) {

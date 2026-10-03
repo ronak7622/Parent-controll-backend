@@ -170,16 +170,45 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
   }
 };
 
+const lastSentBlockedPushMap = new Map<string, number>();
+
 async function sendBlockedUrlPush(deviceId: string, doc: any) {
+  const target = doc.url || doc.domain || 'a website';
+  const cleanTarget = String(target).toLowerCase().trim();
+  const cacheKey = `${deviceId}:${cleanTarget}`;
+  const nowMs = Date.now();
+  const lastSentTime = lastSentBlockedPushMap.get(cacheKey) || 0;
+
+  // Deduplicate: If push notification for this device & domain was sent within 60s, skip duplicate
+  if (nowMs - lastSentTime < 60000) {
+    console.log(`[FCM-SKIP] Duplicate blocked push skipped for ${cacheKey}`);
+    return;
+  }
+  lastSentBlockedPushMap.set(cacheKey, nowMs);
+
   const device = await Device.findOne({ deviceId });
   if (!device?.parentUserId) return;
   if (device.notifyOnBlockedUrlAttempt === false) return;
 
   const childName = device.deviceName || 'Child Device';
-  const target = doc.url || doc.domain || 'a website';
   const reason = doc.blockReason ? String(doc.blockReason) : 'the Blacklist';
+
+  // Date & Time formatting (today/date and hh:mm am/pm)
+  const eventTime = doc.timestamp ? new Date(doc.timestamp) : new Date();
+  const timeFormatted = eventTime.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).toLowerCase();
+
+  const now = new Date();
+  const isToday = eventTime.toDateString() === now.toDateString();
+  const dateFormatted = isToday 
+    ? 'today' 
+    : `${String(eventTime.getDate()).padStart(2, '0')}/${String(eventTime.getMonth() + 1).padStart(2, '0')}/${eventTime.getFullYear()}`;
+
   const title = 'Blocked URL Access';
-  const body = `${childName} attempted to access "${target}" in ${reason}`;
+  const body = `${childName} attempted to access "${target}" in ${reason} at ${dateFormatted} ${timeFormatted}`;
 
   await sendFcmTopicNotification(`parent_${device.parentUserId}`, title, body, {
     type: 'BLOCKED_URL_ACCESS',

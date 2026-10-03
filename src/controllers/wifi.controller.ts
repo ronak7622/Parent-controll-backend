@@ -338,3 +338,39 @@ export const deleteWifiLogItem = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+// ---------------------------------------------------------------------------
+// Batch ingest (local-first sync). Accepts { deviceId, events: [...] } and
+// replays each event through the proven single-event handler in timestamp
+// order, so the exact same session pairing / idempotency logic applies.
+// A no-op Response is passed so the per-event handler's res calls are harmless.
+// ---------------------------------------------------------------------------
+const makeNoopRes = (): any => {
+  const r: any = {};
+  r.status = () => r;
+  r.json = () => r;
+  r.send = () => r;
+  return r;
+};
+
+export const ingestWifiLogsBatch = async (req: Request, res: Response) => {
+  try {
+    const { deviceId, events } = req.body;
+    if (!deviceId || !Array.isArray(events)) {
+      return res.status(400).json({ success: false, message: 'deviceId and events[] are required' });
+    }
+    const sorted = [...events].sort((a: any, b: any) => ((a?.timestamp || 0) - (b?.timestamp || 0)));
+    let processed = 0;
+    for (const ev of sorted) {
+      try {
+        await ingestWifiLog({ body: { deviceId, ...ev } } as any, makeNoopRes());
+        processed++;
+      } catch (e: any) {
+        console.error('[WIFI-BATCH] event error:', e?.message);
+      }
+    }
+    return res.status(200).json({ success: true, processed });
+  } catch (error: any) {
+    console.error('[WIFI-BATCH] Ingestion error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

@@ -349,3 +349,37 @@ export const deleteInternetLogItem = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// ---------------------------------------------------------------------------
+// Batch ingest (local-first sync). See wifi.controller.ts for rationale.
+// ---------------------------------------------------------------------------
+const makeNoopResInternet = (): any => {
+  const r: any = {};
+  r.status = () => r;
+  r.json = () => r;
+  r.send = () => r;
+  return r;
+};
+
+export const ingestInternetLogsBatch = async (req: Request, res: Response) => {
+  try {
+    const { deviceId, events } = req.body;
+    if (!deviceId || !Array.isArray(events)) {
+      return res.status(400).json({ success: false, message: 'deviceId and events[] are required' });
+    }
+    const sorted = [...events].sort((a: any, b: any) => ((a?.timestamp || 0) - (b?.timestamp || 0)));
+    let processed = 0;
+    for (const ev of sorted) {
+      try {
+        await ingestInternetLog({ body: { deviceId, ...ev } } as any, makeNoopResInternet());
+        processed++;
+      } catch (e: any) {
+        console.error('[INTERNET-BATCH] event error:', e?.message);
+      }
+    }
+    return res.status(200).json({ success: true, processed });
+  } catch (error: any) {
+    console.error('[INTERNET-BATCH] Ingestion error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

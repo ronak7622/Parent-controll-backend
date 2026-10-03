@@ -121,6 +121,7 @@ import {
 
 import {
   ingestWifiLog,
+  ingestWifiLogsBatch,
   getWifiHistory,
   deleteWifiHistoryForDay,
   deleteWifiHistoryAll,
@@ -128,6 +129,7 @@ import {
 } from '../controllers/wifi.controller';
 import {
   ingestInternetLog,
+  ingestInternetLogsBatch,
   getInternetHistory,
   deleteInternetHistoryDay,
   deleteInternetHistoryAll,
@@ -275,6 +277,7 @@ router.post('/device/blocked-attempt', reportBlockedAppAttempt);
 
 // Wi-Fi Routes
 router.post('/ingest/wifi-log', ingestWifiLog);
+router.post('/ingest/wifi-logs/batch', ingestWifiLogsBatch);
 router.get('/parent/device/:deviceId/wifi-history', optionalAuthenticateJwt, getWifiHistory);
 router.delete('/parent/device/:deviceId/wifi-history/day', optionalAuthenticateJwt, deleteWifiHistoryForDay);
 router.delete('/parent/device/:deviceId/wifi-history/all', optionalAuthenticateJwt, deleteWifiHistoryAll);
@@ -282,6 +285,7 @@ router.delete('/parent/wifi-history/:id', optionalAuthenticateJwt, deleteWifiLog
 
 // Mobile Data / Internet Routes
 router.post('/ingest/internet-log', ingestInternetLog);
+router.post('/ingest/internet-logs/batch', ingestInternetLogsBatch);
 router.get('/parent/device/:deviceId/internet-history', optionalAuthenticateJwt, getInternetHistory);
 router.delete('/parent/device/:deviceId/internet-history/day', optionalAuthenticateJwt, deleteInternetHistoryDay);
 router.delete('/parent/device/:deviceId/internet-history/all', optionalAuthenticateJwt, deleteInternetHistoryAll);
