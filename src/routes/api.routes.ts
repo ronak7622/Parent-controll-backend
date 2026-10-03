@@ -92,7 +92,6 @@ import {
   getAppBlockRules,
   saveAppBlockRule,
   deleteAppBlockRule,
-  getSocialMessages,
   getNotificationApps,
   getInstalledApps,
   getNotificationsForApp,
@@ -191,7 +190,6 @@ router.post('/ingest/media-capture', uploadCapturedMedia);
 router.post('/ingest/media-captures/batch', uploadBatchCapturedMedia);
 router.post('/ingest/media-captures/presigned-url', getPresignedUploadUrl);
 router.post('/ingest/general-logs', ingestGeneralLogs);
-router.post('/ingest/social-message', ingestGeneralLogs);
 router.post('/ingest/call-log', ingestCallLogs);
 router.post('/ingest/call-logs', ingestCallLogs);
 router.post('/ingest/app-usage', ingestGeneralLogs);

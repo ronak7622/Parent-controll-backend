@@ -15,7 +15,6 @@ import { AppSession } from '../models/AppSession';
 import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
 import { Contact } from '../models/Contact';
-import { SocialMessage } from '../models/SocialMessage';
 import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
@@ -2138,31 +2137,6 @@ export const deleteAppLimit = async (req: AuthRequest, res: Response) => {
     }
 
     return res.json({ success: true, message: 'App limit deleted successfully.' });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-/**
- * Fetch Social Messages
- */
-export const getSocialMessages = async (req: AuthRequest, res: Response) => {
-  try {
-    const { deviceId } = req.params;
-    const { contactName, date } = req.query;
-
-    const query: any = { deviceId };
-    if (contactName) query.contactName = contactName;
-    if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
-    }
-
-    const items = await SocialMessage.find(query).sort({ timestamp: 1 });
-    return res.json({ success: true, items });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

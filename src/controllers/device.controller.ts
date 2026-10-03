@@ -13,7 +13,6 @@ import { MediaCapture } from '../models/MediaCapture';
 import { AppUsage } from '../models/AppUsage';
 import { AppSession } from '../models/AppSession';
 import { Contact } from '../models/Contact';
-import { SocialMessage } from '../models/SocialMessage';
 import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
@@ -570,7 +569,6 @@ export const disconnectDevice = async (req: any, res: Response) => {
       KeyboardLog.deleteMany({ deviceId: targetId }),
       LocationLog.deleteMany({ deviceId: targetId }),
       MediaCapture.deleteMany({ deviceId: targetId }),
-      SocialMessage.deleteMany({ deviceId: targetId }),
       ChildNotification.deleteMany({ deviceId: targetId }),
       WifiLog.deleteMany({ deviceId: targetId }),
       YouTubeHistory.deleteMany({ deviceId: targetId }),

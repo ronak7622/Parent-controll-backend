@@ -12,7 +12,6 @@ import { MediaCapture } from '../models/MediaCapture';
 import { AppUsage } from '../models/AppUsage';
 import { AppSession } from '../models/AppSession';
 import { Contact } from '../models/Contact';
-import { SocialMessage } from '../models/SocialMessage';
 import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
@@ -507,20 +506,6 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
         timestamp: cl.timestamp ? new Date(cl.timestamp) : new Date(),
       }));
       await CallLog.insertMany(docs);
-    }
-
-    if (Array.isArray(socialMessages) && socialMessages.length > 0) {
-      const docs = socialMessages.map((sm) => ({
-        deviceId,
-        packageName: sm.packageName,
-        appName: sm.appName || 'Social App',
-        contactName: sm.contactName || 'Contact',
-        sender: sm.sender || 'Sender',
-        messageText: sm.messageText || '',
-        isOutgoing: sm.isOutgoing || false,
-        timestamp: sm.timestamp ? new Date(sm.timestamp) : new Date(),
-      }));
-      await SocialMessage.insertMany(docs);
     }
 
     const appUsageList = Array.isArray(appUsage) ? appUsage : (Array.isArray(usageRecords) ? usageRecords : []);
