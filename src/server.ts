@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import http from 'http';
 import cors from 'cors';
 import path from 'path';
@@ -18,7 +19,8 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Enable CORS and JSON Body Parser
+// Enable Gzip Compression, CORS and JSON Body Parser
+app.use(compression());
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ limit: '500mb', extended: true }));

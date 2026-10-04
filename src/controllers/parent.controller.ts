@@ -201,6 +201,13 @@ export const deleteBrowserHistoryForDevice = async (req: AuthRequest, res: Respo
     }
 
     const result = await BrowserHistory.deleteMany(query);
+
+    if (date) {
+      await Device.updateMany({ deviceId }, { $addToSet: { clearedBrowserDates: date as string } });
+    } else {
+      await Device.updateMany({ deviceId }, { $set: { lastBrowserClearedAt: new Date(), clearedBrowserDates: [] } });
+    }
+
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -319,6 +326,13 @@ export const deleteYouTubeHistoryForDevice = async (req: AuthRequest, res: Respo
     }
 
     const result = await YouTubeHistory.deleteMany(query);
+
+    if (date) {
+      await Device.updateMany({ deviceId }, { $addToSet: { clearedYoutubeDates: date as string } });
+    } else {
+      await Device.updateMany({ deviceId }, { $set: { lastYoutubeClearedAt: new Date(), clearedYoutubeDates: [] } });
+    }
+
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -2016,7 +2030,30 @@ export const deleteAppUsageForDevice = async (req: AuthRequest, res: Response) =
 
     const query: any = { deviceId };
     if (packageName) query.packageName = packageName as string;
-    if (date) query.date = date as string;
+
+    if (date && typeof date === 'string') {
+      const parts = date.split('-').map(Number);
+      if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+        const [y, m, d] = parts;
+        const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+        const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+        query.$or = [
+          { date: date },
+          { timestamp: { $gte: startOfDay, $lte: endOfDay } },
+          { createdAt: { $gte: startOfDay, $lte: endOfDay } }
+        ];
+      } else {
+        query.date = date;
+      }
+
+      await Device.findOneAndUpdate(
+        { deviceId },
+        {
+          $addToSet: { clearedAppUsageDates: date },
+          $set: { lastAppUsageClearedAt: new Date() }
+        }
+      );
+    }
 
     const [sessionResult, usageResult] = await Promise.all([
       AppSession.deleteMany(query),
@@ -2171,6 +2208,11 @@ export const deleteSelectedDayCallLogs = async (req: AuthRequest, res: Response)
       deviceId: { $in: [deviceId, targetDeviceId] },
       timestamp: { $gte: start, $lte: end },
     });
+
+    await Device.updateMany(
+      { deviceId: { $in: [deviceId, targetDeviceId] } },
+      { $addToSet: { clearedCallLogDates: date as string } }
+    );
 
     return res.json({
       success: true,
@@ -2729,11 +2771,34 @@ export const deleteLocationHistoryForDay = async (req: AuthRequest, res: Respons
     const { deviceId } = req.params;
     const { date } = req.query;
 
-    if (!date) {
+    if (!date || typeof date !== 'string') {
       return res.status(400).json({ success: false, message: 'date query parameter is required' });
     }
 
-    const result = await LocationLog.deleteMany({ deviceId, date: date as string });
+    const parts = date.split('-').map(Number);
+    let dateFilter: any = { date: date as string };
+    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+      const [y, m, d] = parts;
+      const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+      const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+      dateFilter = {
+        $or: [
+          { date: date as string },
+          { timestamp: { $gte: startOfDay, $lte: endOfDay } },
+          { createdAt: { $gte: startOfDay, $lte: endOfDay } }
+        ]
+      };
+    }
+
+    await Device.findOneAndUpdate(
+      { deviceId },
+      {
+        $addToSet: { clearedLocationDates: date as string },
+        $set: { lastLocationClearedAt: new Date() }
+      }
+    );
+
+    const result = await LocationLog.deleteMany({ deviceId, ...dateFilter });
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -3021,20 +3086,34 @@ export const deleteKeyboardHistoryForDay = async (req: AuthRequest, res: Respons
     const { deviceId } = req.params;
     const { date } = req.query;
 
-    if (!date) {
+    if (!date || typeof date !== 'string') {
       return res.status(400).json({ success: false, message: 'date query parameter is required' });
     }
 
-    const start = new Date(date as string);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(date as string);
-    end.setHours(23, 59, 59, 999);
+    const parts = date.split('-').map(Number);
+    let dateFilter: any = { date: date as string };
+    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+      const [y, m, d] = parts;
+      const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+      const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+      dateFilter = {
+        $or: [
+          { date: date as string },
+          { timestamp: { $gte: startOfDay, $lte: endOfDay } },
+          { createdAt: { $gte: startOfDay, $lte: endOfDay } }
+        ]
+      };
+    }
 
-    const result = await KeyboardLog.deleteMany({
-      deviceId,
-      timestamp: { $gte: start, $lte: end },
-    });
+    await Device.findOneAndUpdate(
+      { deviceId },
+      {
+        $addToSet: { clearedKeyboardDates: date as string },
+        $set: { lastKeyboardClearedAt: new Date() }
+      }
+    );
 
+    const result = await KeyboardLog.deleteMany({ deviceId, ...dateFilter });
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

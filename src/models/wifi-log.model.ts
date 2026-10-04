@@ -40,7 +40,6 @@ const WifiLogSchema: Schema = new Schema(
     isCurrentlyConnected: { type: Boolean, default: false },
     latitude: { type: Number, default: null },
     longitude: { type: Number, default: null },
-    locationName: { type: String, default: '' },
     locationAddress: { type: String, default: '' },
     isBlockedAttempt: { type: Boolean, default: false },
     statusReason: { type: String, default: '' },
@@ -48,5 +47,7 @@ const WifiLogSchema: Schema = new Schema(
   },
   { timestamps: true }
 );
+
+WifiLogSchema.index({ deviceId: 1, timestamp: -1 });
 
 export const WifiLog = mongoose.model<IWifiLog>('WifiLog', WifiLogSchema);

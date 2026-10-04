@@ -280,17 +280,30 @@ export const deleteWifiHistoryForDay = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'date query parameter is required (YYYY-MM-DD)' });
     }
 
-    const targetDate = new Date(date);
-    if (isNaN(targetDate.getTime())) {
-      return res.status(400).json({ success: false, message: 'Invalid date format' });
-    }
+    const parts = date.split('-').map(Number);
+    let startOfDay: Date;
+    let endOfDay: Date;
 
-    const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+      const [y, m, d] = parts;
+      startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+      endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+    } else {
+      const targetDate = new Date(date);
+      startOfDay = new Date(targetDate);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      endOfDay = new Date(targetDate);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+    }
 
     const result = await WifiLog.deleteMany({
       deviceId,
-      timestamp: { $gte: startOfDay, $lte: endOfDay },
+      $or: [
+        { timestamp: { $gte: startOfDay, $lte: endOfDay } },
+        { createdAt: { $gte: startOfDay, $lte: endOfDay } },
+        { connectedAt: { $gte: startOfDay, $lte: endOfDay } },
+        { date: date }
+      ]
     });
 
     return res.status(200).json({

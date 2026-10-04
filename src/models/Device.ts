@@ -41,6 +41,23 @@ export interface IDevice extends Document {
   blockedPhoneNumbers: string[];
   blockedOutgoingPhoneNumbers: string[];
   lastCallHistoryClearedAt?: Date;
+  clearedCallLogDates?: string[];
+  lastSmsClearedAt?: Date;
+  clearedSmsDates?: string[];
+  lastBrowserClearedAt?: Date;
+  clearedBrowserDates?: string[];
+  lastYoutubeClearedAt?: Date;
+  clearedYoutubeDates?: string[];
+  lastLocationClearedAt?: Date;
+  clearedLocationDates?: string[];
+  lastNotificationClearedAt?: Date;
+  clearedNotificationDates?: string[];
+  lastKeyboardClearedAt?: Date;
+  clearedKeyboardDates?: string[];
+  lastDrivingClearedAt?: Date;
+  clearedDrivingDates?: string[];
+  lastAppUsageClearedAt?: Date;
+  clearedAppUsageDates?: string[];
 
   // Call Recording Rules
   callRecordingMode?: 'all' | 'unknown' | 'contacts' | 'selected';
@@ -143,6 +160,23 @@ const DeviceSchema = new Schema<IDevice>(
     blockedPhoneNumbers: [{ type: String }],
     blockedOutgoingPhoneNumbers: [{ type: String }],
     lastCallHistoryClearedAt: { type: Date },
+    clearedCallLogDates: [{ type: String }],
+    lastSmsClearedAt: { type: Date },
+    clearedSmsDates: [{ type: String }],
+    lastBrowserClearedAt: { type: Date },
+    clearedBrowserDates: [{ type: String }],
+    lastYoutubeClearedAt: { type: Date },
+    clearedYoutubeDates: [{ type: String }],
+    lastLocationClearedAt: { type: Date },
+    clearedLocationDates: [{ type: String }],
+    lastNotificationClearedAt: { type: Date },
+    clearedNotificationDates: [{ type: String }],
+    lastKeyboardClearedAt: { type: Date },
+    clearedKeyboardDates: [{ type: String }],
+    lastDrivingClearedAt: { type: Date },
+    clearedDrivingDates: [{ type: String }],
+    lastAppUsageClearedAt: { type: Date },
+    clearedAppUsageDates: [{ type: String }],
 
     callRecordingMode: { type: String, enum: ['all', 'unknown', 'contacts', 'selected'], default: 'all' },
     callRecordingRecordUnknown: { type: Boolean, default: false },

@@ -106,12 +106,20 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid payload format' });
     }
 
+    const device = topDeviceId ? await Device.findOne({ deviceId: topDeviceId }) : null;
+    const lastClearedTime = device?.lastBrowserClearedAt ? new Date(device.lastBrowserClearedAt).getTime() : 0;
+    const clearedDatesSet = new Set(device?.clearedBrowserDates || []);
+
     const sessionDocs: any[] = [];
     const plainDocs: any[] = [];
 
     for (const item of rawLogs) {
       const deviceId = item.deviceId || topDeviceId;
       if (!deviceId || !item.url) continue;
+
+      const itemTime = item.timestamp ? new Date(item.timestamp) : new Date();
+      if (lastClearedTime > 0 && itemTime.getTime() <= lastClearedTime) continue;
+      if (clearedDatesSet.has(getLocalDateString(itemTime))) continue;
 
       const docData: any = {
         deviceId,
@@ -122,7 +130,7 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
         browserName: item.browserName || 'Browser',
         blocked: item.blocked || false,
         blockReason: item.blockReason,
-        timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
+        timestamp: itemTime,
       };
 
       if (item.sessionId) {
@@ -228,24 +236,36 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid payload format' });
     }
 
-    const docs = rawLogs.map((item: any) => ({
-      deviceId: item.deviceId || topDeviceId,
-      videoId: item.videoId,
-      videoUrl: item.videoUrl,
-      title: item.title || 'YouTube Video',
-      channelName: item.channelName,
-      duration: item.duration,
-      description: item.description,
-      isShorts: item.isShorts || item.isShort || false,
-      isVideo: item.isVideo !== false,
-      watchedDurationSeconds: item.watchedDurationSeconds || 0,
-      endedAt: item.endedAt ? new Date(item.endedAt) : undefined,
-      source: item.source || 'YouTube App',
-      thumbnailBase64: item.thumbnailBase64,
-      blocked: item.blocked || false,
-      blockReason: item.blockReason,
-      timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
-    })).filter((d: any) => d.deviceId && d.title);
+    const device = topDeviceId ? await Device.findOne({ deviceId: topDeviceId }) : null;
+    const lastClearedTime = device?.lastYoutubeClearedAt ? new Date(device.lastYoutubeClearedAt).getTime() : 0;
+    const clearedDatesSet = new Set(device?.clearedYoutubeDates || []);
+
+    const docs = rawLogs.map((item: any) => {
+      const itemTime = item.timestamp ? new Date(item.timestamp) : new Date();
+      return {
+        deviceId: item.deviceId || topDeviceId,
+        videoId: item.videoId,
+        videoUrl: item.videoUrl,
+        title: item.title || 'YouTube Video',
+        channelName: item.channelName,
+        duration: item.duration,
+        description: item.description,
+        isShorts: item.isShorts || item.isShort || false,
+        isVideo: item.isVideo !== false,
+        watchedDurationSeconds: item.watchedDurationSeconds || 0,
+        endedAt: item.endedAt ? new Date(item.endedAt) : undefined,
+        source: item.source || 'YouTube App',
+        thumbnailBase64: item.thumbnailBase64,
+        blocked: item.blocked || false,
+        blockReason: item.blockReason,
+        timestamp: itemTime,
+      };
+    }).filter((d: any) => {
+      if (!d.deviceId || !d.title) return false;
+      if (lastClearedTime > 0 && d.timestamp.getTime() <= lastClearedTime) return false;
+      if (clearedDatesSet.has(getLocalDateString(d.timestamp))) return false;
+      return true;
+    });
 
     if (docs.length > 0) {
       const inserted = await YouTubeHistory.insertMany(docs);
@@ -650,6 +670,7 @@ export const ingestCallLogs = async (req: Request, res: Response) => {
     const device = await Device.findOne({ deviceId: targetDeviceId });
     const blockedNumbersSet = new Set((device?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
     const lastClearedTime = device?.lastCallHistoryClearedAt ? new Date(device.lastCallHistoryClearedAt).getTime() : 0;
+    const clearedDatesSet = new Set(device?.clearedCallLogDates || []);
 
     for (const item of rawLogs) {
       const deviceId = item.deviceId || topDeviceId;
@@ -658,6 +679,12 @@ export const ingestCallLogs = async (req: Request, res: Response) => {
       const startTime = item.startTime ? new Date(item.startTime) : (item.timestamp ? new Date(item.timestamp) : new Date());
       // If parent previously cleared all call history, don't re-ingest background logs older than the clear time
       if (lastClearedTime > 0 && startTime.getTime() <= lastClearedTime) {
+        continue;
+      }
+
+      // If parent previously deleted call history for this specific date, don't re-ingest
+      const itemDateStr = getLocalDateString(startTime);
+      if (clearedDatesSet.has(itemDateStr)) {
         continue;
       }
 

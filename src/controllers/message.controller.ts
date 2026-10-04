@@ -251,7 +251,32 @@ export const deleteMessagesForDevice = async (req: AuthRequest, res: Response) =
     const { address, date } = req.query;
     const query: any = { deviceId };
     if (address) query.address = address;
-    if (date) query.date = date as string;
+
+    if (date && typeof date === 'string') {
+      const parts = date.split('-').map(Number);
+      if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+        const [y, m, d] = parts;
+        const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+        const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+        query.$or = [
+          { date: date },
+          { timestamp: { $gte: startOfDay, $lte: endOfDay } },
+          { messageDate: { $gte: startOfDay, $lte: endOfDay } },
+          { createdAt: { $gte: startOfDay, $lte: endOfDay } }
+        ];
+      } else {
+        query.date = date;
+      }
+
+      await Device.findOneAndUpdate(
+        { deviceId },
+        {
+          $addToSet: { clearedSmsDates: date },
+          $set: { lastSmsClearedAt: new Date() }
+        }
+      );
+    }
+
     const result = await ChildMessage.deleteMany(query);
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {

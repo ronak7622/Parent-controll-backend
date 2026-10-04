@@ -296,12 +296,19 @@ export const deleteInternetHistoryDay = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid date format' });
     }
 
-    const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+    const parts = date.split('-').map(Number);
+    const [y, m, d] = parts.length === 3 ? parts : [targetDate.getFullYear(), targetDate.getMonth() + 1, targetDate.getDate()];
+    const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+    const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
 
     const result = await InternetLog.deleteMany({
       deviceId,
-      timestamp: { $gte: startOfDay, $lte: endOfDay },
+      $or: [
+        { timestamp: { $gte: startOfDay, $lte: endOfDay } },
+        { createdAt: { $gte: startOfDay, $lte: endOfDay } },
+        { connectedAt: { $gte: startOfDay, $lte: endOfDay } },
+        { date: date }
+      ]
     });
 
     return res.status(200).json({

@@ -45,4 +45,6 @@ const InternetLogSchema: Schema = new Schema(
   { timestamps: true }
 );
 
+InternetLogSchema.index({ deviceId: 1, timestamp: -1 });
+
 export const InternetLog = mongoose.model<IInternetLog>('InternetLog', InternetLogSchema);
