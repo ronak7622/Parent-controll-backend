@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IKeyboardLog extends Document {
   deviceId: string;
@@ -31,5 +32,7 @@ const KeyboardLogSchema = new Schema<IKeyboardLog>(
 
 // Compound index for fast date-filtered queries per device
 KeyboardLogSchema.index({ deviceId: 1, timestamp: -1 });
+KeyboardLogSchema.index({ deviceId: 1, timestamp: 1, matchedKeyword: 1, packageName: 1 }, { unique: true, sparse: true });
+applyTtlIndex(KeyboardLogSchema, 'timestamp');
 
 export const KeyboardLog = mongoose.model<IKeyboardLog>('KeyboardLog', KeyboardLogSchema);

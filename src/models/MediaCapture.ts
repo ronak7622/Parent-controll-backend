@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IMediaCapture extends Document {
   deviceId: string;
@@ -31,5 +32,6 @@ const MediaCaptureSchema = new Schema<IMediaCapture>(
 
 // Compound index for fast screenshot/photo queries at scale
 MediaCaptureSchema.index({ deviceId: 1, type: 1, captureType: 1, timestamp: -1 });
+applyTtlIndex(MediaCaptureSchema, 'timestamp');
 
 export const MediaCapture = mongoose.model<IMediaCapture>('MediaCapture', MediaCaptureSchema);

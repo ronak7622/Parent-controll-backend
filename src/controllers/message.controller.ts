@@ -2,6 +2,7 @@ import { Response, Request } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { ChildMessage, MessageCategory, MessageDirection } from '../models/ChildMessage';
 import { Device } from '../models/Device';
+import { getReadQuery } from '../dal/db.dal';
 
 function getLocalDateString(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
@@ -187,7 +188,7 @@ export const getMessagesForConversation = async (req: AuthRequest, res: Response
       query.category = String(category).trim();
     }
 
-    const messages = await ChildMessage.find(query).sort({ timestamp: 1 });
+    const messages = await getReadQuery(ChildMessage).find(query).sort({ timestamp: 1 });
 
     // Deduplicate in case existing database records have duplicate messages from millisecond timestamp mismatches
     const uniqueMessages: typeof messages = [];

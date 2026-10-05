@@ -17,5 +17,17 @@ export const config = {
     publicDomain: process.env.R2_PUBLIC_DOMAIN || '',
   },
   
+  redisUri: process.env.REDIS_URI || process.env.REDIS_URL || '',
+  cdnPublicDomain: process.env.CDN_PUBLIC_DOMAIN || process.env.R2_PUBLIC_DOMAIN || '',
+
+  // Scalability Feature Flags
+  flags: {
+    enablePresignedUploads: process.env.ENABLE_PRESIGNED_UPLOADS !== 'false', // Default enabled
+    enableBullmqIngest: process.env.ENABLE_BULLMQ_INGEST === 'true', // Opt-in async queue ingestion
+    enableRedisCache: process.env.ENABLE_REDIS_CACHE === 'true', // Opt-in Redis caching
+    enableTtlIndexes: process.env.ENABLE_TTL_INDEXES === 'true', // Opt-in Mongo TTL index auto-delete
+    enableReadReplicas: process.env.ENABLE_READ_REPLICAS === 'true', // Opt-in replica set secondary reads
+  },
+  
   firebaseServiceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '',
 };

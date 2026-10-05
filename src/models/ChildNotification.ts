@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IChildNotification extends Document {
   deviceId: string;
@@ -53,5 +54,6 @@ ChildNotificationSchema.index(
   { deviceId: 1, packageName: 1, timestamp: 1, title: 1, body: 1 },
   { unique: true }
 );
+applyTtlIndex(ChildNotificationSchema, 'timestamp');
 
 export const ChildNotification = mongoose.model<IChildNotification>('ChildNotification', ChildNotificationSchema);

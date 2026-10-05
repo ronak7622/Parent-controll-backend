@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IAppSession extends Document {
   deviceId: string;
@@ -35,5 +36,6 @@ const AppSessionSchema = new Schema<IAppSession>(
 AppSessionSchema.index({ deviceId: 1, packageName: 1, startTime: 1 }, { unique: true });
 AppSessionSchema.index({ deviceId: 1, date: 1, packageName: 1 });
 AppSessionSchema.index({ deviceId: 1, date: 1, startTime: -1 });
+applyTtlIndex(AppSessionSchema, 'startTime');
 
 export const AppSession = mongoose.model<IAppSession>('AppSession', AppSessionSchema);

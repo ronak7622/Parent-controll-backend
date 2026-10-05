@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IWifiLog extends Document {
   deviceId: string;
@@ -49,5 +50,6 @@ const WifiLogSchema: Schema = new Schema(
 );
 
 WifiLogSchema.index({ deviceId: 1, timestamp: -1 });
+applyTtlIndex(WifiLogSchema, 'timestamp');
 
 export const WifiLog = mongoose.model<IWifiLog>('WifiLog', WifiLogSchema);

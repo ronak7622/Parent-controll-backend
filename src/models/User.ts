@@ -9,6 +9,13 @@ export interface IUser extends Document {
   isVerified: boolean;
   name?: string;
   email?: string;
+  planType?: 'free' | 'monthly' | 'yearly';
+  planExpiresAt?: Date;
+  planGracePeriodEndsAt?: Date;
+  storageQuotaBytes?: number; // 20GB default
+  addonStorageBytes?: number;
+  autoDeleteMode?: boolean;
+  autoDeleteDays?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -23,6 +30,13 @@ const UserSchema = new Schema<IUser>(
     isVerified: { type: Boolean, default: false },
     name: { type: String },
     email: { type: String },
+    planType: { type: String, enum: ['free', 'monthly', 'yearly'], default: 'monthly' },
+    planExpiresAt: { type: Date },
+    planGracePeriodEndsAt: { type: Date },
+    storageQuotaBytes: { type: Number, default: 21474836480 }, // 20 GB
+    addonStorageBytes: { type: Number, default: 0 },
+    autoDeleteMode: { type: Boolean, default: true },
+    autoDeleteDays: { type: Number, default: 30 },
   },
   { timestamps: true }
 );

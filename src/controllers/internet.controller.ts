@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { InternetLog } from '../models/internet-log.model';
+import { getReadQuery } from '../dal/db.dal';
 import { Device } from '../models/Device';
 
 // Helper function to format bytes to human readable string (KB, MB, GB)
@@ -188,7 +189,7 @@ export const getInternetHistory = async (req: Request, res: Response) => {
       }
     }
 
-    const logs = await InternetLog.find(filter)
+    const logs = await getReadQuery(InternetLog).find(filter)
       .sort({ timestamp: -1 })
       .limit(limit);
 

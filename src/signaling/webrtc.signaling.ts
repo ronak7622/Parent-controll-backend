@@ -1,5 +1,8 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
+import { createAdapter } from '@socket.io/redis-adapter';
+import Redis from 'ioredis';
+import { config } from '../config/env';
 import { Device } from '../models/Device';
 import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
@@ -13,6 +16,23 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       methods: ['GET', 'POST'],
     },
   });
+
+  if (config.redisUri) {
+    try {
+      const pubClient = new Redis(config.redisUri, {
+        maxRetriesPerRequest: null,
+        enableOfflineQueue: false,
+        lazyConnect: true,
+      });
+      pubClient.on('error', (err) => console.warn('[SOCKET.IO-REDIS-PUB-WARN]', err.message));
+      const subClient = pubClient.duplicate();
+      subClient.on('error', (err) => console.warn('[SOCKET.IO-REDIS-SUB-WARN]', err.message));
+      io.adapter(createAdapter(pubClient, subClient));
+      console.log('[SOCKET.IO-REDIS] Redis Adapter attached to Socket.io for horizontal scaling.');
+    } catch (err: any) {
+      console.warn('[SOCKET.IO-REDIS-WARN] Could not attach Redis Adapter:', err.message);
+    }
+  }
 
   const signalingNamespace = io.of('/webrtc-signaling');
   signalingIo = signalingNamespace;

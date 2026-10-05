@@ -22,6 +22,8 @@ import { KeyboardLog } from '../models/KeyboardLog';
 import { Device } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
+import { getReadQuery, buildShardFilter, clampPaginationLimit } from '../dal/db.dal';
+import { cacheService } from '../services/cache.service';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC+5:30
 
@@ -57,9 +59,11 @@ export const getBrowserHistory = async (req: AuthRequest, res: Response) => {
       query.timestamp = { $gte: start, $lte: end };
     }
 
-    const items = await BrowserHistory.find(query)
+    const fetchLimit = clampPaginationLimit(limit, 500, 100);
+    const items = await getReadQuery(BrowserHistory)
+      .find(query)
       .sort({ timestamp: -1 })
-      .limit(Number(limit));
+      .limit(fetchLimit);
 
     let totalBrowsingDurationSeconds = 0;
     let morningSeconds = 0;
@@ -231,9 +235,10 @@ export const getYouTubeHistory = async (req: AuthRequest, res: Response) => {
       query.timestamp = { $gte: start, $lte: end };
     }
 
+    const fetchLimit = clampPaginationLimit(limit, 500, 100);
     const items = await YouTubeHistory.find(query)
       .sort({ timestamp: -1 })
-      .limit(Number(limit));
+      .limit(fetchLimit);
 
     const dev = await Device.findOne({ deviceId }).select('lastYoutubeSyncTime');
     return res.json({ success: true, items, events: items, lastSyncTime: dev?.lastYoutubeSyncTime });
@@ -255,9 +260,10 @@ export const getYouTubeSessions = async (req: AuthRequest, res: Response) => {
       query.date = date as string;
     }
 
+    const sessionLimit = clampPaginationLimit(limit, 500, 100);
     const sessions = await YouTubeSession.find(query)
       .sort({ startTime: -1 })
-      .limit(Number(limit));
+      .limit(sessionLimit);
 
     const dev = await Device.findOne({ deviceId }).select('lastYoutubeSyncTime');
     return res.json({ success: true, sessions, items: sessions, lastSyncTime: dev?.lastYoutubeSyncTime });
@@ -358,9 +364,10 @@ export const getCapturedMedia = async (req: AuthRequest, res: Response) => {
       query.timestamp = { $gte: start, $lte: end };
     }
 
+    const fetchLimit = clampPaginationLimit(limit, 200, 50);
     const items = await MediaCapture.find(query)
       .sort({ timestamp: -1 })
-      .limit(Number(limit));
+      .limit(fetchLimit);
 
     const host = req.get('host') || 'localhost:5000';
     const baseUrl = `${req.protocol}://${host}`;
@@ -414,6 +421,8 @@ export const updateScheduleConfig = async (req: AuthRequest, res: Response) => {
       { $set: updateData },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
+
+    await cacheService.del(cacheService.keys.deviceRules(deviceId));
 
     // Notify Child Device via Socket.io
     const io = getSignalingIo();
@@ -2140,6 +2149,8 @@ export const saveAppLimit = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    await cacheService.del(cacheService.keys.appLimits(deviceId));
+
     return res.json({ success: true, message: 'App limit saved successfully.', limit });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -2172,6 +2183,8 @@ export const deleteAppLimit = async (req: AuthRequest, res: Response) => {
         action: 'UPDATE_APP_LIMITS',
       });
     }
+
+    await cacheService.del(cacheService.keys.appLimits(deviceId));
 
     return res.json({ success: true, message: 'App limit deleted successfully.' });
   } catch (error: any) {
@@ -2432,6 +2445,8 @@ export const saveAppBlockRule = async (req: AuthRequest, res: Response) => {
       }).catch((err) => console.warn('[FCM] Error pushing app block rule:', err.message));
     }
 
+    await cacheService.del(cacheService.keys.appBlocks(deviceId));
+
     return res.json({ success: true, rule });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -2472,6 +2487,8 @@ export const deleteAppBlockRule = async (req: AuthRequest, res: Response) => {
         action: 'UPDATE_APP_BLOCKS',
       }).catch((err) => console.warn('[FCM] Error pushing app block rules deletion:', err.message));
     }
+
+    await cacheService.del(cacheService.keys.appBlocks(deviceId));
 
     return res.json({ success: true, message: 'Block rule removed successfully' });
   } catch (error: any) {

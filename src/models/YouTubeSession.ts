@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IYouTubeSession extends Document {
   deviceId: string;
@@ -30,5 +31,6 @@ const YouTubeSessionSchema = new Schema<IYouTubeSession>(
 );
 
 YouTubeSessionSchema.index({ deviceId: 1, date: -1, startTime: -1 });
+applyTtlIndex(YouTubeSessionSchema, 'startTime');
 
 export const YouTubeSession = mongoose.model<IYouTubeSession>('YouTubeSession', YouTubeSessionSchema);

@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IDrivingTrip extends Document {
   deviceId: string;
@@ -98,5 +99,6 @@ const DrivingTripSchema: Schema = new Schema(
 DrivingTripSchema.index({ deviceId: 1, tripId: 1 }, { unique: true });
 DrivingTripSchema.index({ deviceId: 1, date: 1, status: 1 });
 DrivingTripSchema.index({ deviceId: 1, date: 1, startTime: -1 });
+applyTtlIndex(DrivingTripSchema, 'startTime');
 
 export const DrivingTrip = mongoose.model<IDrivingTrip>('DrivingTrip', DrivingTripSchema);

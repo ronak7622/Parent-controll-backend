@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IInternetLog extends Document {
   deviceId: string;
@@ -46,5 +47,6 @@ const InternetLogSchema: Schema = new Schema(
 );
 
 InternetLogSchema.index({ deviceId: 1, timestamp: -1 });
+applyTtlIndex(InternetLogSchema, 'timestamp');
 
 export const InternetLog = mongoose.model<IInternetLog>('InternetLog', InternetLogSchema);

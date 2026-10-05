@@ -22,6 +22,7 @@ import { InternetLog } from '../models/internet-log.model';
 import { ScheduleConfig } from '../models/ScheduleConfig';
 import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { cacheService } from '../services/cache.service';
 
 // "1h 5m" / "45m" / "30s"
 const formatDurationShort = (totalSeconds: number): string => {
@@ -485,6 +486,11 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       restrictions,
     });
 
+    await cacheService.del([
+      cacheService.keys.deviceInfo(device.deviceId),
+      cacheService.keys.deviceRules(device.deviceId),
+    ]);
+
     return res.json({
       success: true,
       message: 'Device restrictions updated successfully.',
@@ -576,6 +582,13 @@ export const disconnectDevice = async (req: any, res: Response) => {
       ScheduleConfig.deleteMany({ deviceId: targetId }),
     ]);
 
+    await cacheService.del([
+      cacheService.keys.appLimits(targetId),
+      cacheService.keys.appBlocks(targetId),
+      cacheService.keys.deviceRules(targetId),
+      cacheService.keys.deviceInfo(targetId),
+    ]);
+
     console.log(`[DISCONNECT-PURGE-SUCCESS] All data permanently deleted for device ${targetId}`);
 
     return res.json({
@@ -594,7 +607,10 @@ export const getDeviceDetails = async (req: any, res: Response) => {
   try {
     const { deviceId } = req.params;
     const isObjId = mongoose.isValidObjectId(deviceId);
-    const device = await Device.findOne({ $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] });
+    const cacheKey = cacheService.keys.deviceInfo(deviceId);
+    const device = await cacheService.getOrFetch(cacheKey, 300, async () => {
+      return await Device.findOne({ $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] }).lean();
+    });
     if (!device) {
       return res.status(404).json({ success: false, message: 'Device not found' });
     }
@@ -613,7 +629,11 @@ export const getChildAppLimits = async (req: any, res: Response) => {
     if (!deviceId) {
       return res.status(400).json({ success: false, message: 'deviceId is required' });
     }
-    const limits = await AppLimit.find({ deviceId, isEnabled: true });
+    const limits = await cacheService.getOrFetch(
+      cacheService.keys.appLimits(deviceId),
+      300,
+      () => AppLimit.find({ deviceId, isEnabled: true }).lean()
+    );
     return res.json({ success: true, limits });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -725,7 +745,11 @@ export const getChildAppBlocks = async (req: any, res: Response) => {
     if (!deviceId) {
       return res.status(400).json({ success: false, message: 'deviceId is required' });
     }
-    const rules = await AppBlockRule.find({ deviceId, isBlocked: true });
+    const rules = await cacheService.getOrFetch(
+      cacheService.keys.appBlocks(deviceId),
+      300,
+      () => AppBlockRule.find({ deviceId, isBlocked: true }).lean()
+    );
     return res.json({ success: true, rules });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

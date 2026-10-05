@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IBrowserHistory extends Document {
   deviceId: string;
@@ -40,5 +41,6 @@ const BrowserHistorySchema = new Schema<IBrowserHistory>(
 // Compound index for fast time-series queries at scale
 BrowserHistorySchema.index({ deviceId: 1, timestamp: -1 });
 BrowserHistorySchema.index({ deviceId: 1, sessionId: 1 });
+applyTtlIndex(BrowserHistorySchema, 'timestamp');
 
 export const BrowserHistory = mongoose.model<IBrowserHistory>('BrowserHistory', BrowserHistorySchema);

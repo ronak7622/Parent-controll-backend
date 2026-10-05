@@ -17,7 +17,9 @@ import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
 import { KeyboardLog } from '../models/KeyboardLog';
 import { Device } from '../models/Device';
-import { uploadMediaToR2 } from '../services/r2.service';
+import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl } from '../services/r2.service';
+import { config } from '../config/env';
+import { enqueueIngestJob } from '../queues/ingest.queue';
 import { sendFcmTopicNotification } from '../services/fcm.service';
 import { isIgnoredSystemPackage, getISTDateString } from './parent.controller';
 
@@ -156,9 +158,24 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
       if (resDoc) insertedOrUpdated.push(resDoc);
     }
 
+    const allDocs = [...sessionDocs, ...plainDocs];
+    if (allDocs.length > 0) {
+      const enqueued = await enqueueIngestJob('browser_history', { docs: allDocs });
+      if (enqueued) {
+        return res.status(202).json({ success: true, count: allDocs.length, queued: true });
+      }
+    }
+
     if (plainDocs.length > 0) {
-      const inserted = await BrowserHistory.insertMany(plainDocs);
-      insertedOrUpdated.push(...inserted);
+      const ops = plainDocs.map((d: any) => ({
+        updateOne: {
+          filter: { deviceId: d.deviceId, timestamp: d.timestamp, url: d.url },
+          update: { $set: d },
+          upsert: true,
+        },
+      }));
+      await BrowserHistory.bulkWrite(ops, { ordered: false });
+      insertedOrUpdated.push(...plainDocs);
     }
 
     const blockedDocs = insertedOrUpdated.filter((d: any) => d.blocked);
@@ -268,8 +285,22 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
     });
 
     if (docs.length > 0) {
-      const inserted = await YouTubeHistory.insertMany(docs);
-      const blockedDocs = inserted.filter((d: any) => d.blocked);
+      const enqueued = await enqueueIngestJob('youtube_history', { docs });
+      if (enqueued) {
+        if (topDeviceId) await Device.findOneAndUpdate({ deviceId: topDeviceId }, { $set: { lastYoutubeSyncTime: new Date() } });
+        return res.status(202).json({ success: true, count: docs.length, queued: true });
+      }
+
+      const ops = docs.map((d: any) => ({
+        updateOne: {
+          filter: { deviceId: d.deviceId, timestamp: d.timestamp, title: d.title },
+          update: { $set: d },
+          upsert: true,
+        },
+      }));
+      await YouTubeHistory.bulkWrite(ops, { ordered: false });
+
+      const blockedDocs = docs.filter((d: any) => d.blocked);
       if (blockedDocs.length > 0) {
         const byDevice = new Map<string, any>();
         for (const bd of blockedDocs) byDevice.set(bd.deviceId, bd);
@@ -353,7 +384,20 @@ export const ingestYouTubeSession = async (req: Request, res: Response) => {
     }).filter((d: any) => d.deviceId && d.startTime && d.endTime);
 
     if (docs.length > 0) {
-      await YouTubeSession.insertMany(docs);
+      const enqueued = await enqueueIngestJob('youtube_session', { docs });
+      if (enqueued) {
+        if (topDeviceId) await Device.findOneAndUpdate({ deviceId: topDeviceId }, { $set: { lastYoutubeSyncTime: new Date() } });
+        return res.status(202).json({ success: true, count: docs.length, queued: true });
+      }
+
+      const ops = docs.map((d: any) => ({
+        updateOne: {
+          filter: { deviceId: d.deviceId, startTime: d.startTime },
+          update: { $set: d },
+          upsert: true,
+        },
+      }));
+      await YouTubeSession.bulkWrite(ops, { ordered: false });
 
       const blockedDocs = docs.filter((d: any) => d.blocked);
       if (blockedDocs.length > 0) {
@@ -476,8 +520,15 @@ export const uploadBatchCapturedMedia = async (req: Request, res: Response) => {
 
     let insertedCount = 0;
     if (docs.length > 0) {
-      const inserted = await MediaCapture.insertMany(docs);
-      insertedCount = inserted.length;
+      const ops = docs.map((doc) => ({
+        updateOne: {
+          filter: { deviceId: doc.deviceId, timestamp: doc.timestamp, mediaUrl: doc.mediaUrl },
+          update: { $set: doc },
+          upsert: true,
+        },
+      }));
+      await MediaCapture.bulkWrite(ops, { ordered: false });
+      insertedCount = docs.length;
     }
 
     console.log(`[MEDIA-BATCH] Ingested ${insertedCount} batch screenshot captures for device ${deviceId}`);
@@ -488,21 +539,70 @@ export const uploadBatchCapturedMedia = async (req: Request, res: Response) => {
 };
 
 /**
- * Pre-Signed URL Generator for Direct Storage Upload (Bypasses backend server bandwidth)
+ * Pre-Signed URL Generator for Direct Storage Upload (Bypasses backend server bandwidth & RAM)
  */
 export const getPresignedUploadUrl = async (req: Request, res: Response) => {
   try {
-    const { deviceId, fileType = 'image/webp', captureType = 'screenshot' } = req.body;
+    const { deviceId, fileType = 'image/webp', captureType = 'screenshot', type = 'screenshot', extension = 'webp' } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
-    const key = `captures/${captureType}/${deviceId}/${uuidv4()}.webp`;
-    // Returns storage target info (presigned URL format or server route)
+    const key = `captures/${type}/${deviceId}/${uuidv4()}.${extension}`;
+    const presigned = await generatePresignedPutUrl(key, fileType, 900);
+
     return res.json({
       success: true,
-      uploadUrl: `/ingest/media-capture/direct?key=${encodeURIComponent(key)}`,
-      key,
+      uploadUrl: presigned.uploadUrl,
+      objectKey: presigned.objectKey,
+      cdnUrl: presigned.cdnUrl,
+      isDirectS3: presigned.isDirectS3,
       expiresInSeconds: 900, // 15 mins expiry
     });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Register Media Metadata after direct client upload to Object Storage (R2/S3)
+ */
+export const registerMediaMetadata = async (req: Request, res: Response) => {
+  try {
+    const {
+      deviceId,
+      objectKey,
+      mediaUrl,
+      thumbnailUrl,
+      type = 'screenshot',
+      captureType = 'manual',
+      packageName,
+      appName,
+      fileSizeBytes,
+      mimeType = 'image/webp',
+      timestamp,
+    } = req.body;
+
+    if (!deviceId || (!objectKey && !mediaUrl)) {
+      return res.status(400).json({ success: false, message: 'deviceId and objectKey/mediaUrl are required' });
+    }
+
+    const finalMediaUrl = mediaUrl || (config.cdnPublicDomain ? `${config.cdnPublicDomain}/${objectKey}` : objectKey);
+    const finalThumbUrl = thumbnailUrl || finalMediaUrl;
+
+    const capture = new MediaCapture({
+      deviceId,
+      type: type === 'front_photo' || type === 'back_photo' ? type : 'screenshot',
+      captureType: captureType === 'schedule' || captureType === 'SCHEDULE' ? 'schedule' : 'manual',
+      mediaUrl: finalMediaUrl,
+      thumbnailUrl: finalThumbUrl,
+      packageName,
+      appName,
+      fileSizeBytes: fileSizeBytes || 0,
+      mimeType,
+      timestamp: timestamp ? new Date(timestamp) : new Date(),
+    });
+
+    await capture.save();
+    return res.json({ success: true, captureId: capture._id, mediaUrl: finalMediaUrl });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -540,8 +640,17 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
         phoneNumber: c.phoneNumber,
         isBlocked: c.isBlocked || false,
       }));
-      await Contact.deleteMany({ deviceId }); // Fresh sync
-      await Contact.insertMany(docs);
+      const enqueued = await enqueueIngestJob('contacts', { docs });
+      if (!enqueued) {
+        const ops = docs.map((d: any) => ({
+          updateOne: {
+            filter: { deviceId: d.deviceId, phoneNumber: d.phoneNumber },
+            update: { $set: d },
+            upsert: true,
+          },
+        }));
+        await Contact.bulkWrite(ops, { ordered: false });
+      }
     }
 
     if (Array.isArray(callLogs) && callLogs.length > 0) {
@@ -554,7 +663,17 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
         isVideo: cl.isVideo === true || cl.isVideo === 'true',
         timestamp: cl.timestamp ? new Date(cl.timestamp) : new Date(),
       }));
-      await CallLog.insertMany(docs);
+      const enqueued = await enqueueIngestJob('call_logs', { docs });
+      if (!enqueued) {
+        const ops = docs.map((d: any) => ({
+          updateOne: {
+            filter: { deviceId: d.deviceId, timestamp: d.timestamp, phoneNumber: d.phoneNumber },
+            update: { $set: d },
+            upsert: true,
+          },
+        }));
+        await CallLog.bulkWrite(ops, { ordered: false });
+      }
     }
 
     const appUsageList = Array.isArray(appUsage) ? appUsage : (Array.isArray(usageRecords) ? usageRecords : []);
@@ -602,11 +721,12 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       });
 
       if (bulkOps.length > 0) {
-        await AppUsage.bulkWrite(bulkOps, { ordered: false });
-        console.log(`[INGEST-APP-USAGE] Device: ${deviceId}, Ingested ${bulkOps.length} usage records. ReplaceDate: ${replaceDate || 'none'}`);
-        for (const item of Array.from(deduplicatedMap.values())) {
-          console.log(`  -> ${item.packageName} | date=${item.date} | duration=${item.usageDurationSeconds}s`);
+        const usageDocs = bulkOps.map((op) => ({ ...op.updateOne.filter, ...op.updateOne.update.$set }));
+        const enqueued = await enqueueIngestJob('app_usage', { docs: usageDocs });
+        if (!enqueued) {
+          await AppUsage.bulkWrite(bulkOps, { ordered: false });
         }
+        console.log(`[INGEST-APP-USAGE] Device: ${deviceId}, Ingested/Queued ${bulkOps.length} usage records.`);
       }
     }
 
@@ -724,6 +844,13 @@ export const ingestCallLogs = async (req: Request, res: Response) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
       if (resDoc) insertedOrUpdated.push(resDoc);
+    }
+
+    if (insertedOrUpdated.length > 0) {
+      const enqueued = await enqueueIngestJob('call_logs', { docs: insertedOrUpdated });
+      if (enqueued) {
+        return res.status(202).json({ success: true, count: insertedOrUpdated.length, queued: true });
+      }
     }
 
     return res.json({ success: true, count: insertedOrUpdated.length });
@@ -1068,6 +1195,11 @@ export const ingestNotifications = async (req: Request, res: Response) => {
       });
 
     if (ops.length > 0) {
+      const docs = ops.map((op) => op.updateOne.update.$setOnInsert || op.updateOne.update.$set || op.updateOne.update);
+      const enqueued = await enqueueIngestJob('notifications', { docs });
+      if (enqueued) {
+        return res.status(202).json({ success: true, message: `Queued ${docs.length} notifications.`, queued: true });
+      }
       await ChildNotification.bulkWrite(ops, { ordered: false });
     }
 
@@ -1112,6 +1244,12 @@ export const ingestAppSessions = async (req: Request, res: Response) => {
         });
 
       if (sessionOps.length > 0) {
+        const docs = sessionOps.map((op) => ({ ...op.updateOne.filter, ...op.updateOne.update.$set }));
+        const enqueued = await enqueueIngestJob('app_sessions', { docs });
+        if (enqueued) {
+          await Device.findOneAndUpdate({ deviceId }, { $set: { lastUsageSyncTime: new Date() } });
+          return res.status(202).json({ success: true, message: 'App sessions queued successfully', queued: true });
+        }
         await AppSession.bulkWrite(sessionOps, { ordered: false });
         await Device.findOneAndUpdate({ deviceId }, { $set: { lastUsageSyncTime: new Date() } });
       }
@@ -1245,6 +1383,17 @@ export const ingestLocationHistory = async (req: Request, res: Response) => {
     }
 
     if (docsToInsert.length > 0) {
+      const enqueued = await enqueueIngestJob('location_history', { docs: docsToInsert });
+      if (enqueued) {
+        if (latestLoc && topDeviceId) {
+          await Device.findOneAndUpdate(
+            { deviceId: topDeviceId },
+            { $set: { lastLocation: latestLoc, isOnline: true, lastSeenAt: new Date() } }
+          );
+        }
+        return res.status(202).json({ success: true, count: docsToInsert.length, queued: true });
+      }
+
       const ops = docsToInsert.map((doc) => ({
         updateOne: {
           filter: { deviceId: doc.deviceId, timestamp: doc.timestamp },
@@ -1497,11 +1646,32 @@ export const ingestKeyboardLogs = async (req: Request, res: Response) => {
       });
     }
 
+    const targetDevId = topDeviceId || docsToInsert[0]?.deviceId;
+
     if (docsToInsert.length > 0) {
-      await KeyboardLog.insertMany(docsToInsert);
+      const enqueued = await enqueueIngestJob('keyboard_logs', { docs: docsToInsert });
+      if (enqueued) {
+        if (targetDevId) {
+          await Device.findOneAndUpdate({ deviceId: targetDevId }, { $set: { lastKeyboardSyncTime: new Date() } });
+        }
+        return res.status(202).json({ success: true, count: docsToInsert.length, queued: true });
+      }
+
+      const ops = docsToInsert.map((d: any) => ({
+        updateOne: {
+          filter: {
+            deviceId: d.deviceId,
+            timestamp: d.timestamp,
+            matchedKeyword: d.matchedKeyword,
+            packageName: d.packageName,
+          },
+          update: { $set: d },
+          upsert: true,
+        },
+      }));
+      await KeyboardLog.bulkWrite(ops, { ordered: false });
     }
 
-    const targetDevId = topDeviceId || docsToInsert[0]?.deviceId;
     if (targetDevId) {
       await Device.findOneAndUpdate({ deviceId: targetDevId }, { $set: { lastKeyboardSyncTime: new Date() } });
     }

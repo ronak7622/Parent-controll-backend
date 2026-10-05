@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface ILocationLog extends Document {
   deviceId: string;
@@ -40,5 +41,6 @@ const LocationLogSchema: Schema = new Schema(
 // Compound index for fast queries by device, date, and timestamp sorting
 LocationLogSchema.index({ deviceId: 1, date: 1, timestamp: -1 });
 LocationLogSchema.index({ deviceId: 1, timestamp: -1 });
+applyTtlIndex(LocationLogSchema, 'timestamp');
 
 export const LocationLog = mongoose.model<ILocationLog>('LocationLog', LocationLogSchema);

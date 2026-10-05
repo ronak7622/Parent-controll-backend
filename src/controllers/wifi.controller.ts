@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { WifiLog } from '../models/wifi-log.model';
+import { getReadQuery } from '../dal/db.dal';
 
 // Ingest Wi-Fi log event from child device
 export const ingestWifiLog = async (req: Request, res: Response) => {
@@ -196,7 +197,7 @@ export const getWifiHistory = async (req: Request, res: Response) => {
       }
     }
 
-    const logs = await WifiLog.find(filter)
+    const logs = await getReadQuery(WifiLog).find(filter)
       .sort({ timestamp: -1 })
       .limit(limit);
 

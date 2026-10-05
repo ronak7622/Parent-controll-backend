@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface ICallLog extends Document {
   deviceId: string;
@@ -42,5 +43,6 @@ const CallLogSchema = new Schema<ICallLog>(
 CallLogSchema.index({ deviceId: 1, callId: 1 }, { unique: true, sparse: true });
 CallLogSchema.index({ deviceId: 1, timestamp: -1 });
 CallLogSchema.index({ deviceId: 1, phoneNumber: 1 });
+applyTtlIndex(CallLogSchema, 'timestamp');
 
 export const CallLog = mongoose.model<ICallLog>('CallLog', CallLogSchema);

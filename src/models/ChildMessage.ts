@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export type MessageDirection = 'received' | 'sent';
 export type MessageCategory = 'personal' | 'otp' | 'transactions' | 'promotions' | 'subscription';
@@ -40,10 +41,12 @@ const ChildMessageSchema = new Schema<IChildMessage>(
   { timestamps: true }
 );
 
+ChildMessageSchema.index({ deviceId: 1, timestamp: -1 });
 ChildMessageSchema.index({ deviceId: 1, address: 1, date: 1, timestamp: 1 });
 ChildMessageSchema.index({ deviceId: 1, address: 1, isRead: 1 });
 ChildMessageSchema.index({ deviceId: 1, category: 1 });
 // De-dupe key: a retried/overlapping upload upserts instead of duplicating the same native message.
 ChildMessageSchema.index({ deviceId: 1, nativeId: 1, isMms: 1 }, { unique: true });
+applyTtlIndex(ChildMessageSchema, 'timestamp');
 
 export const ChildMessage = mongoose.model<IChildMessage>('ChildMessage', ChildMessageSchema);

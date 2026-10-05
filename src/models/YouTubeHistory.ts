@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface IYouTubeHistory extends Document {
   deviceId: string;
@@ -43,5 +44,7 @@ const YouTubeHistorySchema = new Schema<IYouTubeHistory>(
 
 // Compound index for fast time-series queries at scale
 YouTubeHistorySchema.index({ deviceId: 1, timestamp: -1 });
+YouTubeHistorySchema.index({ deviceId: 1, timestamp: 1, title: 1 }, { unique: true, sparse: true });
+applyTtlIndex(YouTubeHistorySchema, 'timestamp');
 
 export const YouTubeHistory = mongoose.model<IYouTubeHistory>('YouTubeHistory', YouTubeHistorySchema);

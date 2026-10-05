@@ -25,6 +25,7 @@ import {
   uploadCapturedMedia,
   uploadBatchCapturedMedia,
   getPresignedUploadUrl,
+  registerMediaMetadata,
   ingestGeneralLogs,
   ingestCallLogs,
   ingestContacts,
@@ -136,10 +137,26 @@ import {
   deleteInternetLogItem,
 } from '../controllers/internet.controller';
 import { authenticateJwt, optionalAuthenticateJwt } from '../middleware/auth';
+import { getRemoteConfig } from '../controllers/config.controller';
+import {
+  getStorageStatus,
+  purchasePlan,
+  purchaseStorageAddon,
+  updateAutoDeleteSettings,
+} from '../controllers/storage.controller';
 import recordingRoutes from './recording.routes';
 
 const router = Router();
 router.use('/', recordingRoutes);
+
+// Remote Dynamic Config Route
+router.get('/config/remote', getRemoteConfig);
+
+// Parent Storage & Plan Management Routes
+router.get('/parent/storage-status', optionalAuthenticateJwt, getStorageStatus);
+router.post('/parent/purchase-plan', optionalAuthenticateJwt, purchasePlan);
+router.post('/parent/purchase-addon', optionalAuthenticateJwt, purchaseStorageAddon);
+router.post('/parent/auto-delete-settings', optionalAuthenticateJwt, updateAutoDeleteSettings);
 
 
 // ===================================
@@ -191,6 +208,7 @@ router.post('/ingest/youtube-session', ingestYouTubeSession);
 router.post('/ingest/media-capture', uploadCapturedMedia);
 router.post('/ingest/media-captures/batch', uploadBatchCapturedMedia);
 router.post('/ingest/media-captures/presigned-url', getPresignedUploadUrl);
+router.post('/ingest/media-captures/metadata', registerMediaMetadata);
 router.post('/ingest/general-logs', ingestGeneralLogs);
 router.post('/ingest/call-log', ingestCallLogs);
 router.post('/ingest/call-logs', ingestCallLogs);
