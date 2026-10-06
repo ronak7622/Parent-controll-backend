@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 import { Response } from 'express';
+import jwt from 'jsonwebtoken';
+import { config } from '../config/env';
 import { AuthRequest } from '../middleware/auth';
 import { Device } from '../models/Device';
 import { AppLimit } from '../models/AppLimit';
@@ -98,11 +100,18 @@ export const checkPairingStatus = async (req: any, res: Response) => {
       const modelName = `${brand} ${model}`.trim();
       const devName = targetDevice.deviceName && targetDevice.deviceName !== 'Child Device' ? targetDevice.deviceName : (modelName.length > 0 ? modelName : 'Child Device');
 
+      const deviceToken = jwt.sign(
+        { deviceId: targetDevice.deviceId, kind: 'device' },
+        config.jwtSecret,
+        { expiresIn: '3650d' }
+      );
+
       return res.json({
         success: true,
         isPaired: true,
         isSetupComplete: !!targetDevice.isSetupComplete,
         deviceId: targetDevice.deviceId,
+        deviceToken,
         deviceName: devName,
         deviceBrand: brand,
         deviceModel: model,
@@ -153,10 +162,18 @@ export const completeChildSetup = async (req: any, res: Response) => {
 
     console.log(`[SETUP-COMPLETE] Permissions setup completed for device ${updatedDevice.deviceId}`);
 
+    const deviceToken = jwt.sign(
+      { deviceId: updatedDevice.deviceId, kind: 'device' },
+      config.jwtSecret,
+      { expiresIn: '3650d' }
+    );
+
     return res.json({
       success: true,
       message: 'Setup completed successfully',
       isSetupComplete: true,
+      deviceId: updatedDevice.deviceId,
+      deviceToken,
       device: updatedDevice,
     });
   } catch (error: any) {
@@ -260,7 +277,8 @@ export const pairChildDevice = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, message: 'deviceId is required.' });
     }
 
-    const inputCode = code || pairingCode;
+    const rawCode = code || pairingCode;
+    const inputCode = rawCode ? String(rawCode).trim() : null;
     let targetParentUserId = parentUserId;
 
     const defaultDevName = `${deviceBrand || ''} ${deviceModel || ''}`.trim();
@@ -273,10 +291,14 @@ export const pairChildDevice = async (req: any, res: Response) => {
           targetParentUserId = codeRecord.parentUserId;
         }
         codeRecord.isPaired = true;
+        codeRecord.deviceId = deviceId;
         if (deviceBrand) codeRecord.deviceBrand = deviceBrand;
         if (deviceModel) codeRecord.deviceModel = deviceModel;
         codeRecord.deviceName = finalDevName;
         await codeRecord.save();
+      } else {
+        // If child specified a code that does not exist in backend, return 400
+        return res.status(400).json({ success: false, message: 'Invalid or expired pairing code. Please check the code and ensure parent is connected.' });
       }
     }
 
@@ -310,9 +332,17 @@ export const pairChildDevice = async (req: any, res: Response) => {
     await device.save();
     console.log(`[PAIRING-SUCCESS] Child device ${deviceId} paired with code ${inputCode}`);
 
+    const deviceToken = jwt.sign(
+      { deviceId: device.deviceId, kind: 'device' },
+      config.jwtSecret,
+      { expiresIn: '3650d' }
+    );
+
     return res.json({
       success: true,
       message: 'Child device paired successfully.',
+      deviceId: device.deviceId,
+      deviceToken,
       device,
       parentUid: device.parentUserId ? device.parentUserId.toString() : 'parent',
     });
@@ -607,10 +637,7 @@ export const getDeviceDetails = async (req: any, res: Response) => {
   try {
     const { deviceId } = req.params;
     const isObjId = mongoose.isValidObjectId(deviceId);
-    const cacheKey = cacheService.keys.deviceInfo(deviceId);
-    const device = await cacheService.getOrFetch(cacheKey, 300, async () => {
-      return await Device.findOne({ $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] }).lean();
-    });
+    const device = await Device.findOne({ $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] }).lean();
     if (!device) {
       return res.status(404).json({ success: false, message: 'Device not found' });
     }

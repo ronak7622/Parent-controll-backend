@@ -2312,11 +2312,14 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
     // a fresh "last synced" time when nothing actually synced).
     let childOnline = false;
     if (io) {
-      const room = (io.adapter?.rooms?.get(targetDeviceId)) || (io.adapter?.rooms?.get(deviceId));
-      if (room) {
-        for (const sid of room) {
-          const s: any = io.sockets?.get(sid);
-          if (s && s.data?.role === 'child') { childOnline = true; break; }
+      const roomSockets = io.adapter?.rooms?.get(targetDeviceId) || (deviceId ? io.adapter?.rooms?.get(deviceId) : null);
+      if (roomSockets) {
+        for (const sid of roomSockets) {
+          const s: any = io.sockets?.get ? io.sockets.get(sid) : (io.sockets ? io.sockets[sid] : null);
+          if (s && s.data?.role === 'child') {
+            childOnline = true;
+            break;
+          }
         }
       }
     }

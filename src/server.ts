@@ -24,11 +24,14 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+// Trust reverse proxy (Cloudflare / AWS ALB / NGINX Load Balancers) for accurate req.ip
+app.set('trust proxy', 1);
+
 // Enable Gzip Compression, CORS and JSON Body Parser
 app.use(compression());
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '500mb' }));
-app.use(express.urlencoded({ limit: '500mb', extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // Apply rate limiting to API routes
 app.use('/api', apiRateLimiter);
@@ -63,6 +66,24 @@ app.use('/api', apiRoutes);
 
 // Setup WebRTC P2P Signaling Server via WebSockets
 setupWebRtcSignaling(server);
+
+// Global Express Error Handling Middleware
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('[EXPRESS-GLOBAL-ERROR]', err?.stack || err?.message || err);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Internal Server Error',
+  });
+});
+
+// Process-level Crash Safeguards
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[UNHANDLED-REJECTION] Suppressed promise rejection:', reason?.stack || reason?.message || reason);
+});
+
+process.on('uncaughtException', (error: Error) => {
+  console.error('[UNCAUGHT-EXCEPTION] Suppressed uncaught exception:', error?.stack || error?.message || error);
+});
 
 // Start Server
 const startServer = async () => {

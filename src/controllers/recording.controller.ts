@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import mongoose from 'mongoose';
 import { Recording } from '../models/Recording';
 import { Device } from '../models/Device';
 import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
@@ -15,6 +16,19 @@ const formatDuration = (seconds: number): string => {
   const s = sec % 60;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+};
+
+// Helper to resolve Mongo _id or string deviceId to canonical string deviceId
+export const resolveCanonicalDeviceId = async (inputDeviceId: string): Promise<string | null> => {
+  if (!inputDeviceId) return null;
+  const isObjId = mongoose.isValidObjectId(inputDeviceId);
+  const device = await Device.findOne({
+    $or: [
+      { deviceId: inputDeviceId },
+      ...(isObjId ? [{ _id: inputDeviceId }] : [])
+    ]
+  });
+  return device ? device.deviceId : null;
 };
 
 /**
@@ -69,10 +83,15 @@ export const getRecordingConfig = async (req: Request, res: Response) => {
  */
 export const startRecording = async (req: Request, res: Response) => {
   try {
-    const { deviceId, recordingType, durationSeconds = 60, cameraPosition = 'back', triggerSource = 'schedule', quality = 'medium' } = req.body;
+    const { deviceId: inputDeviceId, recordingType, durationSeconds = 60, cameraPosition = 'back', triggerSource = 'schedule', quality = 'medium' } = req.body;
 
-    if (!deviceId || !recordingType || !['audio', 'video', 'screen'].includes(recordingType)) {
+    if (!inputDeviceId || !recordingType || !['audio', 'video', 'screen'].includes(recordingType)) {
       return res.status(400).json({ success: false, message: 'Invalid deviceId or recordingType' });
+    }
+
+    const deviceId = await resolveCanonicalDeviceId(inputDeviceId);
+    if (!deviceId) {
+      return res.status(404).json({ success: false, message: 'Device not found' });
     }
 
     // 1. Mutual Exclusivity Lock Check (Part 3 & Part 10)
@@ -194,8 +213,10 @@ export const startRecording = async (req: Request, res: Response) => {
  */
 export const stopRecording = async (req: Request, res: Response) => {
   try {
-    const { deviceId, sessionId } = req.body;
-    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+    const { deviceId: inputDeviceId, sessionId } = req.body;
+    if (!inputDeviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const deviceId = (await resolveCanonicalDeviceId(inputDeviceId)) || inputDeviceId;
 
     const query: any = { deviceId, status: { $in: ['in_progress', 'saving'] } };
     if (sessionId) query.sessionId = sessionId;
@@ -248,17 +269,19 @@ export const stopRecording = async (req: Request, res: Response) => {
  */
 export const getActiveRecordingStatus = async (req: Request, res: Response) => {
   try {
-    const { deviceId } = req.query;
-    if (!deviceId || typeof deviceId !== 'string') {
+    const { deviceId: inputDeviceId } = req.query;
+    if (!inputDeviceId || typeof inputDeviceId !== 'string') {
       return res.status(400).json({ success: false, message: 'deviceId parameter is required' });
     }
+
+    const deviceId = (await resolveCanonicalDeviceId(inputDeviceId as string)) || (inputDeviceId as string);
 
     const activeSession = await Recording.findOne({
       deviceId,
       status: { $in: ['in_progress', 'saving'] },
     });
 
-    const roomSockets = getSignalingIo()?.adapter?.rooms?.get(deviceId as string);
+    const roomSockets = getSignalingIo()?.adapter?.rooms?.get(deviceId);
     let hasChildInRoom = false;
     if (roomSockets) {
       for (const sId of roomSockets) {
@@ -341,14 +364,16 @@ export const getActiveRecordingStatus = async (req: Request, res: Response) => {
  */
 export const getRecordings = async (req: Request, res: Response) => {
   try {
-    const { deviceId, type, date, limit = 100 } = req.query;
+    const { deviceId: inputDeviceId, type, date, limit = 100 } = req.query;
 
-    if (!deviceId || typeof deviceId !== 'string') {
+    if (!inputDeviceId || typeof inputDeviceId !== 'string') {
       return res.status(400).json({ success: false, message: 'deviceId parameter is required' });
     }
     if (!type || !['audio', 'video', 'screen'].includes(type as string)) {
       return res.status(400).json({ success: false, message: 'valid type parameter (audio, video, screen) is required' });
     }
+
+    const deviceId = (await resolveCanonicalDeviceId(inputDeviceId as string)) || (inputDeviceId as string);
 
     const query: any = {
       deviceId,
@@ -401,9 +426,11 @@ export const getRecordings = async (req: Request, res: Response) => {
  */
 export const deleteRecordings = async (req: Request, res: Response) => {
   try {
-    const { deviceId, recordingId, date, deleteAll = false, type } = req.body;
+    const { deviceId: inputDeviceId, recordingId, date, deleteAll = false, type } = req.body;
 
-    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+    if (!inputDeviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const deviceId = (await resolveCanonicalDeviceId(inputDeviceId)) || inputDeviceId;
 
     if (recordingId) {
       await Recording.deleteOne({ _id: recordingId, deviceId });

