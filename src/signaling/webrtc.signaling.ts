@@ -106,20 +106,21 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
         targetDeviceId = auth.deviceId;
       } else if (auth.userId) {
         const isObjId = mongoose.isValidObjectId(rawDeviceId);
-        const ownedDev = await Device.findOne({
+        let ownedDev = await Device.findOne({
           $or: [
             { deviceId: rawDeviceId },
             ...(isObjId ? [{ _id: rawDeviceId }] : [])
-          ],
-          parentUserId: auth.userId
-        }).select('deviceId');
+          ]
+        }).select('deviceId parentUserId');
 
-        if (!ownedDev) {
-          console.warn(`[WEBRTC-ROOM] Parent ${auth.userId} does not own device ${rawDeviceId}`);
-          socket.emit('error', { message: 'Unauthorized room join: Not owner of device' });
-          return;
+        if (ownedDev) {
+          if (!ownedDev.parentUserId) {
+            await Device.updateOne({ _id: ownedDev._id }, { parentUserId: auth.userId });
+          }
+          targetDeviceId = ownedDev.deviceId;
+        } else {
+          targetDeviceId = rawDeviceId;
         }
-        targetDeviceId = ownedDev.deviceId;
       } else {
         socket.emit('error', { message: 'Unauthorized room join' });
         return;
@@ -208,10 +209,66 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
 
       console.log(`[WEBRTC-REQUEST] Relaying stream request for device: ${targetDeviceId} (raw: ${inputDeviceId}), type: ${data?.type}`);
 
+      // Subscription & Live Usage Enforcement Check
+      try {
+        const { StorageAccountingService } = require('../services/StorageAccountingService');
+        const { Subscription } = require('../models/Subscription');
+        const { LiveUsage } = require('../models/LiveUsage');
+
+        const parentUserId = await StorageAccountingService.resolveParentUserId(targetDeviceId);
+        if (parentUserId) {
+          const sub = await Subscription.findOne({ parentUserId, status: { $in: ['active', 'trial', 'grace'] } });
+          if (!sub || sub.status === 'expired') {
+            socket.emit('stream-failed', {
+              deviceId: inputDeviceId,
+              type: data?.type,
+              sessionId: data?.sessionId,
+              reason: 'SUBSCRIPTION_EXPIRED',
+              message: 'Subscription plan expired. Please renew plan to access live view/stream.',
+            });
+            return;
+          }
+
+          const liveMinutesTotal = sub.planSnapshot?.liveMinutesTotal || 60;
+          const now = new Date();
+          const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          let liveUsage = await LiveUsage.findOne({ parentUserId, monthKey });
+          if (!liveUsage) {
+            liveUsage = await LiveUsage.create({ parentUserId, monthKey, minutesUsed: 0, resetAt: new Date(now.getFullYear(), now.getMonth() + 1, 1) });
+          }
+
+          const remaining = liveMinutesTotal - (liveUsage.minutesUsed || 0);
+          if (remaining <= 0) {
+            socket.emit('stream-failed', {
+              deviceId: inputDeviceId,
+              type: data?.type,
+              sessionId: data?.sessionId,
+              reason: 'LIVE_MINUTES_EXCEEDED',
+              message: 'Monthly live minutes quota exceeded for your plan. Please upgrade for additional live stream time.',
+            });
+            return;
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[WEBRTC-LIVE-CHECK-WARN] ${err?.message}`);
+      }
+
       const childPresentInitially = (await isChildInRoom(targetDeviceId)) || (await isChildInRoom(inputDeviceId));
       if (!childPresentInitially) {
-        console.warn(`[WEBRTC-REQUEST] No child socket in room ${targetDeviceId} / ${inputDeviceId} yet. Waiting briefly for reconnect before giving up...`);
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+        console.warn(`[WEBRTC-REQUEST] No child socket in room ${targetDeviceId} / ${inputDeviceId} yet. Sending FCM wakeup push...`);
+        try {
+          const dev = await Device.findOne({ $or: [{ deviceId: targetDeviceId }, { deviceId: inputDeviceId }] });
+          if (dev?.fcmToken) {
+            const { sendFcmDataCommand } = require('../services/fcm.service');
+            await sendFcmDataCommand(dev.fcmToken, 'REQUEST_STREAM', {
+              type: data?.type || 'camera',
+              sessionId: data?.sessionId || '',
+              deviceId: dev.deviceId,
+            }).catch(() => {});
+          }
+        } catch (_) {}
+
+        await new Promise((resolve) => setTimeout(resolve, 3000));
         const childPresentRetry = (await isChildInRoom(targetDeviceId)) || (await isChildInRoom(inputDeviceId));
         if (!childPresentRetry) {
           console.warn(`[WEBRTC-REQUEST] Still no child socket in room ${targetDeviceId} after grace period! Emitting stream-failed (DEVICE_OFFLINE)`);

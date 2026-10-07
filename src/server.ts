@@ -14,6 +14,8 @@ import mongoose from 'mongoose';
 import { apiRateLimiter } from './middleware/rateLimiter';
 import { getPrometheusMetrics } from './controllers/metrics.controller';
 import { initIngestQueue } from './queues/ingest.queue';
+import { initSubscriptionQueue } from './queues/subscription.queue';
+import { SubscriptionJob } from './jobs/SubscriptionJob';
 
 const app = express();
 const server = http.createServer(app);
@@ -90,6 +92,16 @@ const startServer = async () => {
   await connectDatabase();
   await migrateYoutubeAppBlockToAppRule();
   initIngestQueue();
+  initSubscriptionQueue();
+
+  // Run continuous storage auto-delete check every 60 seconds (1 min)
+  setInterval(async () => {
+    try {
+      await SubscriptionJob.processAutoDeleteSettings();
+    } catch (err: any) {
+      console.error('[AUTO-DELETE-INTERVAL-ERROR]', err?.message);
+    }
+  }, 60000);
   server.listen(config.port, '0.0.0.0', () => {
     console.log(`=======================================================`);
     console.log(`🚀 CHILD PROTECT BACKEND SERVER IS RUNNING ON PORT ${config.port}`);

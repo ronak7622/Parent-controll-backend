@@ -22,6 +22,22 @@ import { config } from '../config/env';
 import { enqueueIngestJob } from '../queues/ingest.queue';
 import { sendFcmTopicNotification } from '../services/fcm.service';
 import { isIgnoredSystemPackage, getISTDateString } from './parent.controller';
+import { StorageAccountingService } from '../services/StorageAccountingService';
+import { Subscription } from '../models/Subscription';
+
+export const checkQuotaBlocked = async (deviceId: string): Promise<boolean> => {
+  try {
+    const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+    if (!parentUserId) return false;
+    const sub = await Subscription.findOne({ parentUserId });
+    if (!sub || sub.status === 'expired') return true;
+    const allowedBytes = sub.planSnapshot?.storageBytes || 10737418240;
+    const usage = await StorageAccountingService.getStorageUsage(parentUserId);
+    return (usage?.totalBytes || 0) >= allowedBytes;
+  } catch {
+    return false;
+  }
+};
 
 // "1h 5m" / "45m" / "30s"
 const formatDurationShortIngest = (totalSeconds: number): string => {
@@ -64,12 +80,38 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     );
 
     if (!device) {
-      return res.status(404).json({ success: false, message: 'Device not found' });
+      return res.status(404).json({ success: false, isPaired: false, unpaired: true, command: 'UNPAIR', message: 'Device not found' });
+    }
+    if (device.isPaired === false) {
+      return res.json({ success: false, isPaired: false, unpaired: true, command: 'UNPAIR', message: 'Device is unpaired' });
+    }
+
+    const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+    let uploadBlocked = false;
+    let isExpired = false;
+    if (parentUserId) {
+      const sub = await Subscription.findOne({ parentUserId });
+      // Only sub.status === 'expired' is considered expired (after grace period ends).
+      // !sub (new install, trial window, pairing window) is NOT expired.
+      if (sub && sub.status === 'expired') {
+        isExpired = true;
+        uploadBlocked = true;
+      } else if (sub) {
+        const usage = await StorageAccountingService.getStorageUsage(parentUserId);
+        const allowed = sub.planSnapshot?.storageBytes || 10737418240;
+        if ((usage?.totalBytes || 0) >= allowed) {
+          uploadBlocked = true;
+        }
+      }
     }
 
     return res.json({
       success: true,
+      isPaired: true,
+      unpaired: false,
       message: 'Heartbeat updated.',
+      uploadBlocked,
+      isExpired,
       restrictions: {
         youtubeBlocked: device.youtubeBlocked ?? false,
         youtubeShortsBlocked: device.youtubeShortsBlocked ?? false,
@@ -90,6 +132,8 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         blockedApps: device.blockedApps || [],
         blockedPhoneNumbers: device.blockedPhoneNumbers || [],
         blockedOutgoingPhoneNumbers: device.blockedOutgoingPhoneNumbers || [],
+        uploadBlocked,
+        isExpired,
       },
     });
   } catch (error: any) {
@@ -436,6 +480,14 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Missing required media parameters (deviceId, imageBase64)' });
     }
 
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        uploadBlocked: true,
+        message: 'Storage quota exceeded for your subscription plan. Upgrade your plan to upload new media.',
+      });
+    }
+
     const buffer = Buffer.from(imageBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64');
     const folderName = `captures/${type}/${deviceId}`;
     const mediaUrl = await uploadMediaToR2(buffer, folderName, 'webp', 'image/webp');
@@ -485,6 +537,14 @@ export const uploadBatchCapturedMedia = async (req: Request, res: Response) => {
 
     if (!deviceId || !Array.isArray(rawCaptures)) {
       return res.status(400).json({ success: false, message: 'deviceId and captures array are required' });
+    }
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        uploadBlocked: true,
+        message: 'Storage quota exceeded for your subscription plan. Batch upload paused.',
+      });
     }
 
     const docs: any[] = [];
@@ -545,6 +605,14 @@ export const getPresignedUploadUrl = async (req: Request, res: Response) => {
   try {
     const { deviceId, fileType = 'image/webp', captureType = 'screenshot', type = 'screenshot', extension = 'webp' } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        uploadBlocked: true,
+        message: 'Storage quota exceeded for your subscription plan. Presigned upload URL generation blocked.',
+      });
+    }
 
     const key = `captures/${type}/${deviceId}/${uuidv4()}.${extension}`;
     const presigned = await generatePresignedPutUrl(key, fileType, 900);

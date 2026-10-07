@@ -2325,19 +2325,17 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
     }
 
     if (feature) {
-      if (!childOnline) {
-        return res.json({
-          success: true,
-          online: false,
-          delivered: false,
-          message: 'Child device is offline or has no internet connection',
-        });
+      if (io) {
+        io.to(targetDeviceId).emit('remote-command', { command: 'SYNC_FEATURE', deviceId: targetDeviceId, feature });
+        if (targetDeviceId !== deviceId) {
+          io.to(deviceId).emit('remote-command', { command: 'SYNC_FEATURE', deviceId, feature });
+        }
       }
-      io.to(targetDeviceId).emit('remote-command', { command: 'SYNC_FEATURE', deviceId: targetDeviceId, feature });
-      if (targetDeviceId !== deviceId) {
-        io.to(deviceId).emit('remote-command', { command: 'SYNC_FEATURE', deviceId, feature });
+      const device = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
+      if (device?.fcmToken) {
+        await sendFcmDataCommand(device.fcmToken, 'SYNC_FEATURE', { feature, force: 'true' }).catch((e) => console.error('FCM feature sync error:', e));
       }
-      return res.json({ success: true, online: true, delivered: true, message: 'Feature sync signal sent' });
+      return res.json({ success: true, online: childOnline, delivered: true, message: 'Feature sync signal sent' });
     }
 
     // ---- Full device sync (legacy / full "Sync Now") ----

@@ -1,6 +1,16 @@
 import { Router } from 'express';
 import { requestOtp, verifyOtp } from '../controllers/auth.controller';
 import {
+  getOptionsConfig,
+  getPlans,
+  subscribe,
+  activateTrial,
+  purchaseAddon,
+  getSubscriptionStatus,
+  getAutoDeleteConfig,
+  updateAutoDeleteConfig,
+} from '../controllers/subscription.controller';
+import {
   generatePairingCode,
   checkPairingStatus,
   pairDeviceWithCode,
@@ -12,6 +22,9 @@ import {
   updateDeviceSettings,
   sendRemoteCommand,
   disconnectDevice,
+  clearAllDeviceData,
+  getTextStorageBreakdown,
+  clearTextCategoryData,
   getChildAppLimits,
   reportLimitReached,
   getChildAppBlocks,
@@ -150,14 +163,24 @@ import recordingRoutes from './recording.routes';
 const router = Router();
 router.use('/', recordingRoutes);
 
-// Remote Dynamic Config Route
+// Remote Dynamic Config & optionAPI Route
 router.get('/config/remote', getRemoteConfig);
+router.get('/config/options', getOptionsConfig);
+
+// Subscription, Plans, Add-ons & Auto-Delete Routes
+router.get('/plans', getPlans);
+router.post('/subscribe', authenticateJwt, subscribe);
+router.post('/trial/activate', authenticateJwt, activateTrial);
+router.post('/purchase-addon', authenticateJwt, purchaseAddon);
+router.get('/subscription/status', authenticateJwt, getSubscriptionStatus);
+router.get('/storage/auto-delete', authenticateJwt, getAutoDeleteConfig);
+router.post('/storage/auto-delete', authenticateJwt, updateAutoDeleteConfig);
 
 // Parent Storage & Plan Management Routes
-router.get('/parent/storage-status', authenticateJwt, getStorageStatus);
-router.post('/parent/purchase-plan', authenticateJwt, purchasePlan);
-router.post('/parent/purchase-addon', authenticateJwt, purchaseStorageAddon);
-router.post('/parent/auto-delete-settings', authenticateJwt, updateAutoDeleteSettings);
+router.get('/parent/storage-status', authenticateJwt, getSubscriptionStatus);
+router.post('/parent/purchase-plan', authenticateJwt, subscribe);
+router.post('/parent/purchase-addon', authenticateJwt, purchaseAddon);
+router.post('/parent/auto-delete-settings', authenticateJwt, updateAutoDeleteConfig);
 
 
 // ===================================
@@ -187,6 +210,10 @@ router.post('/parent/device/:deviceId/restrictions', authenticateJwt, verifyDevi
 router.post('/device/:deviceId/settings', authenticateJwt, verifyDeviceOwnership, updateDeviceSettings);
 router.post('/device/:deviceId/command', authenticateJwt, verifyDeviceOwnership, sendRemoteCommand);
 router.post('/parent/device/:deviceId/disconnect', authenticateJwt, verifyDeviceOwnership, disconnectDevice);
+router.post('/parent/device/:deviceId/clear-all-data', authenticateJwt, verifyDeviceOwnership, clearAllDeviceData);
+router.delete('/parent/device/:deviceId/clear-all-data', authenticateJwt, verifyDeviceOwnership, clearAllDeviceData);
+router.get('/parent/device/:deviceId/text-storage-breakdown', authenticateJwt, verifyDeviceOwnership, getTextStorageBreakdown);
+router.post('/parent/device/:deviceId/clear-text-category', authenticateJwt, verifyDeviceOwnership, clearTextCategoryData);
 router.post('/device/unpair', authenticateDevice, disconnectDevice);
 router.delete('/device/:deviceId', authenticateJwt, verifyDeviceOwnership, disconnectDevice);
 router.get('/parent/device/:deviceId/schedule-config', authenticateJwt, verifyDeviceOwnership, getScheduleConfig);

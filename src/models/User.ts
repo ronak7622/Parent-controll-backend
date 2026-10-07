@@ -16,6 +16,10 @@ export interface IUser extends Document {
   addonStorageBytes?: number;
   autoDeleteMode?: boolean;
   autoDeleteDays?: number;
+  autoDeleteIsEnabled?: boolean;
+  autoDeleteMinutes?: number;
+  autoDeleteCategories?: string[];
+  autoDeleteDeviceIds?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -37,6 +41,10 @@ const UserSchema = new Schema<IUser>(
     addonStorageBytes: { type: Number, default: 0 },
     autoDeleteMode: { type: Boolean, default: true },
     autoDeleteDays: { type: Number, default: 30 },
+    autoDeleteIsEnabled: { type: Boolean, default: false },
+    autoDeleteMinutes: { type: Number, default: 10080 },
+    autoDeleteCategories: [{ type: String, default: ['all'] }],
+    autoDeleteDeviceIds: [{ type: String }],
   },
   { timestamps: true }
 );

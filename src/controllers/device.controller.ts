@@ -249,6 +249,24 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired pairing code.' });
     }
 
+    // Device Limit Enforcement Check
+    if (parentUserId) {
+      const { Subscription } = require('../models/Subscription');
+      const sub = await Subscription.findOne({ parentUserId, status: { $in: ['active', 'trial', 'grace'] } });
+      const deviceLimit = sub?.planSnapshot?.deviceLimit || 1;
+      const existingPairedCount = await Device.countDocuments({
+        parentUserId,
+        isPaired: true,
+        deviceId: { $ne: device.deviceId },
+      });
+      if (existingPairedCount >= deviceLimit) {
+        return res.status(403).json({
+          success: false,
+          message: `Device connection limit reached (${deviceLimit} device max for your current subscription plan). Please upgrade your plan to pair more devices.`,
+        });
+      }
+    }
+
     device.parentUserId = parentUserId as any;
     device.isPaired = true;
     device.isOnline = true;
@@ -782,3 +800,91 @@ export const getChildAppBlocks = async (req: any, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Clear All Storage Data for specific device (without unpairing device)
+ */
+export const clearAllDeviceData = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId parameter required' });
+
+    const parentUserId = req.user?.userId;
+    let targetId = deviceId;
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    if (isObjId) {
+      const dev = await Device.findById(deviceId);
+      if (dev && dev.deviceId) targetId = dev.deviceId;
+    }
+
+    const { Recording } = require('../models/Recording');
+    const { ChildMessage } = require('../models/ChildMessage');
+
+    await Promise.all([
+      Recording.deleteMany({ deviceId: targetId }),
+      MediaCapture.deleteMany({ deviceId: targetId }),
+      CallRecording.deleteMany({ deviceId: targetId }),
+      CallLog.deleteMany({ deviceId: targetId }),
+      ChildMessage.deleteMany({ deviceId: targetId }),
+      KeyboardLog.deleteMany({ deviceId: targetId }),
+      BrowserHistory.deleteMany({ deviceId: targetId }),
+      ChildNotification.deleteMany({ deviceId: targetId }),
+      LocationLog.deleteMany({ deviceId: targetId }),
+      DrivingTrip.deleteMany({ deviceId: targetId }),
+      WifiLog.deleteMany({ deviceId: targetId }),
+      InternetLog.deleteMany({ deviceId: targetId }),
+      YouTubeHistory.deleteMany({ deviceId: targetId }),
+      YouTubeSession.deleteMany({ deviceId: targetId }),
+      AppSession.deleteMany({ deviceId: targetId }),
+      AppUsage.deleteMany({ deviceId: targetId }),
+    ]);
+
+    const { StorageAccountingService } = require('../services/StorageAccountingService');
+    if (parentUserId) {
+      await StorageAccountingService.recalculateStorage(parentUserId);
+    }
+
+    return res.json({
+      success: true,
+      message: 'All device data cleared successfully.',
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Get detailed text storage breakdown for a single device
+ */
+export const getTextStorageBreakdown = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const date = req.query.date as string | undefined;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const { StorageAccountingService } = require('../services/StorageAccountingService');
+    const breakdown = await StorageAccountingService.getTextStorageBreakdown(deviceId, date);
+    return res.json({ success: true, ...breakdown });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Clear text category data for a specific device
+ */
+export const clearTextCategoryData = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { category, date } = req.body;
+    const parentUserId = req.user?.userId;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const { StorageAccountingService } = require('../services/StorageAccountingService');
+    await StorageAccountingService.clearTextCategoryData(deviceId, category || 'all', date, parentUserId);
+    return res.json({ success: true, message: 'Text category data cleared successfully.' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+

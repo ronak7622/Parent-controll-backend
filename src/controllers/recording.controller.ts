@@ -8,6 +8,7 @@ import { Device } from '../models/Device';
 import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { getISTDateString } from './parent.controller';
+import { StorageAccountingService } from '../services/StorageAccountingService';
 
 // Format duration helper
 const formatDuration = (seconds: number): string => {
@@ -66,15 +67,42 @@ export const RECORDING_CONFIGS = {
   },
 };
 
+import { ConfigService } from '../services/ConfigService';
+
 /**
  * GET /api/parent/recording/config
  * Returns global recording dynamic configuration
  */
 export const getRecordingConfig = async (req: Request, res: Response) => {
-  return res.json({
-    success: true,
-    configs: RECORDING_CONFIGS,
-  });
+  try {
+    const options = await ConfigService.getMergedOptions();
+    const configs = {
+      AUDIO_RECORDING_CONFIG: {
+        durationOptionsSeconds: (options.recordAudioIntervalOptions || []).map((x: any) => (typeof x === 'object' ? x.seconds : x)),
+        defaultDurationSeconds: options.recordAudioDefaultInterval || 60,
+        intervalOptions: options.recordAudioIntervalOptions,
+        format: 'aac',
+      },
+      VIDEO_RECORDING_CONFIG: {
+        durationOptionsSeconds: (options.recordVideoIntervalOptions || []).map((x: any) => (typeof x === 'object' ? x.seconds : x)),
+        defaultDurationSeconds: options.recordVideoDefaultInterval || 120,
+        defaultCamera: 'back',
+        qualityOptions: options.recordVideoQualityOptions || [],
+        defaultQuality: options.recordVideoDefaultQuality || 'high',
+        intervalOptions: options.recordVideoIntervalOptions,
+      },
+      SCREEN_RECORDING_CONFIG: {
+        durationOptionsSeconds: (options.recordScreenIntervalOptions || []).map((x: any) => (typeof x === 'object' ? x.seconds : x)),
+        defaultDurationSeconds: options.recordScreenDefaultInterval || 60,
+        qualityOptions: options.recordScreenQualityOptions || [],
+        defaultQuality: options.recordScreenDefaultQuality || 'high',
+        intervalOptions: options.recordScreenIntervalOptions,
+      },
+    };
+    return res.json({ success: true, configs });
+  } catch (err: any) {
+    return res.json({ success: true, configs: RECORDING_CONFIGS });
+  }
 };
 
 /**
@@ -383,7 +411,7 @@ export const getRecordings = async (req: Request, res: Response) => {
       mediaUrl: { $ne: '', $exists: true },
     };
 
-    if (date && typeof date === 'string' && date.trim().length > 0) {
+    if (date && typeof date === 'string' && date.trim().length > 0 && date.trim().toLowerCase() !== 'all') {
       // Parse YYYY-MM-DD in local IST (+05:30) timezone
       const targetDateStr = date.trim();
       const startOfDay = new Date(`${targetDateStr}T00:00:00.000+05:30`);
@@ -574,6 +602,14 @@ export const completeRecording = async (req: Request, res: Response) => {
     );
 
     console.log(`[RECORDING-COMPLETE] Recording (${recording.recordingType}) status=${finalStatus} for device ${deviceId}: ${mediaUrl}`);
+
+    if (isCompleted && numSize > 0) {
+      const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+      if (parentUserId) {
+        const cat = (recording.recordingType === 'video' || recording.recordingType === 'screen') ? 'video' : 'audio';
+        StorageAccountingService.updateStorage(parentUserId, deviceId, cat, numSize).catch(() => {});
+      }
+    }
 
     // Emit real-time socket signal to parent room so parent live views update immediately
     try {
