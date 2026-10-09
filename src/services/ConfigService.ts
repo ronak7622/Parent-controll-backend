@@ -2,13 +2,11 @@ import { Config } from '../models/Config';
 
 export const DEFAULT_OPTIONS = {
   recordVideoQualityOptions: [
-    { key: 'lowest', label: 'Lowest (120p)', resolution: '160x120' },
-    { key: 'low', label: 'Low (240p)', resolution: '320x240' },
-    { key: 'medium', label: 'Medium (480p)', resolution: '640x480' },
-    { key: 'high', label: 'High (720p HD)', resolution: '1280x720' },
-    { key: 'ultra', label: 'Ultra (1080p Full HD)', resolution: '1920x1080' },
+    { key: '480', value: 480, label: 'Medium (480p)', resolution: '640x480' },
+    { key: '720', value: 720, label: 'High (720p HD)', resolution: '1280x720' },
+    { key: '1080', value: 1080, label: 'Ultra (1080p Full HD)', resolution: '1920x1080' },
   ],
-  recordVideoDefaultQuality: 'high',
+  recordVideoDefaultQuality: '720',
 
   recordVideoIntervalOptions: [
     { seconds: 10, label: '10 sec' },
@@ -22,13 +20,12 @@ export const DEFAULT_OPTIONS = {
   recordVideoDefaultInterval: 120,
 
   recordScreenQualityOptions: [
-    { key: 'lowest', label: 'Lowest (120p)', resolution: '160x120' },
-    { key: 'low', label: 'Low (240p)', resolution: '320x240' },
-    { key: 'medium', label: 'Medium (480p)', resolution: '640x480' },
-    { key: 'high', label: 'High (720p HD)', resolution: '1280x720' },
-    { key: 'ultra', label: 'Ultra (1080p Full HD)', resolution: '1920x1080' },
+    { key: '360', value: 360, label: 'Low (360p)', resolution: '640x360' },
+    { key: '480', value: 480, label: 'Medium (480p)', resolution: '640x480' },
+    { key: '720', value: 720, label: 'High (720p HD)', resolution: '1280x720' },
+    { key: '1080', value: 1080, label: 'Ultra (1080p Full HD)', resolution: '1920x1080' },
   ],
-  recordScreenDefaultQuality: 'high',
+  recordScreenDefaultQuality: '720',
 
   recordScreenIntervalOptions: [
     { seconds: 10, label: '10 sec' },
@@ -105,6 +102,10 @@ export const DEFAULT_OPTIONS = {
   storageWarnPercent: 80,
   storageWarnNotificationIntervalMin: 120,
 
+  statusGoodUntilStorage: 50,
+  statusAverageUntilStorage: 70,
+  statusBadAboveStorage: 71,
+
   graceHoursOptions: [
     { hours: 24, days: 1, label: '24 Hours (1 Day)' },
     { hours: 48, days: 2, label: '48 Hours (2 Days)' },
@@ -148,6 +149,15 @@ export const DEFAULT_OPTIONS = {
     RU: 'HIGH_USD',
     DEFAULT: 'HIGH_USD',
   },
+
+  // Dynamic Profile & App Configs
+  privacyPolicyUrl: 'https://www.youtube.com',
+  supportEmail: 'support@parentprotect.app',
+  supportEmailSubject: 'Parent Protect Support Request',
+  supportEmailBody: 'Hello Support Team,\n\nI need help with my Parent Protect account.\n\nAccount: {phone}\nDevice: {device}\n\nDetails:\n',
+  appShareText: 'Protect your child online with Parent Protect. Download now: https://parentprotect.app',
+  appShareUrl: 'https://parentprotect.app',
+  playStoreUrl: 'market://details?id=com.parentprotect.parent_app',
 };
 
 export class ConfigService {
@@ -174,6 +184,18 @@ export class ConfigService {
           ],
         },
       });
+
+      // Synchronize standardized video and screen quality options
+      await Config.findOneAndUpdate(
+        { key: 'recordVideoQualityOptions' },
+        { key: 'recordVideoQualityOptions', value: DEFAULT_OPTIONS.recordVideoQualityOptions },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'recordScreenQualityOptions' },
+        { key: 'recordScreenQualityOptions', value: DEFAULT_OPTIONS.recordScreenQualityOptions },
+        { upsert: true }
+      );
 
       const dbConfigs = await Config.find().lean();
       const existingKeys = new Set(dbConfigs.map((item) => item.key));

@@ -143,166 +143,272 @@ export class StorageDeleteService {
   }
 
   /**
-   * Execute auto-delete purge for a specific parent user based on their User settings
+   * Execute auto-delete purge for a specific parent user and their devices
+   * Supports independent per-device retention periods and categories
    * Purges ALL media, audio, video, and 13 database text log collections across R2 & local disk
    */
-  static async executeParentAutoDeletePurge(parentUserId: string): Promise<void> {
+  static async executeParentAutoDeletePurge(parentUserId: string, specificDeviceId?: string): Promise<void> {
     try {
       const user = await User.findById(parentUserId);
-      if (!user || !user.autoDeleteIsEnabled) return;
+      if (!user) return;
 
-      const retentionMinutes = user.autoDeleteMinutes || (user.autoDeleteDays ? user.autoDeleteDays * 1440 : 10080);
-      const cutoffDate = new Date(Date.now() - retentionMinutes * 60 * 1000);
-
-      let deviceIds: string[] = [];
-      if (user.autoDeleteDeviceIds && user.autoDeleteDeviceIds.length > 0) {
-        deviceIds = user.autoDeleteDeviceIds;
-      } else {
-        const devices = await Device.find({ parentUserId: user._id }).select('deviceId');
-        deviceIds = devices.map((d) => d.deviceId).filter(Boolean);
+      const deviceQuery: Record<string, any> = { parentUserId: user._id };
+      if (specificDeviceId) {
+        deviceQuery.deviceId = specificDeviceId;
       }
-      if (deviceIds.length === 0) return;
+      const devices = await Device.find(deviceQuery);
+      if (devices.length === 0) return;
 
-      const categories = user.autoDeleteCategories || ['all'];
-      const isAll = categories.includes('all');
+      let anyPurged = false;
 
-      const dateQuery = {
-        $or: [
-          { createdAt: { $lte: cutoffDate } },
-          { timestamp: { $lte: cutoffDate } },
-          { startedAt: { $lte: cutoffDate } },
-          { startTime: { $lte: cutoffDate } },
-          { date: { $lte: cutoffDate } },
-        ],
-      };
+      for (const dev of devices) {
+        // Device-specific settings with user-level fallback
+        const isDevEnabled = dev.autoDeleteIsEnabled !== undefined ? dev.autoDeleteIsEnabled : (user.autoDeleteIsEnabled ?? false);
+        if (!isDevEnabled) continue;
+
+        const retentionMinutes = dev.autoDeleteMinutes || (dev.autoDeleteDays ? dev.autoDeleteDays * 1440 : (user.autoDeleteMinutes || (user.autoDeleteDays ? user.autoDeleteDays * 1440 : 10080)));
+        const cutoffDate = new Date(Date.now() - retentionMinutes * 60 * 1000);
+        const categories = (dev.autoDeleteCategories && dev.autoDeleteCategories.length > 0) ? dev.autoDeleteCategories : (user.autoDeleteCategories || ['all']);
+        const isAll = categories.includes('all');
+        const devId = dev.deviceId;
+
+        const dateQuery = {
+          $or: [
+            { createdAt: { $lte: cutoffDate } },
+            { timestamp: { $lte: cutoffDate } },
+            { startedAt: { $lte: cutoffDate } },
+            { startTime: { $lte: cutoffDate } },
+            { date: { $lte: cutoffDate } },
+          ],
+        };
+
+        const mediaUrlsToDelete: string[] = [];
+
+        // 1. Photos & Screenshots (MediaCapture)
+        if (isAll || categories.includes('photos')) {
+          const photoDocs = await MediaCapture.find({
+            deviceId: devId,
+            type: { $in: ['screenshot', 'front_photo', 'back_photo', 'photo', 'manual_photo'] },
+            ...dateQuery,
+          }).select('_id mediaUrl cdnUrl thumbnailUrl');
+
+          for (const doc of photoDocs) {
+            if (doc.mediaUrl) mediaUrlsToDelete.push(doc.mediaUrl);
+            if ((doc as any).cdnUrl) mediaUrlsToDelete.push((doc as any).cdnUrl);
+            if (doc.thumbnailUrl) mediaUrlsToDelete.push(doc.thumbnailUrl);
+          }
+
+          if (photoDocs.length > 0) {
+            await MediaCapture.deleteMany({ _id: { $in: photoDocs.map((d) => d._id) } });
+          }
+        }
+
+        // 2. Videos & Screen Recordings (MediaCapture + Recording)
+        if (isAll || categories.includes('videos')) {
+          const videoMediaDocs = await MediaCapture.find({
+            deviceId: devId,
+            type: { $in: ['video', 'screen_recording', 'manual_video'] },
+            ...dateQuery,
+          }).select('_id mediaUrl cdnUrl thumbnailUrl');
+
+          for (const doc of videoMediaDocs) {
+            if (doc.mediaUrl) mediaUrlsToDelete.push(doc.mediaUrl);
+            if ((doc as any).cdnUrl) mediaUrlsToDelete.push((doc as any).cdnUrl);
+            if (doc.thumbnailUrl) mediaUrlsToDelete.push(doc.thumbnailUrl);
+          }
+
+          if (videoMediaDocs.length > 0) {
+            await MediaCapture.deleteMany({ _id: { $in: videoMediaDocs.map((d) => d._id) } });
+          }
+
+          const videoRecordings = await Recording.find({
+            deviceId: devId,
+            recordingType: { $in: ['video', 'screen'] },
+            ...dateQuery,
+          }).select('_id mediaUrl thumbnailUrl');
+
+          for (const rec of videoRecordings) {
+            if (rec.mediaUrl) mediaUrlsToDelete.push(rec.mediaUrl);
+            if (rec.thumbnailUrl) mediaUrlsToDelete.push(rec.thumbnailUrl);
+          }
+
+          if (videoRecordings.length > 0) {
+            await Recording.deleteMany({ _id: { $in: videoRecordings.map((r) => r._id) } });
+          }
+        }
+
+        // 3. Audio & Voice Recordings (CallRecording + Recording)
+        if (isAll || categories.includes('audio') || categories.includes('recordings')) {
+          const callRecordings = await CallRecording.find({
+            deviceId: devId,
+            ...dateQuery,
+          }).select('_id audioUrl mediaUrl');
+
+          for (const rec of callRecordings) {
+            if (rec.audioUrl) mediaUrlsToDelete.push(rec.audioUrl);
+            if ((rec as any).mediaUrl) mediaUrlsToDelete.push((rec as any).mediaUrl);
+          }
+
+          if (callRecordings.length > 0) {
+            await CallRecording.deleteMany({ _id: { $in: callRecordings.map((r) => r._id) } });
+          }
+
+          const audioRecordings = await Recording.find({
+            deviceId: devId,
+            recordingType: 'audio',
+            ...dateQuery,
+          }).select('_id mediaUrl thumbnailUrl');
+
+          for (const rec of audioRecordings) {
+            if (rec.mediaUrl) mediaUrlsToDelete.push(rec.mediaUrl);
+            if (rec.thumbnailUrl) mediaUrlsToDelete.push(rec.thumbnailUrl);
+          }
+
+          if (audioRecordings.length > 0) {
+            await Recording.deleteMany({ _id: { $in: audioRecordings.map((r) => r._id) } });
+          }
+        }
+
+        // 4. Bulk purge R2 cloud files & local disk uploads
+        if (mediaUrlsToDelete.length > 0) {
+          const uniqueUrls = Array.from(new Set(mediaUrlsToDelete));
+          await bulkDeleteMediaFromR2(uniqueUrls);
+          console.log(`[AUTO-DELETE-PURGE] Deleted ${uniqueUrls.length} media files from R2/disk for device ${devId} (parent ${parentUserId})`);
+        }
+
+        // 5. Database Logs & Text Records (13 Collections)
+        const logFilter = {
+          deviceId: devId,
+          ...dateQuery,
+        };
+
+        if (isAll || categories.includes('text') || categories.includes('audio')) {
+          await CallLog.deleteMany(logFilter);
+        }
+
+        if (isAll || categories.includes('text')) {
+          await Promise.all([
+            LocationLog.deleteMany(logFilter),
+            ChildMessage.deleteMany(logFilter),
+            ChildNotification.deleteMany(logFilter),
+            BrowserHistory.deleteMany(logFilter),
+            YouTubeHistory.deleteMany(logFilter),
+            YouTubeSession.deleteMany(logFilter),
+            AppSession.deleteMany(logFilter),
+            AppUsage.deleteMany(logFilter),
+            DrivingTrip.deleteMany(logFilter),
+            KeyboardLog.deleteMany(logFilter),
+            WifiLog.deleteMany(logFilter),
+            InternetLog.deleteMany(logFilter),
+          ]);
+        }
+
+        anyPurged = true;
+        const devDisplayName = dev.deviceName || dev.deviceModel || dev.deviceId;
+        console.log(`[AUTO-DELETE-PURGE] Device ${devId} (${devDisplayName}) purge completed. Retention: ${retentionMinutes} mins, Categories: ${categories.join(', ')}`);
+      }
+
+      // 6. Recalculate storage usage statistics for user if any purge executed
+      if (anyPurged) {
+        await StorageAccountingService.recalculateStorage(parentUserId);
+      }
+    } catch (err: any) {
+      console.error(`[AUTO-DELETE-PURGE-ERROR] ${err?.message}`);
+    }
+  }
+
+  /**
+   * Erase ALL stored data for a specific device (Media in R2 + All Text/Log records in Mongo)
+   * Decrements/zeros device storage and recalculates parent account storage.
+   * DOES NOT unpair or disconnect the device.
+   */
+  static async eraseAllDeviceData(deviceId: string, parentUserId?: string): Promise<{ freedBytes: number; deletedCount: number }> {
+    try {
+      if (!parentUserId) {
+        parentUserId = await StorageAccountingService.resolveParentUserId(deviceId) || undefined;
+      }
 
       const mediaUrlsToDelete: string[] = [];
+      let totalBytesFreed = 0;
+      let totalDeletedCount = 0;
 
-      // 1. Photos & Screenshots (MediaCapture)
-      if (isAll || categories.includes('photos')) {
-        const photoDocs = await MediaCapture.find({
-          deviceId: { $in: deviceIds },
-          type: { $in: ['screenshot', 'front_photo', 'back_photo', 'photo', 'manual_photo'] },
-          ...dateQuery,
-        }).select('_id mediaUrl cdnUrl thumbnailUrl');
-
-        for (const doc of photoDocs) {
-          if (doc.mediaUrl) mediaUrlsToDelete.push(doc.mediaUrl);
-          if ((doc as any).cdnUrl) mediaUrlsToDelete.push((doc as any).cdnUrl);
-          if (doc.thumbnailUrl) mediaUrlsToDelete.push(doc.thumbnailUrl);
-        }
-
-        if (photoDocs.length > 0) {
-          await MediaCapture.deleteMany({ _id: { $in: photoDocs.map((d) => d._id) } });
-        }
+      // 1. MediaCapture (Photos, Screenshots, Videos, Audio)
+      const mediaDocs = await MediaCapture.find({ deviceId }).select('_id mediaUrl cdnUrl thumbnailUrl fileSizeBytes type');
+      for (const doc of mediaDocs) {
+        if (doc.mediaUrl) mediaUrlsToDelete.push(doc.mediaUrl);
+        if ((doc as any).cdnUrl) mediaUrlsToDelete.push((doc as any).cdnUrl);
+        if (doc.thumbnailUrl) mediaUrlsToDelete.push(doc.thumbnailUrl);
+        totalBytesFreed += (doc.fileSizeBytes || 50000);
+      }
+      if (mediaDocs.length > 0) {
+        await MediaCapture.deleteMany({ deviceId });
+        totalDeletedCount += mediaDocs.length;
       }
 
-      // 2. Videos & Screen Recordings (MediaCapture + Recording)
-      if (isAll || categories.includes('videos')) {
-        const videoMediaDocs = await MediaCapture.find({
-          deviceId: { $in: deviceIds },
-          type: { $in: ['video', 'screen_recording', 'manual_video'] },
-          ...dateQuery,
-        }).select('_id mediaUrl cdnUrl thumbnailUrl');
-
-        for (const doc of videoMediaDocs) {
-          if (doc.mediaUrl) mediaUrlsToDelete.push(doc.mediaUrl);
-          if ((doc as any).cdnUrl) mediaUrlsToDelete.push((doc as any).cdnUrl);
-          if (doc.thumbnailUrl) mediaUrlsToDelete.push(doc.thumbnailUrl);
-        }
-
-        if (videoMediaDocs.length > 0) {
-          await MediaCapture.deleteMany({ _id: { $in: videoMediaDocs.map((d) => d._id) } });
-        }
-
-        const videoRecordings = await Recording.find({
-          deviceId: { $in: deviceIds },
-          recordingType: { $in: ['video', 'screen'] },
-          ...dateQuery,
-        }).select('_id mediaUrl thumbnailUrl');
-
-        for (const rec of videoRecordings) {
-          if (rec.mediaUrl) mediaUrlsToDelete.push(rec.mediaUrl);
-          if (rec.thumbnailUrl) mediaUrlsToDelete.push(rec.thumbnailUrl);
-        }
-
-        if (videoRecordings.length > 0) {
-          await Recording.deleteMany({ _id: { $in: videoRecordings.map((r) => r._id) } });
-        }
+      // 2. Recording (Videos, Screen recordings, Audio)
+      const recordingDocs = await Recording.find({ deviceId }).select('_id mediaUrl thumbnailUrl fileSizeBytes');
+      for (const rec of recordingDocs) {
+        if (rec.mediaUrl) mediaUrlsToDelete.push(rec.mediaUrl);
+        if (rec.thumbnailUrl) mediaUrlsToDelete.push(rec.thumbnailUrl);
+        totalBytesFreed += ((rec as any).fileSizeBytes || 150000);
+      }
+      if (recordingDocs.length > 0) {
+        await Recording.deleteMany({ deviceId });
+        totalDeletedCount += recordingDocs.length;
       }
 
-      // 3. Audio & Voice Recordings (CallRecording + Recording)
-      if (isAll || categories.includes('audio') || categories.includes('recordings')) {
-        const callRecordings = await CallRecording.find({
-          deviceId: { $in: deviceIds },
-          ...dateQuery,
-        }).select('_id audioUrl mediaUrl');
-
-        for (const rec of callRecordings) {
-          if (rec.audioUrl) mediaUrlsToDelete.push(rec.audioUrl);
-          if ((rec as any).mediaUrl) mediaUrlsToDelete.push((rec as any).mediaUrl);
-        }
-
-        if (callRecordings.length > 0) {
-          await CallRecording.deleteMany({ _id: { $in: callRecordings.map((r) => r._id) } });
-        }
-
-        const audioRecordings = await Recording.find({
-          deviceId: { $in: deviceIds },
-          recordingType: 'audio',
-          ...dateQuery,
-        }).select('_id mediaUrl thumbnailUrl');
-
-        for (const rec of audioRecordings) {
-          if (rec.mediaUrl) mediaUrlsToDelete.push(rec.mediaUrl);
-          if (rec.thumbnailUrl) mediaUrlsToDelete.push(rec.thumbnailUrl);
-        }
-
-        if (audioRecordings.length > 0) {
-          await Recording.deleteMany({ _id: { $in: audioRecordings.map((r) => r._id) } });
-        }
+      // 3. CallRecording (Call Audio)
+      const callRecDocs = await CallRecording.find({ deviceId }).select('_id audioUrl mediaUrl fileSizeBytes');
+      for (const rec of callRecDocs) {
+        if (rec.audioUrl) mediaUrlsToDelete.push(rec.audioUrl);
+        if ((rec as any).mediaUrl) mediaUrlsToDelete.push((rec as any).mediaUrl);
+        totalBytesFreed += ((rec as any).fileSizeBytes || 100000);
+      }
+      if (callRecDocs.length > 0) {
+        await CallRecording.deleteMany({ deviceId });
+        totalDeletedCount += callRecDocs.length;
       }
 
-      // 4. Bulk purge R2 cloud files & local disk uploads
+      // 4. Bulk Delete all R2 & local files
       if (mediaUrlsToDelete.length > 0) {
         const uniqueUrls = Array.from(new Set(mediaUrlsToDelete));
         await bulkDeleteMediaFromR2(uniqueUrls);
-        console.log(`[AUTO-DELETE-PURGE] Deleted ${uniqueUrls.length} media files from R2/disk for parent ${parentUserId}`);
       }
 
-      // 5. Database Logs & Text Records (13 Collections)
-      const logFilter = {
-        deviceId: { $in: deviceIds },
-        ...dateQuery,
-      };
+      // 5. Delete all Text / Database Logs (13 Collections)
+      const textCollections = [
+        CallLog.deleteMany({ deviceId }),
+        LocationLog.deleteMany({ deviceId }),
+        ChildMessage.deleteMany({ deviceId }),
+        ChildNotification.deleteMany({ deviceId }),
+        BrowserHistory.deleteMany({ deviceId }),
+        YouTubeHistory.deleteMany({ deviceId }),
+        YouTubeSession.deleteMany({ deviceId }),
+        AppSession.deleteMany({ deviceId }),
+        AppUsage.deleteMany({ deviceId }),
+        DrivingTrip.deleteMany({ deviceId }),
+        KeyboardLog.deleteMany({ deviceId }),
+        WifiLog.deleteMany({ deviceId }),
+        InternetLog.deleteMany({ deviceId }),
+      ];
 
-      if (isAll || categories.includes('text') || categories.includes('audio')) {
-        await CallLog.deleteMany(logFilter);
+      const deleteResults = await Promise.all(textCollections);
+      for (const res of deleteResults) {
+        const deleted = (res as any)?.deletedCount || 0;
+        totalDeletedCount += deleted;
+        totalBytesFreed += deleted * 500; // estimated 500 bytes per text log
       }
 
-      if (isAll || categories.includes('text')) {
-        await Promise.all([
-          LocationLog.deleteMany(logFilter),
-          ChildMessage.deleteMany(logFilter),
-          ChildNotification.deleteMany(logFilter),
-          BrowserHistory.deleteMany(logFilter),
-          YouTubeHistory.deleteMany(logFilter),
-          YouTubeSession.deleteMany(logFilter),
-          AppSession.deleteMany(logFilter),
-          AppUsage.deleteMany(logFilter),
-          DrivingTrip.deleteMany(logFilter),
-          KeyboardLog.deleteMany(logFilter),
-          WifiLog.deleteMany(logFilter),
-          InternetLog.deleteMany(logFilter),
-        ]);
+      // 6. Recalculate Parent Account Storage
+      if (parentUserId) {
+        await StorageAccountingService.recalculateStorage(parentUserId);
       }
 
-      // 6. Recalculate storage usage statistics for user
-      await StorageAccountingService.recalculateStorage(parentUserId);
-
-      console.log(`[AUTO-DELETE-PURGE] Complete purge finished for parent ${parentUserId} (retention: ${retentionMinutes} mins, cutoff: ${cutoffDate.toISOString()})`);
+      console.log(`[ERASE-ALL-DEVICE-DATA] Device ${deviceId}: ${totalDeletedCount} records deleted, ${totalBytesFreed} bytes freed. Device remains active.`);
+      return { freedBytes: totalBytesFreed, deletedCount: totalDeletedCount };
     } catch (err: any) {
-      console.error(`[AUTO-DELETE-PURGE-ERROR] ${err?.message}`);
+      console.error(`[ERASE-ALL-DEVICE-DATA-ERROR] ${err?.message}`);
+      throw err;
     }
   }
 }

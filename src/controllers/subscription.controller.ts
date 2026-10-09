@@ -6,6 +6,7 @@ import { TrialLedger } from '../models/TrialLedger';
 import { StorageUsage } from '../models/StorageUsage';
 import { LiveUsage } from '../models/LiveUsage';
 import { User } from '../models/User';
+import { Device } from '../models/Device';
 import { ConfigService } from '../services/ConfigService';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { StorageDeleteService } from '../services/StorageDeleteService';
@@ -613,6 +614,21 @@ export const getAutoDeleteConfig = async (req: Request, res: Response) => {
       user = await User.findOne({ _id: parentUserId });
     }
 
+    const devices = await Device.find({ parentUserId: user?._id || parentUserId });
+    const perDevice: Record<string, any> = {};
+    for (const dev of devices) {
+      perDevice[dev.deviceId] = {
+        deviceId: dev.deviceId,
+        deviceName: dev.deviceName || dev.deviceModel || 'Child Device',
+        isEnabled: dev.autoDeleteIsEnabled ?? user?.autoDeleteIsEnabled ?? false,
+        minutesOption: dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? 10080,
+        daysOption: dev.autoDeleteDays ?? Math.ceil((dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? 10080) / 1440),
+        categoriesSelected: (dev.autoDeleteCategories && dev.autoDeleteCategories.length > 0)
+          ? dev.autoDeleteCategories
+          : (user?.autoDeleteCategories ?? ['all']),
+      };
+    }
+
     const autoDelete = {
       parentUserId,
       isEnabled: user?.autoDeleteIsEnabled ?? false,
@@ -620,8 +636,9 @@ export const getAutoDeleteConfig = async (req: Request, res: Response) => {
       daysOption: Math.ceil((user?.autoDeleteMinutes ?? 10080) / 1440),
       categoriesSelected: user?.autoDeleteCategories ?? ['all'],
       deviceIdsSelected: user?.autoDeleteDeviceIds ?? [],
+      perDevice,
     };
-    return res.json({ success: true, autoDelete });
+    return res.json({ success: true, autoDelete, perDevice });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
   }
@@ -632,10 +649,45 @@ export const updateAutoDeleteConfig = async (req: Request, res: Response) => {
     const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const { isEnabled, minutesOption, daysOption, categoriesSelected, deviceIdsSelected, selectedDeviceIds } = req.body;
+    const { deviceId, isEnabled, minutesOption, daysOption, categoriesSelected, deviceIdsSelected, selectedDeviceIds } = req.body;
     const mins = minutesOption || (daysOption ? daysOption * 1440 : 10080);
     const targetDeviceIds = deviceIdsSelected || selectedDeviceIds;
 
+    let user = await User.findById(parentUserId);
+    if (!user) {
+      user = await User.findOne({ _id: parentUserId });
+    }
+
+    // 1. If deviceId specified, save settings strictly for this device
+    if (deviceId) {
+      await Device.findOneAndUpdate(
+        { deviceId, parentUserId: user?._id || parentUserId },
+        {
+          $set: {
+            autoDeleteIsEnabled: isEnabled !== undefined ? isEnabled : false,
+            autoDeleteMinutes: mins,
+            autoDeleteDays: Math.ceil(mins / 1440),
+            autoDeleteCategories: categoriesSelected || ['all'],
+          },
+        },
+        { new: true }
+      );
+    } else if (targetDeviceIds && Array.isArray(targetDeviceIds) && targetDeviceIds.length > 0) {
+      // 2. If targetDeviceIds array specified, update those devices
+      await Device.updateMany(
+        { deviceId: { $in: targetDeviceIds }, parentUserId: user?._id || parentUserId },
+        {
+          $set: {
+            autoDeleteIsEnabled: isEnabled !== undefined ? isEnabled : false,
+            autoDeleteMinutes: mins,
+            autoDeleteDays: Math.ceil(mins / 1440),
+            autoDeleteCategories: categoriesSelected || ['all'],
+          },
+        }
+      );
+    }
+
+    // 3. Also update User level default settings
     const updateData: any = {
       autoDeleteIsEnabled: isEnabled !== undefined ? isEnabled : false,
       autoDeleteMinutes: mins,
@@ -646,15 +698,30 @@ export const updateAutoDeleteConfig = async (req: Request, res: Response) => {
       updateData.autoDeleteDeviceIds = targetDeviceIds;
     }
 
-    const user = await User.findByIdAndUpdate(
+    user = await User.findByIdAndUpdate(
       parentUserId,
       updateData,
       { new: true }
     );
 
-    if (user && user.autoDeleteIsEnabled) {
-      // Execute immediate purge of existing data older than selected interval
-      await StorageDeleteService.executeParentAutoDeletePurge(parentUserId);
+    if (isEnabled) {
+      // Execute immediate purge of existing data older than selected interval for this device/parent
+      await StorageDeleteService.executeParentAutoDeletePurge(parentUserId, deviceId);
+    }
+
+    const devices = await Device.find({ parentUserId: user?._id || parentUserId });
+    const perDevice: Record<string, any> = {};
+    for (const dev of devices) {
+      perDevice[dev.deviceId] = {
+        deviceId: dev.deviceId,
+        deviceName: dev.deviceName || dev.deviceModel || 'Child Device',
+        isEnabled: dev.autoDeleteIsEnabled ?? user?.autoDeleteIsEnabled ?? false,
+        minutesOption: dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? 10080,
+        daysOption: dev.autoDeleteDays ?? Math.ceil((dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? 10080) / 1440),
+        categoriesSelected: (dev.autoDeleteCategories && dev.autoDeleteCategories.length > 0)
+          ? dev.autoDeleteCategories
+          : (user?.autoDeleteCategories ?? ['all']),
+      };
     }
 
     const autoDelete = {
@@ -664,9 +731,10 @@ export const updateAutoDeleteConfig = async (req: Request, res: Response) => {
       daysOption: Math.ceil((user?.autoDeleteMinutes ?? 10080) / 1440),
       categoriesSelected: user?.autoDeleteCategories ?? ['all'],
       deviceIdsSelected: user?.autoDeleteDeviceIds ?? [],
+      perDevice,
     };
 
-    return res.json({ success: true, autoDelete });
+    return res.json({ success: true, autoDelete, perDevice });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
   }

@@ -63,6 +63,12 @@ export interface IDevice extends Document {
   callRecordingMode?: 'all' | 'unknown' | 'contacts' | 'selected';
   callRecordingRecordUnknown?: boolean;
   callRecordingSelectedNumbers?: string[];
+
+  // Per-Device Auto-Delete Config
+  autoDeleteIsEnabled?: boolean;
+  autoDeleteMinutes?: number;
+  autoDeleteDays?: number;
+  autoDeleteCategories?: string[];
   
   // Captures & Timer Rules
   screenshotTimerMinutes: number; // 0 = disabled, 1, 2, 5...
@@ -181,6 +187,11 @@ const DeviceSchema = new Schema<IDevice>(
     callRecordingMode: { type: String, enum: ['all', 'unknown', 'contacts', 'selected'], default: 'all' },
     callRecordingRecordUnknown: { type: Boolean, default: false },
     callRecordingSelectedNumbers: [{ type: String }],
+
+    autoDeleteIsEnabled: { type: Boolean, default: false },
+    autoDeleteMinutes: { type: Number, default: 10080 },
+    autoDeleteDays: { type: Number, default: 7 },
+    autoDeleteCategories: { type: [String], default: ['all'] },
     
     screenshotTimerMinutes: { type: Number, default: 0 },
     frontPhotoTimerMinutes: { type: Number, default: 0 },

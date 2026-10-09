@@ -9,6 +9,8 @@ import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.se
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
+import { DeletedRecording } from '../models/DeletedRecording';
+import { deleteMediaFromR2, bulkDeleteMediaFromR2 } from '../services/r2.service';
 
 // Format duration helper
 const formatDuration = (seconds: number): string => {
@@ -185,6 +187,7 @@ export const startRecording = async (req: Request, res: Response) => {
       mimeType,
       cameraPosition: recordingType === 'video' ? cameraPosition : 'none',
       quality: quality || 'medium',
+      childStarted: false,
       startedAt: new Date(),
       timestamp: new Date(),
     });
@@ -362,8 +365,13 @@ export const getActiveRecordingStatus = async (req: Request, res: Response) => {
       });
     }
 
-    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - currentActive.startedAt.getTime()) / 1000));
-    const remainingSeconds = Math.max(0, currentActive.durationSeconds - elapsedSeconds);
+    const isChildStarted = (currentActive as any).childStarted === true;
+    const elapsedSeconds = isChildStarted
+      ? Math.max(0, Math.floor((Date.now() - currentActive.startedAt.getTime()) / 1000))
+      : 0;
+    const remainingSeconds = isChildStarted
+      ? Math.max(0, currentActive.durationSeconds - elapsedSeconds)
+      : currentActive.durationSeconds;
 
     return res.json({
       success: true,
@@ -378,6 +386,7 @@ export const getActiveRecordingStatus = async (req: Request, res: Response) => {
         durationSeconds: currentActive.durationSeconds,
         elapsedSeconds,
         remainingSeconds,
+        childStarted: (currentActive as any).childStarted === true,
         startedAt: currentActive.startedAt,
       },
     });
@@ -460,29 +469,81 @@ export const deleteRecordings = async (req: Request, res: Response) => {
 
     const deviceId = (await resolveCanonicalDeviceId(inputDeviceId)) || inputDeviceId;
 
+    // Shared helper: fully remove a set of recordings matching `query`.
+    // Frees R2 media, decrements the parent storage counter, writes tombstones
+    // (so a late child re-upload cannot resurrect them), then deletes the docs.
+    const purge = async (query: Record<string, any>): Promise<number> => {
+      const docs = await Recording.find(query).select(
+        '_id sessionId deviceId recordingType mediaUrl thumbnailUrl fileSizeBytes'
+      );
+      if (docs.length === 0) return 0;
+
+      // 1. Tombstones (idempotent; ignore duplicate-key races)
+      try {
+        await DeletedRecording.insertMany(
+          docs.map((d) => ({ sessionId: d.sessionId, deviceId: d.deviceId })),
+          { ordered: false }
+        );
+      } catch (_) {
+        /* duplicate sessionId tombstones are fine */
+      }
+
+      // 2. Collect R2 media + thumbnails and per-category byte totals
+      const mediaUrls: string[] = [];
+      let videoBytes = 0;
+      let audioBytes = 0;
+      for (const d of docs) {
+        if (d.mediaUrl) mediaUrls.push(d.mediaUrl);
+        if (d.thumbnailUrl) mediaUrls.push(d.thumbnailUrl);
+        const bytes = (d as any).fileSizeBytes || 0;
+        if (d.recordingType === 'video' || d.recordingType === 'screen') videoBytes += bytes;
+        else audioBytes += bytes;
+      }
+
+      // 3. Delete Mongo docs first (user-visible result), then free R2 async
+      const result = await Recording.deleteMany({ _id: { $in: docs.map((d) => d._id) } });
+
+      if (mediaUrls.length > 0) {
+        bulkDeleteMediaFromR2(Array.from(new Set(mediaUrls))).catch((err) =>
+          console.warn('[RECORDING-DELETE-R2-ERROR]', err?.message)
+        );
+      }
+
+      // 4. Decrement parent storage counter so freed space is reclaimed for quota
+      const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+      if (parentUserId) {
+        if (videoBytes > 0)
+          StorageAccountingService.updateStorage(parentUserId, deviceId, 'video', -Math.abs(videoBytes)).catch(() => {});
+        if (audioBytes > 0)
+          StorageAccountingService.updateStorage(parentUserId, deviceId, 'audio', -Math.abs(audioBytes)).catch(() => {});
+      }
+
+      return result.deletedCount || docs.length;
+    };
+
     if (recordingId) {
-      await Recording.deleteOne({ _id: recordingId, deviceId });
-      return res.json({ success: true, message: 'Recording deleted successfully' });
+      const count = await purge({ _id: recordingId, deviceId });
+      return res.json({ success: true, count, message: 'Recording deleted successfully' });
     }
 
     if (deleteAll) {
       const deleteQuery: any = { deviceId };
       if (type) deleteQuery.recordingType = type;
-      const result = await Recording.deleteMany(deleteQuery);
-      return res.json({ success: true, count: result.deletedCount, message: 'All history deleted successfully' });
+      const count = await purge(deleteQuery);
+      return res.json({ success: true, count, message: 'All history deleted successfully' });
     }
 
     if (date) {
-      const startOfDay = new Date(`${date}T00:00:00.000Z`);
-      const endOfDay = new Date(`${date}T23:59:59.999Z`);
+      const startOfDay = new Date(`${date}T00:00:00.000+05:30`);
+      const endOfDay = new Date(`${date}T23:59:59.999+05:30`);
       const deleteQuery: any = {
         deviceId,
         timestamp: { $gte: startOfDay, $lte: endOfDay },
       };
       if (type) deleteQuery.recordingType = type;
 
-      const result = await Recording.deleteMany(deleteQuery);
-      return res.json({ success: true, count: result.deletedCount, message: `History for ${date} deleted successfully` });
+      const count = await purge(deleteQuery);
+      return res.json({ success: true, count, message: `History for ${date} deleted successfully` });
     }
 
     return res.status(400).json({ success: false, message: 'Invalid deletion parameters' });
@@ -580,6 +641,14 @@ export const completeRecording = async (req: Request, res: Response) => {
     const isCompleted = Boolean(mediaUrl && mediaUrl.trim().length > 0 && numSize > 0);
     const finalStatus = isCompleted ? 'completed' : 'failed';
 
+    // Tombstone guard: if the parent already deleted this recording, a late /
+    // retried child completion must NOT resurrect it (was reappearing with current time).
+    const tombstoned = await DeletedRecording.exists({ sessionId });
+    if (tombstoned) {
+      console.log(`[RECORDING-COMPLETE] Ignored resurrect attempt for deleted session ${sessionId}`);
+      return res.json({ success: true, deleted: true, message: 'Recording was deleted by parent; ignored.' });
+    }
+
     // Upsert recording document with idempotency on sessionId
     const recording = await Recording.findOneAndUpdate(
       { sessionId },
@@ -595,8 +664,10 @@ export const completeRecording = async (req: Request, res: Response) => {
           fileSizeBytes: numSize,
           ...(req.body.quality ? { quality: req.body.quality } : {}),
           endedAt: new Date(),
-          timestamp: new Date(),
-        },
+          },
+          $setOnInsert: {
+            timestamp: req.body.timestamp ? new Date(Number(req.body.timestamp)) : new Date(),
+          },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );

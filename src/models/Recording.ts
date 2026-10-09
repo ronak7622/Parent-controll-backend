@@ -13,6 +13,7 @@ export interface IRecording extends Document {
   mimeType: string;
   cameraPosition?: 'front' | 'back' | 'none';
   quality?: string;
+  childStarted?: boolean;
   startedAt: Date;
   endedAt?: Date;
   timestamp: Date;
@@ -32,6 +33,7 @@ const RecordingSchema = new Schema<IRecording>(
     mimeType: { type: String, default: 'audio/aac' },
     cameraPosition: { type: String, enum: ['front', 'back', 'none'], default: 'none' },
     quality: { type: String, default: 'medium' },
+    childStarted: { type: Boolean, default: false },
     startedAt: { type: Date, required: true, default: Date.now },
     endedAt: { type: Date },
     timestamp: { type: Date, required: true, default: Date.now, index: true },

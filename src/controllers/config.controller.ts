@@ -40,6 +40,12 @@ export const getRemoteConfig = async (req: Request, res: Response) => {
           fcmSyncJitterMaxSeconds: 30, // 0-30 sec random delay on FCM push sync
           gzipCompressionSupported: true, // Enable gzip request body compression
         },
+        privacyPolicyUrl: 'https://www.youtube.com',
+        supportEmail: 'support@parentprotect.app',
+        supportEmailSubject: 'Parent Protect Support Request',
+        supportEmailBody: 'Hello Support Team,\n\nI need help with my Parent Protect account.\n\nAccount: {phone}\nDevice: {device}\n\nDetails:\n',
+        appShareText: 'Protect your child online with Parent Protect. Download now: https://parentprotect.app',
+        appShareUrl: 'https://parentprotect.app',
         serverTimestamp: new Date().toISOString(),
       },
     });

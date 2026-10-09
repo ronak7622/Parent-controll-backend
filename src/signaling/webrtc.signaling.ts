@@ -351,6 +351,49 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       }
     });
 
+    const broadcastToDeviceRooms = async (rawDevId: string, sessId: string | undefined, eventName: string, payload: any) => {
+      const targetRooms = new Set<string>();
+      if (rawDevId) targetRooms.add(String(rawDevId));
+      try {
+        const { Device } = require('../models/Device');
+        const isObjId = mongoose.isValidObjectId(rawDevId);
+        let dev = rawDevId ? await Device.findOne({
+          $or: [
+            { deviceId: rawDevId },
+            ...(isObjId ? [{ _id: rawDevId }] : [])
+          ]
+        }) : null;
+
+        if (!dev && sessId) {
+          const { Recording } = require('../models/Recording');
+          const rec = await Recording.findOne({ sessionId: sessId });
+          if (rec) {
+            targetRooms.add(rec.deviceId);
+            dev = await Device.findOne({
+              $or: [
+                { deviceId: rec.deviceId },
+                ...(mongoose.isValidObjectId(rec.deviceId) ? [{ _id: rec.deviceId }] : [])
+              ]
+            });
+          }
+        }
+        if (dev) {
+          if (dev.deviceId) targetRooms.add(String(dev.deviceId));
+          if (dev._id) targetRooms.add(dev._id.toString());
+        }
+      } catch (err: any) {
+        console.error(`[WEBRTC-BROADCAST-${eventName}-ROOMS-ERROR]`, err?.message);
+      }
+
+      for (const room of targetRooms) {
+        socket.to(room).emit(eventName, payload);
+        signalingNamespace.to(room).emit(eventName, payload);
+        try {
+          getSignalingIo()?.to(room).emit(eventName, payload);
+        } catch (_) {}
+      }
+    };
+
     socket.on('recording-failed', async (data: any) => {
       const deviceId = data?.deviceId;
       const sessionId = data?.sessionId || data?.reqId;
@@ -365,10 +408,31 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       } catch (dbErr: any) {
         console.error('[WEBRTC-FAILED-DB-UPDATE-ERROR]', dbErr?.message);
       }
-      if (deviceId) {
-        socket.to(deviceId).emit('recording-failed', data);
-        socket.to(deviceId).emit('stream-failed', data);
+      await broadcastToDeviceRooms(deviceId, sessionId, 'recording-failed', data);
+      await broadcastToDeviceRooms(deviceId, sessionId, 'stream-failed', data);
+    });
+
+    socket.on('recording-started', async (data: any) => {
+      const deviceId = data?.deviceId;
+      const sessionId = data?.sessionId;
+      console.log(`[WEBRTC-RECORDING-STARTED] Recording started reported for device: ${deviceId}, sessionId: ${sessionId}, type: ${data?.recordingType}`);
+      try {
+        const { Recording } = require('../models/Recording');
+        if (sessionId) {
+          await Recording.updateOne(
+            { sessionId },
+            { $set: { startedAt: new Date(), status: 'in_progress', childStarted: true } }
+          );
+        } else if (deviceId) {
+          await Recording.updateOne(
+            { deviceId, status: 'in_progress' },
+            { $set: { startedAt: new Date(), childStarted: true } }
+          );
+        }
+      } catch (dbErr: any) {
+        console.error('[WEBRTC-RECORDING-STARTED-DB-ERROR]', dbErr?.message);
       }
+      await broadcastToDeviceRooms(deviceId, sessionId, 'recording-started', data);
     });
 
     // Remote Commands (Screenshot, Disconnect, etc.)

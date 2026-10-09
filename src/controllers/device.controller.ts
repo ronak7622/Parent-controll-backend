@@ -817,36 +817,14 @@ export const clearAllDeviceData = async (req: AuthRequest, res: Response) => {
       if (dev && dev.deviceId) targetId = dev.deviceId;
     }
 
-    const { Recording } = require('../models/Recording');
-    const { ChildMessage } = require('../models/ChildMessage');
-
-    await Promise.all([
-      Recording.deleteMany({ deviceId: targetId }),
-      MediaCapture.deleteMany({ deviceId: targetId }),
-      CallRecording.deleteMany({ deviceId: targetId }),
-      CallLog.deleteMany({ deviceId: targetId }),
-      ChildMessage.deleteMany({ deviceId: targetId }),
-      KeyboardLog.deleteMany({ deviceId: targetId }),
-      BrowserHistory.deleteMany({ deviceId: targetId }),
-      ChildNotification.deleteMany({ deviceId: targetId }),
-      LocationLog.deleteMany({ deviceId: targetId }),
-      DrivingTrip.deleteMany({ deviceId: targetId }),
-      WifiLog.deleteMany({ deviceId: targetId }),
-      InternetLog.deleteMany({ deviceId: targetId }),
-      YouTubeHistory.deleteMany({ deviceId: targetId }),
-      YouTubeSession.deleteMany({ deviceId: targetId }),
-      AppSession.deleteMany({ deviceId: targetId }),
-      AppUsage.deleteMany({ deviceId: targetId }),
-    ]);
-
-    const { StorageAccountingService } = require('../services/StorageAccountingService');
-    if (parentUserId) {
-      await StorageAccountingService.recalculateStorage(parentUserId);
-    }
+    const { StorageDeleteService } = require('../services/StorageDeleteService');
+    const result = await StorageDeleteService.eraseAllDeviceData(targetId, parentUserId);
 
     return res.json({
       success: true,
-      message: 'All device data cleared successfully.',
+      message: 'All device data erased successfully.',
+      freedBytes: result.freedBytes,
+      deletedCount: result.deletedCount,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

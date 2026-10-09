@@ -75,7 +75,14 @@ export class SubscriptionJob {
    */
   static async processAutoDeleteSettings(): Promise<void> {
     try {
-      const activeAutoDeleteUsers = await User.find({ autoDeleteIsEnabled: true }).limit(500);
+      const activeDevParentIds = await Device.distinct('parentUserId', { autoDeleteIsEnabled: true });
+      const activeAutoDeleteUsers = await User.find({
+        $or: [
+          { autoDeleteIsEnabled: true },
+          { _id: { $in: activeDevParentIds.filter(Boolean) } },
+        ],
+      }).limit(500);
+
       for (const u of activeAutoDeleteUsers) {
         await StorageDeleteService.executeParentAutoDeletePurge(u._id.toString());
       }
