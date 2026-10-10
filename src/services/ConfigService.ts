@@ -158,6 +158,22 @@ export const DEFAULT_OPTIONS = {
   appShareText: 'Protect your child online with Parent Protect. Download now: https://parentprotect.app',
   appShareUrl: 'https://parentprotect.app',
   playStoreUrl: 'market://details?id=com.parentprotect.parent_app',
+
+  // Permanent Demo Media Assets (CDN backed by GitHub, 100% independent of local server)
+  demoLiveVideoUrl: 'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/livevideo1.mp4',
+  demoLiveAudioUrl: 'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/call_recording1.mp3',
+  demoLiveMirrorUrl: 'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenmirror1.mp4',
+  demoVideos: [
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/livevideo1.mp4',
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/recordvid1.mp4',
+  ],
+  demoAudios: [
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/call_recording1.mp3',
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/call_recording2.mp3',
+  ],
+  demoScreenVideos: [
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenmirror1.mp4',
+  ],
 };
 
 export class ConfigService {
@@ -185,7 +201,7 @@ export class ConfigService {
         },
       });
 
-      // Synchronize standardized video and screen quality options
+      // Synchronize standardized video, screen and demo media options
       await Config.findOneAndUpdate(
         { key: 'recordVideoQualityOptions' },
         { key: 'recordVideoQualityOptions', value: DEFAULT_OPTIONS.recordVideoQualityOptions },
@@ -194,6 +210,36 @@ export class ConfigService {
       await Config.findOneAndUpdate(
         { key: 'recordScreenQualityOptions' },
         { key: 'recordScreenQualityOptions', value: DEFAULT_OPTIONS.recordScreenQualityOptions },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoLiveVideoUrl' },
+        { key: 'demoLiveVideoUrl', value: DEFAULT_OPTIONS.demoLiveVideoUrl },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoLiveAudioUrl' },
+        { key: 'demoLiveAudioUrl', value: DEFAULT_OPTIONS.demoLiveAudioUrl },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoLiveMirrorUrl' },
+        { key: 'demoLiveMirrorUrl', value: DEFAULT_OPTIONS.demoLiveMirrorUrl },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoVideos' },
+        { key: 'demoVideos', value: DEFAULT_OPTIONS.demoVideos },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoAudios' },
+        { key: 'demoAudios', value: DEFAULT_OPTIONS.demoAudios },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoScreenVideos' },
+        { key: 'demoScreenVideos', value: DEFAULT_OPTIONS.demoScreenVideos },
         { upsert: true }
       );
 
