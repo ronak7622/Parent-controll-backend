@@ -32,12 +32,13 @@ export const requestOtp = async (req: Request, res: Response) => {
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
+    const isTest = SmsService.isTestNumber(cleanPhone);
     let user = await User.findOne({ phoneNumber: cleanPhone });
 
     if (user) {
-      // Check Rate Limit: max 3 requests per hour
+      // Check Rate Limit: max 3 requests per hour (exempt test numbers)
       const lastRequest = user.lastOtpRequestedAt;
-      if (lastRequest && lastRequest > oneHourAgo) {
+      if (!isTest && lastRequest && lastRequest > oneHourAgo) {
         if ((user.otpAttemptsCount || 0) >= 3) {
           return res.status(429).json({
             success: false,
@@ -46,7 +47,7 @@ export const requestOtp = async (req: Request, res: Response) => {
         }
         user.otpAttemptsCount = (user.otpAttemptsCount || 0) + 1;
       } else {
-        // Reset counter after 1 hour
+        // Reset counter after 1 hour or for test numbers
         user.otpAttemptsCount = 1;
       }
     } else {
@@ -58,7 +59,6 @@ export const requestOtp = async (req: Request, res: Response) => {
     }
 
     // Generate 6-digit OTP (or fixed 123456 for test numbers)
-    const isTest = SmsService.isTestNumber(cleanPhone);
     const otpCode = isTest ? '123456' : String(Math.floor(100000 + Math.random() * 900000));
     const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 mins expiry
 

@@ -9,9 +9,18 @@ import { getRedisClient } from '../services/cache.service';
  */
 export const apiRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes window
-  max: 1000, // 1000 requests per device/account per 15 minutes
+  max: process.env.NODE_ENV === 'development' ? 500000 : 20000,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    // Never block local development or internal testing traffic
+    if (process.env.NODE_ENV === 'development') return true;
+    const ip = req.ip || req.headers['x-forwarded-for'] || '';
+    if (typeof ip === 'string' && (ip.includes('127.0.0.1') || ip.includes('::1') || ip.startsWith('192.168.') || ip.startsWith('10.'))) {
+      return true;
+    }
+    return false;
+  },
   validate: { keyGeneratorIpFallback: false, xForwardedForHeader: false },
   passOnStoreError: true, // Fail-open on Redis hiccups to prevent blocking legitimate traffic
   store: getRedisClient()
