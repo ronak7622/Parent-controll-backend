@@ -7,9 +7,12 @@ import { StorageUsage } from '../models/StorageUsage';
 import { LiveUsage } from '../models/LiveUsage';
 import { User } from '../models/User';
 import { Device } from '../models/Device';
+import { Order } from '../models/Order';
 import { ConfigService } from '../services/ConfigService';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { StorageDeleteService } from '../services/StorageDeleteService';
+import { sendFcmDataCommand } from '../services/fcm.service';
+import { toMs, DurationUnit } from '../utils/duration';
 
 export const getOptionsConfig = async (req: Request, res: Response) => {
   try {
@@ -37,86 +40,104 @@ export const getPlans = async (req: Request, res: Response) => {
       HIGH_USD: ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'AE', 'SA', 'JP', 'SG', 'NZ', 'KR', 'IT', 'ES', 'NL', 'SE', 'GLOBAL'],
     };
 
-    // Seed default plans if DB empty
-    const count = await Plan.countDocuments();
-    if (count === 0) {
-      await Plan.create([
+    // Seed default plans if DB empty or trial plan missing
+    const trialPlanExists = await Plan.findOne({ planId: 'plan_1_day_trial' });
+    if (!trialPlanExists) {
+      const makeFeatures = (deviceText: string, storageText: string) => [
+        'No ads',
+        deviceText,
+        'Live screen mirro',
+        'Live video camera',
+        'Live Audio',
+        'Screenshot schedule and capture silent screenshot',
+        'Youtube history and Control',
+        'Browser history and control',
+        'Live location trakcer',
+        'Location history',
+        'Driving detection',
+        'Call history',
+        'contact management',
+        'auto call recording',
+        'sms message history',
+        'App uses and screen time',
+        'App mangement block schedule and uses time limit',
+        'wifi logger',
+        'internet logger',
+        'keyword trackker and key logger',
+        'all apps Notifications',
+        'Remotly rec video audio and screen recording',
+        storageText,
+      ];
+
+      const defaultPlans = [
         {
-          planId: 'plan_starter_monthly',
-          name: 'Starter Monthly',
-          type: 'monthly',
-          priceByRegion: { IN_INR: 199, LOW_USD: 2.99, HIGH_USD: 5.99 },
-          storageBytes: 5368709120, // 5 GB
-          dayLimit: 30,
-          liveMinutesTotal: 30,
-          liveSessionMaxMin: 5,
+          planId: 'plan_1_day_trial',
+          name: '1 Day Free Trial',
+          type: 'trial',
+          priceByRegion: { IN_INR: 0, LOW_USD: 0, HIGH_USD: 0 },
+          storageBytes: 104857600, // 100 MB
+          dayLimit: 1,
+          liveMinutesTotal: 10,
+          liveLimitPerDay: 10,
+          liveSessionMaxMin: 2,
           deviceLimit: 1,
-          features: [
-            '5 GB Cloud Storage',
-            '1 Connected Device',
-            '30 Live Minutes / Month',
-            'Wi-Fi & Browsing History',
-            'Live Camera & Audio Streaming',
-            'Live Screen Mirroring',
-            'Location & Geofence Alerts',
-            'Call & SMS Tracking',
-            'Keyword Tracker & Keylogger',
-          ],
+          features: makeFeatures('1 device connect', '100 mb storage'),
+          isActive: true,
+          isRecommended: false,
+          sortOrder: 0,
+        },
+        {
+          planId: 'plan_1_month',
+          name: '1 Month Plan',
+          type: 'monthly',
+          priceByRegion: { IN_INR: 1000, LOW_USD: 14.99, HIGH_USD: 24.99 },
+          storageBytes: 21474836480, // 20 GB
+          dayLimit: 30,
+          liveMinutesTotal: 1800,
+          liveLimitPerDay: 60,
+          liveSessionMaxMin: 10,
+          deviceLimit: 1000, // Unlimited
+          features: makeFeatures('Unlimited device connect', '20 gb storage'),
           isActive: true,
           sortOrder: 1,
         },
         {
-          planId: 'plan_pro_monthly',
-          name: 'Pro Family Monthly',
-          type: 'monthly',
-          priceByRegion: { IN_INR: 399, LOW_USD: 5.99, HIGH_USD: 11.99 },
+          planId: 'plan_6_months',
+          name: '6 Months Plan',
+          type: '6_months',
+          priceByRegion: { IN_INR: 2500, LOW_USD: 34.99, HIGH_USD: 59.99 },
           storageBytes: 21474836480, // 20 GB
-          dayLimit: 30,
-          liveMinutesTotal: 120,
-          liveSessionMaxMin: 5,
-          deviceLimit: 3,
-          features: [
-            '20 GB Cloud Storage',
-            '3 Connected Devices',
-            '120 Live Minutes / Month',
-            'Wi-Fi & Browsing History',
-            'Live Camera & Audio Streaming',
-            'Live Screen Mirroring',
-            'Location & Geofence Alerts',
-            'Call & SMS Tracking',
-            'Keyword Tracker & Keylogger',
-            'Priority Support',
-          ],
+          dayLimit: 180,
+          liveMinutesTotal: 10800,
+          liveLimitPerDay: 60,
+          liveSessionMaxMin: 10,
+          deviceLimit: 1000, // Unlimited
+          features: makeFeatures('Unlimited device connect', '20 gb storage'),
           isActive: true,
-          isRecommended: true,
+          isRecommended: false,
           sortOrder: 2,
         },
         {
-          planId: 'plan_pro_yearly',
-          name: 'Pro Family Yearly',
+          planId: 'plan_1_year',
+          name: '1 Year Plan',
           type: 'yearly',
-          priceByRegion: { IN_INR: 2999, LOW_USD: 49.99, HIGH_USD: 99.99 },
-          storageBytes: 53687091200, // 50 GB
+          priceByRegion: { IN_INR: 2000, LOW_USD: 29.99, HIGH_USD: 49.99 },
+          storageBytes: 21474836480, // 20 GB
           dayLimit: 365,
-          liveMinutesTotal: 1500,
-          liveSessionMaxMin: 5,
-          deviceLimit: 5,
-          features: [
-            '50 GB Cloud Storage',
-            '5 Connected Devices',
-            '1500 Live Minutes / Month',
-            'Wi-Fi & Browsing History',
-            'Live Camera & Audio Streaming',
-            'Live Screen Mirroring',
-            'Location & Geofence Alerts',
-            'Call & SMS Tracking',
-            'Keyword Tracker & Keylogger',
-            'Best Value (Save over 35%)',
-          ],
+          liveMinutesTotal: 21900,
+          liveLimitPerDay: 60,
+          liveSessionMaxMin: 10,
+          deviceLimit: 1000, // Unlimited
+          features: makeFeatures('Unlimited device connect', '20 gb storage'),
           isActive: true,
+          isRecommended: true,
           sortOrder: 3,
         },
-      ]);
+      ];
+
+      for (const p of defaultPlans) {
+        await Plan.findOneAndUpdate({ planId: p.planId }, { $set: p }, { upsert: true, new: true });
+      }
     }
 
     const addonCount = await AddonPlan.countDocuments();
@@ -182,21 +203,65 @@ export const getPlans = async (req: Request, res: Response) => {
     const plans = await Plan.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
     const addons = await AddonPlan.find({ isActive: true }).lean();
 
-    const formattedPlans = plans.map((p) => {
+    const phone = (req as any).user?.phoneNumber || (req as any).user?.phone || '';
+    const email = (req as any).user?.email || '';
+    const canSeeTest = ((options as any).testPlanPhones || []).includes(phone) || ((options as any).testPlanEmails || []).includes(email);
+    const visiblePlans = plans.filter((p) => canSeeTest || !(p as any).isTestPlan);
+
+    // Compute monthly vs yearly savings dynamically from the plan data
+    const monthlyPlan = visiblePlans.find((p) => p.type === 'monthly' && p.isRecommended) || visiblePlans.find((p) => p.type === 'monthly');
+    const yearlyPlan = visiblePlans.find((p) => p.type === 'yearly');
+
+    let dynamicSavePercent = 35; // fallback
+    if (monthlyPlan && yearlyPlan) {
+      const mPrice = monthlyPlan.priceByRegion[resolvedRegion as keyof typeof monthlyPlan.priceByRegion] || monthlyPlan.priceByRegion.HIGH_USD;
+      const yPrice = yearlyPlan.priceByRegion[resolvedRegion as keyof typeof yearlyPlan.priceByRegion] || yearlyPlan.priceByRegion.HIGH_USD;
+      const annualizedMonthly = mPrice * 12;
+      if (annualizedMonthly > 0 && yPrice < annualizedMonthly) {
+        dynamicSavePercent = Math.round(((annualizedMonthly - yPrice) / annualizedMonthly) * 100);
+      }
+    }
+
+    const formattedPlans = visiblePlans.map((p) => {
       const price = p.priceByRegion[resolvedRegion as keyof typeof p.priceByRegion] || p.priceByRegion.HIGH_USD;
       const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
-      const perMonthPrice = p.type === 'yearly' ? Math.round((price / 12) * 100) / 100 : price;
+      const days = p.dayLimit || (p.type === 'yearly' ? 365 : (p.type === '6_months' || p.type === 'half_yearly' ? 180 : 30));
+      
+      // Calculate effective monthly price dynamically based on actual plan duration
+      let months = days / 30;
+      if (months < 1) months = 1;
+      const perMonthPrice = months > 1 ? Math.round((price / months) * 100) / 100 : price;
+      
       const storageGB = Math.round(p.storageBytes / (1024 * 1024 * 1024));
+      const isUnlimitedDevices = (p.deviceLimit || 0) >= 1000;
+      const livePerDay = p.liveLimitPerDay || Math.round((p.liveMinutesTotal || 30) / 2) || 15;
+
+      let billingCycleText = 'Billed monthly';
+      if (p.type === 'yearly' || days >= 365) {
+        billingCycleText = `Billed annually ${currency}${price}`;
+      } else if (p.type === '6_months' || p.type === 'half_yearly' || days >= 180) {
+        billingCycleText = `Billed semi-annually ${currency}${price}`;
+      } else if (p.type === '3_months' || p.type === 'quarterly' || days >= 90) {
+        billingCycleText = `Billed quarterly ${currency}${price}`;
+      } else if (days !== 30) {
+        billingCycleText = `Billed every ${days} days (${currency}${price})`;
+      }
+
       return {
         ...p,
         resolvedPrice: price,
         currency,
         perMonthPrice,
         storageGB,
-        deviceLimitText: `${p.deviceLimit} Connected Device${p.deviceLimit > 1 ? 's' : ''}`,
-        liveMinutesText: `${p.liveMinutesTotal} Live Mins`,
+        liveLimitPerDay: livePerDay,
+        deviceLimit: p.deviceLimit,
+        deviceLimitText: isUnlimitedDevices ? 'Unlimited' : `${p.deviceLimit} Connected Device${p.deviceLimit > 1 ? 's' : ''}`,
+        liveMinutesText: `${livePerDay} Mins Daily Live`,
+        dayLimit: days,
         featuresList: p.features,
         region: resolvedRegion,
+        billingCycleText,
+        dynamicSavePercent: p.type === 'yearly' ? dynamicSavePercent : 0,
       };
     });
 
@@ -217,40 +282,97 @@ export const getPlans = async (req: Request, res: Response) => {
     const liveMinutesAddons = formattedAddons.filter((a) => a.type === 'live_minutes');
 
     const trialOptions = options.trialPlanConfig || {
-      name: '3-Day Free Trial',
+      name: '1-Day Free Trial',
       durationUnit: 'days',
-      durationValue: 3,
-      storageBytes: 2147483648,
-      liveMinutes: 15,
+      durationValue: 1,
+      storageBytes: 104857600,
+      liveMinutes: 10,
+      liveSessionMaxMin: 2,
       deviceLimit: 1,
+      features: [
+        'No ads',
+        '1 Connected device',
+        'Live screen mirro',
+        'Live video camera',
+        'Live Audio',
+        'Screenshot schedule and capture silent screenshot',
+        'Youtube history and Control',
+        'Browser history and control',
+        'Live location trakcer',
+        'Location history',
+        'Driving detection',
+        'Call history',
+        'contact management',
+        'auto call recording',
+        'sms message history',
+        'App uses and screen time',
+        'App mangement block schedule and uses time limit',
+        'wifi logger',
+        'internet logger',
+        'keyword trackker and key logger',
+        'all apps Notifications',
+        'Remotly rec video audio and screen recording',
+        '100 MB storage',
+      ],
     };
 
     const durationUnit = trialOptions.durationUnit || 'days';
-    const durationValue = trialOptions.durationValue ?? 3;
+    const durationValue = trialOptions.durationValue ?? 1;
     const durationText = durationUnit === 'hours'
       ? `${durationValue} Hour${durationValue > 1 ? 's' : ''}`
       : `${durationValue} Day${durationValue > 1 ? 's' : ''}`;
 
-    const storageGB = Math.round((trialOptions.storageBytes || 2147483648) / (1024 * 1024 * 1024));
+    const storageBytesVal = trialOptions.storageBytes || 104857600;
+    const storageMBVal = Math.round(storageBytesVal / (1024 * 1024));
+    const storageDisplay = storageMBVal >= 1024
+        ? `${Math.round(storageMBVal / 1024)} GB`
+        : `${storageMBVal} MB`;
     const deviceLimit = trialOptions.deviceLimit ?? 1;
-    const liveMinutes = trialOptions.liveMinutes ?? 15;
+    const isTrialUnlimited = deviceLimit >= 1000;
+    const liveMinutes = trialOptions.liveMinutes ?? 10;
+    const liveSessionMaxMin = trialOptions.liveSessionMaxMin ?? 2;
 
     const trialConfig = {
       name: trialOptions.name || `${durationText} Free Trial`,
       durationUnit,
       durationValue,
       durationText,
-      storageBytes: trialOptions.storageBytes || 2147483648,
-      storageGB,
+      dayLimit: durationUnit === 'hours' ? Math.ceil(durationValue / 24) : durationValue,
+      storageBytes: storageBytesVal,
+      storageMB: storageMBVal,
+      storageGB: Math.round(storageBytesVal / (1024 * 1024 * 1024)),
+      storageText: `${storageDisplay} Trial Storage`,
       liveMinutes,
+      liveLimitPerDay: liveMinutes,
+      liveSessionMaxMin,
       deviceLimit,
-      deviceLimitText: `${deviceLimit} Connected Device${deviceLimit > 1 ? 's' : ''}`,
-      liveMinutesText: `${liveMinutes} Live Mins`,
+      deviceLimitText: isTrialUnlimited ? 'Unlimited' : `${deviceLimit} Connected Device${deviceLimit > 1 ? 's' : ''}`,
+      liveMinutesText: `${liveMinutes} Mins Daily Live`,
+      planType: 'trial',
       features: trialOptions.features || [
-        `${storageGB} GB Trial Storage`,
-        `${deviceLimit} Connected Device${deviceLimit > 1 ? 's' : ''}`,
-        `${liveMinutes} Live Mins`,
-        `${durationText} Free Access`,
+        'No ads',
+        '1 Connected device',
+        'Live screen mirro',
+        'Live video camera',
+        'Live Audio',
+        'Screenshot schedule and capture silent screenshot',
+        'Youtube history and Control',
+        'Browser history and control',
+        'Live location trakcer',
+        'Location history',
+        'Driving detection',
+        'Call history',
+        'contact management',
+        'auto call recording',
+        'sms message history',
+        'App uses and screen time',
+        'App mangement block schedule and uses time limit',
+        'wifi logger',
+        'internet logger',
+        'keyword trackker and key logger',
+        'all apps Notifications',
+        'Remotly rec video audio and screen recording',
+        '100 MB storage',
       ],
     };
 
@@ -259,6 +381,7 @@ export const getPlans = async (req: Request, res: Response) => {
       region: resolvedRegion,
       detectedCountry: rawParam,
       countryListsByRegion,
+      dynamicSavePercent,
       plans: formattedPlans,
       addons: formattedAddons,
       storageAddons,
@@ -275,7 +398,7 @@ export const subscribe = async (req: Request, res: Response) => {
     const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const { planId, idempotencyKey, txnId, region } = req.body;
+    const { planId, idempotencyKey, txnId, region, selectedStorageAddonId, selectedLiveAddonId } = req.body;
     if (!planId) return res.status(400).json({ success: false, message: 'planId is required' });
 
     // Check idempotency
@@ -292,12 +415,16 @@ export const subscribe = async (req: Request, res: Response) => {
     const options = await ConfigService.getMergedOptions();
     const resolvedRegion = region || 'HIGH_USD';
     const price = plan.priceByRegion[resolvedRegion as keyof typeof plan.priceByRegion] || plan.priceByRegion.HIGH_USD;
+    const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
 
-    const startAt = new Date();
-    const durationDays = plan.dayLimit || 30;
-    const expireAt = new Date(startAt.getTime() + durationDays * 24 * 60 * 60 * 1000);
-    const graceDays = options.graceDays || 3;
-    const graceEndsAt = new Date(expireAt.getTime() + graceDays * 24 * 60 * 60 * 1000);
+    const defaultDaysByType = (plan.type === 'yearly' ? 365 : (plan.type === '6_months' || plan.type === 'half_yearly' ? 180 : 30));
+    const durationDays = plan.dayLimit || defaultDaysByType;
+    const durUnit = ((plan as any).durationUnit || 'days') as DurationUnit;
+    const durVal = (plan as any).durationValue > 0 ? (plan as any).durationValue : (plan.dayLimit || defaultDaysByType);
+    const durationMs = toMs(durVal, durUnit);
+    const backupHours = options.storageBackupAfterExpirPlan || (options.graceDays ? options.graceDays * 24 : 72);
+
+    const liveLimitPerDay = plan.liveLimitPerDay || Math.round((plan.liveMinutesTotal || 30) / 2) || 15;
 
     const planSnapshot = {
       planId: plan.planId,
@@ -306,12 +433,144 @@ export const subscribe = async (req: Request, res: Response) => {
       price,
       storageBytes: plan.storageBytes,
       liveMinutesTotal: plan.liveMinutesTotal,
-      liveSessionMaxMin: plan.liveSessionMaxMin,
+      liveLimitPerDay,
+      liveSessionMaxMin: plan.liveSessionMaxMin || 5,
       deviceLimit: plan.deviceLimit,
-      graceDays,
+      dayLimit: durationDays,
+      durationMs,
+      graceDays: Math.ceil(backupHours / 24),
       storageWarnPercent: options.storageWarnPercent || 80,
       features: plan.features,
     };
+
+    // Check optional add-ons bought in this transaction
+    let storageAddonDoc: any = null;
+    let liveAddonDoc: any = null;
+    if (selectedStorageAddonId) {
+      storageAddonDoc = await AddonPlan.findOne({ addonId: selectedStorageAddonId, isActive: true });
+    }
+    if (selectedLiveAddonId) {
+      liveAddonDoc = await AddonPlan.findOne({ addonId: selectedLiveAddonId, isActive: true });
+    }
+
+    // Check current subscription for active status & advance queueing (§5 Jio-style)
+    const currentSub = await Subscription.findOne({ parentUserId });
+    const now = new Date();
+    const isCurrentlyActive = currentSub && (currentSub.status === 'active' || currentSub.status === 'trial') && currentSub.expireAt > now;
+
+    const generatedTxnId = txnId || `txn_${Date.now()}`;
+
+    if (isCurrentlyActive) {
+      // ════════════════════════════════════════════════════════════
+      // ADVANCE / QUEUED PLAN (§5)
+      // Queued to activate automatically after current validity ends
+      // ════════════════════════════════════════════════════════════
+      const queuedPlanData: any = {
+        planSnapshot,
+        durationDays,
+        durationMs,
+        txnId: generatedTxnId,
+        region: resolvedRegion,
+        purchasedAt: now,
+      };
+
+      if (storageAddonDoc) {
+        const sPrice = storageAddonDoc.priceByRegion[resolvedRegion as keyof typeof storageAddonDoc.priceByRegion] || storageAddonDoc.priceByRegion.HIGH_USD;
+        queuedPlanData.storageAddon = {
+          addonId: storageAddonDoc.addonId,
+          name: storageAddonDoc.name,
+          storageBytes: storageAddonDoc.storageBytes,
+          price: sPrice,
+        };
+      }
+
+      if (liveAddonDoc) {
+        const lPrice = liveAddonDoc.priceByRegion[resolvedRegion as keyof typeof liveAddonDoc.priceByRegion] || liveAddonDoc.priceByRegion.HIGH_USD;
+        queuedPlanData.liveAddon = {
+          addonId: liveAddonDoc.addonId,
+          name: liveAddonDoc.name,
+          liveMinutes: liveAddonDoc.liveMinutes,
+          price: lPrice,
+        };
+      }
+
+      currentSub.queuedPlan = queuedPlanData;
+      if (storageAddonDoc) currentSub.lastPurchasedStorageAddonId = storageAddonDoc.addonId;
+      if (liveAddonDoc) currentSub.lastPurchasedLiveAddonId = liveAddonDoc.addonId;
+      await currentSub.save();
+
+      // Record in Orders Collection
+      await Order.create({
+        parentUserId,
+        type: 'plan',
+        planId: plan.planId,
+        planLabel: `${plan.name} (Advance Queued)`,
+        amount: price,
+        currency,
+        validityStart: currentSub.expireAt,
+        validityEnd: new Date(currentSub.expireAt.getTime() + durationMs),
+        txnId: generatedTxnId,
+        status: 'queued',
+        metadata: { region: resolvedRegion, queued: true, parentTxnId: generatedTxnId, durVal, durUnit, durationMs },
+      });
+
+      if (storageAddonDoc) {
+        const sPrice = storageAddonDoc.priceByRegion[resolvedRegion as keyof typeof storageAddonDoc.priceByRegion] || storageAddonDoc.priceByRegion.HIGH_USD;
+        await Order.create({
+          parentUserId,
+          type: 'storage_addon',
+          addonId: storageAddonDoc.addonId,
+          planLabel: `${storageAddonDoc.name} (Advance Queued)`,
+          amount: sPrice,
+          currency,
+          validityStart: currentSub.expireAt,
+          validityEnd: new Date(currentSub.expireAt.getTime() + durationMs),
+          txnId: `${generatedTxnId}_s_addon`,
+          status: 'queued',
+          metadata: { parentTxnId: generatedTxnId, region: resolvedRegion, addonType: 'storage' },
+        });
+      }
+
+      if (liveAddonDoc) {
+        const lPrice = liveAddonDoc.priceByRegion[resolvedRegion as keyof typeof liveAddonDoc.priceByRegion] || liveAddonDoc.priceByRegion.HIGH_USD;
+        await Order.create({
+          parentUserId,
+          type: 'live_addon',
+          addonId: liveAddonDoc.addonId,
+          planLabel: `${liveAddonDoc.name} (Advance Queued)`,
+          amount: lPrice,
+          currency,
+          validityStart: currentSub.expireAt,
+          validityEnd: new Date(currentSub.expireAt.getTime() + durationMs),
+          txnId: `${generatedTxnId}_l_addon`,
+          status: 'queued',
+          metadata: { parentTxnId: generatedTxnId, region: resolvedRegion, addonType: 'live_minutes' },
+        });
+      }
+
+      return res.json({
+        success: true,
+        isQueued: true,
+        subscription: currentSub,
+        message: `Your new ${plan.name} has been queued! It will start automatically after your current plan expires on ${currentSub.expireAt.toISOString().split('T')[0]}.`,
+      });
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // IMMEDIATE ACTIVATION / RENEWAL
+    // ════════════════════════════════════════════════════════════
+    const startAt = now;
+    const expireAt = new Date(startAt.getTime() + durationMs);
+    const graceEndsAt = new Date(expireAt.getTime() + backupHours * 60 * 60 * 1000);
+
+    let initialAddonStorage = 0;
+    let initialAddonLivePool = 0;
+    if (storageAddonDoc) {
+      initialAddonStorage = storageAddonDoc.storageBytes || 0;
+    }
+    if (liveAddonDoc) {
+      initialAddonLivePool = liveAddonDoc.liveMinutes || 0;
+    }
 
     const subscription = await Subscription.findOneAndUpdate(
       { parentUserId },
@@ -319,10 +578,15 @@ export const subscribe = async (req: Request, res: Response) => {
         parentUserId,
         status: 'active',
         planSnapshot,
+        addonStorageBytes: initialAddonStorage,
+        addonLiveMinutesPool: initialAddonLivePool,
+        ...(storageAddonDoc ? { lastPurchasedStorageAddonId: storageAddonDoc.addonId } : {}),
+        ...(liveAddonDoc ? { lastPurchasedLiveAddonId: liveAddonDoc.addonId } : {}),
+        queuedPlan: undefined,
         startAt,
         expireAt,
         graceEndsAt,
-        txnId: txnId || `txn_${Date.now()}`,
+        txnId: generatedTxnId,
         idempotencyKey,
         region: resolvedRegion,
         isTrial: false,
@@ -330,7 +594,68 @@ export const subscribe = async (req: Request, res: Response) => {
       { upsert: true, new: true }
     );
 
-    return res.json({ success: true, subscription });
+    // Record in Orders Collection
+    await Order.create({
+      parentUserId,
+      type: 'plan',
+      planId: plan.planId,
+      planLabel: plan.name,
+      amount: price,
+      currency,
+      validityStart: startAt,
+      validityEnd: expireAt,
+      txnId: generatedTxnId,
+      status: 'completed',
+      metadata: { region: resolvedRegion, parentTxnId: generatedTxnId, durVal, durUnit, durationMs },
+    });
+
+    if (storageAddonDoc) {
+      const sPrice = storageAddonDoc.priceByRegion[resolvedRegion as keyof typeof storageAddonDoc.priceByRegion] || storageAddonDoc.priceByRegion.HIGH_USD;
+      await Order.create({
+        parentUserId,
+        type: 'storage_addon',
+        addonId: storageAddonDoc.addonId,
+        planLabel: storageAddonDoc.name,
+        amount: sPrice,
+        currency,
+        validityStart: startAt,
+        validityEnd: expireAt,
+        txnId: `${generatedTxnId}_s_addon`,
+        status: 'completed',
+        metadata: { parentTxnId: generatedTxnId, region: resolvedRegion, addonType: 'storage' },
+      });
+    }
+
+    if (liveAddonDoc) {
+      const lPrice = liveAddonDoc.priceByRegion[resolvedRegion as keyof typeof liveAddonDoc.priceByRegion] || liveAddonDoc.priceByRegion.HIGH_USD;
+      await Order.create({
+        parentUserId,
+        type: 'live_addon',
+        addonId: liveAddonDoc.addonId,
+        planLabel: liveAddonDoc.name,
+        amount: lPrice,
+        currency,
+        validityStart: startAt,
+        validityEnd: expireAt,
+        txnId: `${generatedTxnId}_l_addon`,
+        status: 'completed',
+        metadata: { parentTxnId: generatedTxnId, region: resolvedRegion, addonType: 'live_minutes' },
+      });
+    }
+
+    // Signal child devices via FCM to resume / upload held grace data (§6 & §7)
+    const devices = await Device.find({ parentUserId });
+    for (const d of devices) {
+      if (d.fcmToken) {
+        await sendFcmDataCommand(d.fcmToken, 'SUBSCRIPTION_RESUME', {
+          status: 'active',
+          expireAt: expireAt.toISOString(),
+          graceEndsAt: graceEndsAt.toISOString(),
+        }).catch(() => {});
+      }
+    }
+
+    return res.json({ success: true, isQueued: false, subscription });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
   }
@@ -359,52 +684,110 @@ export const activateTrial = async (req: Request, res: Response) => {
       });
     }
 
-    const options = await ConfigService.getMergedOptions();
-    const trialOptions = options.trialPlanConfig || {
-      name: '3-Day Free Trial',
+    // Find trial plan from Plan collection (DB plans table)
+    const dbTrialPlan = await Plan.findOne({ type: 'trial', isActive: true });
+    const trialOptions = dbTrialPlan || {
+      name: '1-Day Free Trial',
       durationUnit: 'days',
-      durationValue: 3,
-      storageBytes: 2147483648,
-      liveMinutes: 15,
+      durationValue: 1,
+      storageBytes: 104857600,
+      liveMinutesTotal: 10,
+      liveSessionMaxMin: 2,
       deviceLimit: 1,
+      features: [
+        'No ads',
+        '1 Connected device',
+        'Live screen mirro',
+        'Live video camera',
+        'Live Audio',
+        'Screenshot schedule and capture silent screenshot',
+        'Youtube history and Control',
+        'Browser history and control',
+        'Live location trakcer',
+        'Location history',
+        'Driving detection',
+        'Call history',
+        'contact management',
+        'auto call recording',
+        'sms message history',
+        'App uses and screen time',
+        'App mangement block schedule and uses time limit',
+        'wifi logger',
+        'internet logger',
+        'keyword trackker and key logger',
+        'all apps Notifications',
+        'Remotly rec video audio and screen recording',
+        '100 MB storage',
+      ],
     };
 
-    const durationUnit = trialOptions.durationUnit || 'days';
-    const durationValue = trialOptions.durationValue ?? 3;
-    const durationMs = durationUnit === 'hours'
-      ? durationValue * 60 * 60 * 1000
-      : durationValue * 24 * 60 * 60 * 1000;
+    const durationUnit = (trialOptions.durationUnit || 'days') as DurationUnit;
+    const durationValue = trialOptions.durationValue ?? 1;
+    const durationMs = toMs(durationValue, durationUnit);
 
     const startAt = new Date();
     const expireAt = new Date(startAt.getTime() + durationMs);
-    const graceDays = options.graceDays || 3;
-    const graceEndsAt = new Date(expireAt.getTime() + graceDays * 24 * 60 * 60 * 1000);
+    const options = await ConfigService.getMergedOptions();
+    const backupHours = options.storageBackupAfterExpirPlan || (options.graceDays ? options.graceDays * 24 : 72);
+    const graceEndsAt = new Date(expireAt.getTime() + backupHours * 60 * 60 * 1000);
 
-    const storageGB = Math.round((trialOptions.storageBytes || 2147483648) / (1024 * 1024 * 1024));
+    const storageBytesVal = trialOptions.storageBytes || 104857600;
+    const storageMBVal = Math.round(storageBytesVal / (1024 * 1024));
+    const storageDisplay = storageMBVal >= 1024
+        ? `${Math.round(storageMBVal / 1024)} GB`
+        : `${storageMBVal} MB`;
     const deviceLimit = trialOptions.deviceLimit ?? 1;
-    const liveMinutes = trialOptions.liveMinutes ?? 15;
-    const durationText = durationUnit === 'hours'
-      ? `${durationValue} Hour${durationValue > 1 ? 's' : ''}`
-      : `${durationValue} Day${durationValue > 1 ? 's' : ''}`;
+    const isTrialUnlimited = deviceLimit >= 1000;
+    const liveMinutes = (trialOptions as any).liveMinutes ?? (trialOptions as any).liveMinutesTotal ?? 10;
+    const liveSessionMaxMin = trialOptions.liveSessionMaxMin ?? 2;
+    const durationText = durationUnit === 'minutes'
+      ? `${durationValue} Minute${durationValue > 1 ? 's' : ''}`
+      : (durationUnit === 'hours'
+          ? `${durationValue} Hour${durationValue > 1 ? 's' : ''}`
+          : `${durationValue} Day${durationValue > 1 ? 's' : ''}`);
 
     const planSnapshot = {
       planId: `trial_free_${durationValue}${durationUnit.charAt(0)}`,
       name: trialOptions.name || `${durationText} Free Trial`,
-      type: 'monthly',
+      type: 'trial',
       price: 0,
-      storageBytes: trialOptions.storageBytes || 2147483648,
+      storageBytes: storageBytesVal,
       liveMinutesTotal: liveMinutes,
-      liveSessionMaxMin: options.liveSessionMaxMin || 5,
+      liveLimitPerDay: liveMinutes,
+      liveSessionMaxMin,
       deviceLimit,
-      graceDays,
+      dayLimit: durationUnit === 'days' ? durationValue : 1,
+      durationMs,
+      graceDays: Math.ceil(backupHours / 24),
       storageWarnPercent: options.storageWarnPercent || 80,
       features: trialOptions.features || [
-        `${storageGB} GB Trial Storage`,
-        `${deviceLimit} Connected Device${deviceLimit > 1 ? 's' : ''}`,
-        `${liveMinutes} Live Mins`,
-        `${durationText} Free Access`,
+        'No ads',
+        '1 Connected device',
+        'Live screen mirro',
+        'Live video camera',
+        'Live Audio',
+        'Screenshot schedule and capture silent screenshot',
+        'Youtube history and Control',
+        'Browser history and control',
+        'Live location trakcer',
+        'Location history',
+        'Driving detection',
+        'Call history',
+        'contact management',
+        'auto call recording',
+        'sms message history',
+        'App uses and screen time',
+        'App mangement block schedule and uses time limit',
+        'wifi logger',
+        'internet logger',
+        'keyword trackker and key logger',
+        'all apps Notifications',
+        'Remotly rec video audio and screen recording',
+        '100 MB storage',
       ],
     };
+
+    const txnId = `trial_${Date.now()}`;
 
     const subscription = await Subscription.findOneAndUpdate(
       { parentUserId },
@@ -412,10 +795,13 @@ export const activateTrial = async (req: Request, res: Response) => {
         parentUserId,
         status: 'trial',
         planSnapshot,
+        addonStorageBytes: 0,
+        addonLiveMinutesPool: 0,
+        queuedPlan: undefined,
         startAt,
         expireAt,
         graceEndsAt,
-        txnId: `trial_${Date.now()}`,
+        txnId,
         region: 'IN_INR',
         isTrial: true,
       },
@@ -429,6 +815,21 @@ export const activateTrial = async (req: Request, res: Response) => {
       usedAt: new Date(),
     });
 
+    // Record Free Trial in Orders Collection
+    await Order.create({
+      parentUserId,
+      type: 'plan',
+      planId: planSnapshot.planId,
+      planLabel: planSnapshot.name,
+      amount: 0,
+      currency: '₹',
+      validityStart: startAt,
+      validityEnd: expireAt,
+      txnId,
+      status: 'completed',
+      metadata: { isTrial: true },
+    });
+
     return res.json({ success: true, subscription });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
@@ -440,7 +841,7 @@ export const purchaseAddon = async (req: Request, res: Response) => {
     const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const { addonId } = req.body;
+    const { addonId, region } = req.body;
     const addon = await AddonPlan.findOne({ addonId, isActive: true });
     if (!addon) return res.status(404).json({ success: false, message: 'Addon plan not found' });
 
@@ -453,13 +854,32 @@ export const purchaseAddon = async (req: Request, res: Response) => {
       });
     }
 
+    const resolvedRegion = region || subscription.region || 'HIGH_USD';
+    const price = addon.priceByRegion[resolvedRegion as keyof typeof addon.priceByRegion] || addon.priceByRegion.HIGH_USD;
+    const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
+
     if (addon.type === 'live_minutes') {
-      subscription.planSnapshot.liveMinutesTotal = (subscription.planSnapshot.liveMinutesTotal || 0) + (addon.liveMinutes || 0);
-      subscription.markModified('planSnapshot');
+      subscription.addonLiveMinutesPool = (subscription.addonLiveMinutesPool || 0) + (addon.liveMinutes || 0);
+      subscription.lastPurchasedLiveAddonId = addon.addonId;
     } else {
       subscription.addonStorageBytes = (subscription.addonStorageBytes || 0) + (addon.storageBytes || 0);
+      subscription.lastPurchasedStorageAddonId = addon.addonId;
     }
     await subscription.save();
+
+    const txnId = `txn_addon_${Date.now()}`;
+    await Order.create({
+      parentUserId,
+      type: addon.type === 'live_minutes' ? 'live_addon' : 'storage_addon',
+      addonId: addon.addonId,
+      planLabel: addon.name,
+      amount: price,
+      currency,
+      validityStart: subscription.startAt || now,
+      validityEnd: subscription.expireAt,
+      txnId,
+      status: 'completed',
+    });
 
     const label = addon.type === 'live_minutes'
       ? `+${addon.liveMinutes} Live Feature Minutes`
@@ -485,45 +905,67 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
     const options = await ConfigService.getMergedOptions();
     let subscription = await Subscription.findOne({ parentUserId });
 
-    // Auto seed free trial for new parents if none exists
-    if (!subscription) {
-      const trialDays = 3;
-      const startAt = new Date();
-      const expireAt = new Date(startAt.getTime() + trialDays * 24 * 60 * 60 * 1000);
-      const graceDays = options.graceDays || 3;
-      const graceEndsAt = new Date(expireAt.getTime() + graceDays * 24 * 60 * 60 * 1000);
+    const backupHours = options.storageBackupAfterExpirPlan || (options.graceDays ? options.graceDays * 24 : 72);
 
-      subscription = await Subscription.create({
-        parentUserId,
-        status: 'trial',
-        planSnapshot: {
-          planId: 'trial_free_3d',
-          name: '3 Days Free Trial',
-          type: 'monthly',
-          price: 0,
-          storageBytes: 2147483648,
-          liveMinutesTotal: 15,
-          liveSessionMaxMin: 5,
-          deviceLimit: 1,
-          graceDays,
-          storageWarnPercent: options.storageWarnPercent || 80,
-          features: ['2 GB Trial Storage', '1 Device', '15 Live Mins'],
+    // If no subscription exists, return subscription: null so app routes to purchase screen or trial can be explicitly activated
+    if (!subscription) {
+      const storageUsage = await StorageAccountingService.getStorageUsage(parentUserId);
+      return res.json({
+        success: true,
+        subscription: null,
+        hasSubscription: false,
+        hasQueuedPlan: false,
+        queuedPlan: null,
+        lastPurchasedStorageAddonId: null,
+        lastPurchasedLiveAddonId: null,
+        storageUsage,
+        liveUsage: {
+          dayKey: new Date().toISOString().split('T')[0],
+          monthKey: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+          dailyMinutesUsed: 0,
+          dailyLimit: 0,
+          remainingDailyMinutes: 0,
+          addonPool: 0,
+          addonMinutesUsed: 0,
+          remainingAddonPool: 0,
+          totalRemainingLiveMinutes: 0,
         },
-        startAt,
-        expireAt,
-        graceEndsAt,
-        isTrial: true,
+        alerts: {
+          isStorageWarn: false,
+          usagePercent: 0,
+          storageWarnPercent: options.storageWarnPercent || 80,
+          storageWarnNotificationIntervalMin: options.storageWarnNotificationIntervalMin || 120,
+          shouldSendStorageWarnNotify: false,
+          isPlanExpired: true,
+          isGracePeriodActive: false,
+          isGraceExpired: true,
+          backupHours,
+          graceEndsAt: null,
+          hasQueuedPlan: false,
+          shouldSendExpireWarnNotify: false,
+        },
       });
     }
 
     const storageUsage = await StorageAccountingService.getStorageUsage(parentUserId);
 
     const now = new Date();
+    const dayKey = now.toISOString().split('T')[0]; // "YYYY-MM-DD"
     const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    let liveUsageDoc = await LiveUsage.findOne({ parentUserId, monthKey });
-    const liveMinutesUsed = liveUsageDoc ? liveUsageDoc.minutesUsed : 0;
 
-    // --- Storage Warning Logic (above storageWarnPercent %, e.g., 80%) ---
+    let liveUsageDoc = await LiveUsage.findOne({ parentUserId, dayKey });
+    const dailyMinutesUsed = liveUsageDoc ? liveUsageDoc.dailyMinutesUsed : 0;
+    const addonMinutesUsed = liveUsageDoc ? liveUsageDoc.addonMinutesUsed : 0;
+
+    // Daily plan limit from snapshot
+    const dailyPlanLimit = subscription.planSnapshot?.liveLimitPerDay || 15;
+    const addonPool = subscription.addonLiveMinutesPool || 0;
+
+    const remainingDailyMinutes = Math.max(0, dailyPlanLimit - dailyMinutesUsed);
+    const remainingAddonPool = Math.max(0, addonPool);
+    const totalRemainingLiveMinutes = remainingDailyMinutes + remainingAddonPool;
+
+    // --- Storage Warning Logic ---
     const totalCapacityBytes = (subscription.planSnapshot?.storageBytes || 0) + (subscription.addonStorageBytes || 0);
     const usedBytes = storageUsage?.totalBytes || 0;
     const usagePercent = totalCapacityBytes > 0 ? Math.round((usedBytes / totalCapacityBytes) * 100) : 0;
@@ -542,27 +984,55 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
     }
 
     // --- Expiration & Grace Period Logic ---
-    const graceDays = options.graceDays || 3;
     const expireAtTime = new Date(subscription.expireAt).getTime();
-    const graceEndsAtTime = expireAtTime + graceDays * 24 * 60 * 60 * 1000;
-    const graceEndsAt = new Date(graceEndsAtTime);
+    const graceEndsAtTime = new Date(subscription.graceEndsAt).getTime();
 
     const isPlanExpired = now.getTime() > expireAtTime;
     const isGracePeriodActive = isPlanExpired && now.getTime() <= graceEndsAtTime;
     const isGraceExpired = isPlanExpired && now.getTime() > graceEndsAtTime;
 
+    // If an advance plan is queued (§5), suppress expiring-soon / expired warnings
+    const hasQueuedPlan = Boolean(subscription.queuedPlan && subscription.queuedPlan.planSnapshot);
+
     // Update status in Mongo if expired/grace
     if (isPlanExpired) {
-      const targetStatus = isGraceExpired ? 'expired' : 'grace';
-      if (subscription.status !== targetStatus) {
-        subscription.status = targetStatus;
+      if (hasQueuedPlan) {
+        // Activate queued plan immediately on status fetch if expired!
+        const q = subscription.queuedPlan!;
+        const dMs = q.durationMs || toMs(q.durationDays || q.planSnapshot?.dayLimit || 30, 'days');
+        const newStartAt = now;
+        const newExpireAt = new Date(newStartAt.getTime() + dMs);
+        const newGraceEndsAt = new Date(newExpireAt.getTime() + backupHours * 60 * 60 * 1000);
+
+        subscription.status = 'active';
+        subscription.planSnapshot = q.planSnapshot;
+        subscription.startAt = newStartAt;
+        subscription.expireAt = newExpireAt;
+        subscription.graceEndsAt = newGraceEndsAt;
+        subscription.txnId = q.txnId;
+        subscription.isTrial = false;
+        if (q.storageAddon) {
+          subscription.addonStorageBytes = (subscription.addonStorageBytes || 0) + (q.storageAddon.storageBytes || 0);
+          subscription.lastPurchasedStorageAddonId = q.storageAddon.addonId;
+        }
+        if (q.liveAddon) {
+          subscription.addonLiveMinutesPool = (subscription.addonLiveMinutesPool || 0) + (q.liveAddon.liveMinutes || 0);
+          subscription.lastPurchasedLiveAddonId = q.liveAddon.addonId;
+        }
+        subscription.queuedPlan = undefined;
+        await subscription.save();
+      } else {
+        const targetStatus = isGraceExpired ? 'expired' : 'grace';
+        if (subscription.status !== targetStatus) {
+          subscription.status = targetStatus;
+        }
       }
     }
 
-    const expireNotifyIntervalMin = options.planValidityExpireNotificationIntervalMin || 120;
+    const expireNotifyIntervalMin = options.expringSoonWarNotificationInterval || options.planValidityExpireNotificationIntervalMin || 120;
     let shouldSendExpireWarnNotify = false;
 
-    if (isPlanExpired) {
+    if (isPlanExpired && !hasQueuedPlan) {
       const lastExpireNotifyTime = subscription.lastExpireWarnNotificationAt ? new Date(subscription.lastExpireWarnNotificationAt).getTime() : 0;
       if (now.getTime() - lastExpireNotifyTime >= expireNotifyIntervalMin * 60 * 1000) {
         shouldSendExpireWarnNotify = true;
@@ -577,12 +1047,21 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       subscription,
+      hasQueuedPlan,
+      queuedPlan: subscription.queuedPlan,
+      lastPurchasedStorageAddonId: subscription.lastPurchasedStorageAddonId,
+      lastPurchasedLiveAddonId: subscription.lastPurchasedLiveAddonId,
       storageUsage,
       liveUsage: {
+        dayKey,
         monthKey,
-        minutesUsed: liveMinutesUsed,
-        minutesTotal: subscription.planSnapshot.liveMinutesTotal || 60,
-        remainingMinutes: Math.max(0, (subscription.planSnapshot.liveMinutesTotal || 60) - liveMinutesUsed),
+        dailyMinutesUsed,
+        dailyLimit: dailyPlanLimit,
+        remainingDailyMinutes,
+        addonPool,
+        addonMinutesUsed,
+        remainingAddonPool,
+        totalRemainingLiveMinutes,
       },
       alerts: {
         isStorageWarn,
@@ -593,11 +1072,109 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
         isPlanExpired,
         isGracePeriodActive,
         isGraceExpired,
-        graceDays,
-        graceEndsAt: graceEndsAt.toISOString(),
-        planValidityExpireNotificationIntervalMin: expireNotifyIntervalMin,
-        shouldSendExpireWarnNotify,
+        backupHours,
+        graceEndsAt: subscription.graceEndsAt.toISOString(),
+        hasQueuedPlan,
+        shouldSendExpireWarnNotify: hasQueuedPlan ? false : shouldSendExpireWarnNotify,
       },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message });
+  }
+};
+
+/**
+ * Get Orders / Purchase History for Parent User (§11)
+ */
+export const getPurchaseHistory = async (req: Request, res: Response) => {
+  try {
+    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
+    if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const rawOrders = await Order.find({ parentUserId }).sort({ createdAt: -1 }).lean();
+
+    // Group addons under their respective parent plan
+    const planOrders: any[] = [];
+    const standaloneAddons: any[] = [];
+
+    for (const order of rawOrders) {
+      if (order.type === 'plan') {
+        (order as any).addons = [];
+        planOrders.push(order);
+      }
+    }
+
+    for (const order of rawOrders) {
+      if (order.type === 'storage_addon' || order.type === 'live_addon') {
+        const parentTxnId = order.metadata?.parentTxnId;
+        const matchingPlan = planOrders.find((p) => {
+          if (parentTxnId && p.txnId === parentTxnId) return true;
+          if (p.txnId && order.txnId && order.txnId.startsWith(p.txnId)) return true;
+          if (p.validityEnd && order.validityEnd && new Date(p.validityEnd).getTime() === new Date(order.validityEnd).getTime()) return true;
+          return false;
+        });
+
+        if (matchingPlan) {
+          matchingPlan.addons.push(order);
+        } else {
+          standaloneAddons.push(order);
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      orders: rawOrders,
+      groupedOrders: [...planOrders, ...standaloneAddons],
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message });
+  }
+};
+
+/**
+ * Delete Account (Permanent Account & All Data Wipe) (§11)
+ */
+export const deleteAccount = async (req: Request, res: Response) => {
+  try {
+    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
+    if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    console.warn(`[DELETE-ACCOUNT] Deleting all data and account for parent: ${parentUserId}`);
+
+    // 1. Find all devices connected to this parent
+    const devices = await Device.find({ parentUserId });
+    for (const dev of devices) {
+      try {
+        // Erase media in R2 + all 13 Mongo text log collections
+        await StorageDeleteService.eraseAllDeviceData(dev.deviceId, parentUserId);
+
+        // Send high-priority wipe & unpair signal to child
+        if (dev.fcmToken) {
+          await sendFcmDataCommand(dev.fcmToken, 'DELETE_ACCOUNT_WIPE', {
+            command: 'UNPAIR_AND_WIPE_LOCAL',
+          }).catch(() => {});
+        }
+      } catch (err: any) {
+        console.error(`[DELETE-ACCOUNT-DEVICE-ERROR] ${dev.deviceId}: ${err?.message}`);
+      }
+    }
+
+    // 2. Remove all devices belonging to parent
+    await Device.deleteMany({ parentUserId });
+
+    // 3. Remove Subscription, LiveUsage, StorageUsage, Orders (Keep TrialLedger forever for anti-fraud)
+    await Subscription.deleteMany({ parentUserId });
+    await LiveUsage.deleteMany({ parentUserId });
+    await StorageUsage.deleteMany({ parentUserId });
+    await Order.deleteMany({ parentUserId });
+
+    // 4. Remove User record
+    await User.findByIdAndDelete(parentUserId);
+
+    return res.json({
+      success: true,
+      message: 'Your account and all associated data, media, device connections, and history have been permanently deleted.',
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
@@ -705,7 +1282,6 @@ export const updateAutoDeleteConfig = async (req: Request, res: Response) => {
     );
 
     if (isEnabled) {
-      // Execute immediate purge of existing data older than selected interval for this device/parent
       await StorageDeleteService.executeParentAutoDeletePurge(parentUserId, deviceId);
     }
 

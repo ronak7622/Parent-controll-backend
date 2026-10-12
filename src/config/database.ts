@@ -4,19 +4,22 @@ import { config } from './env';
 
 // Fallback to Google / Cloudflare public DNS for Mongo Atlas SRV record resolution
 try {
-  dns.setServers(['8.8.8.8', '1.1.1.1']);
+  if (config.mongoUri.includes('mongodb+srv:')) {
+    dns.setServers(['8.8.8.8', '1.1.1.1']);
+  }
 } catch (_) {}
 
 export const connectDatabase = async (): Promise<void> => {
   if (mongoose.connection.readyState === 1) return;
 
   try {
-    const maskedUri = config.mongoUri.replace(/:([^@]+)@/, ':****@');
+    const targetUri = config.mongoUri.replace('localhost', '127.0.0.1');
+    const maskedUri = targetUri.replace(/:([^@]+)@/, ':****@');
     console.log(`[DATABASE] Connecting to MongoDB (${maskedUri})...`);
-    await mongoose.connect(config.mongoUri, {
+    await mongoose.connect(targetUri, {
       autoIndex: true,
-      serverSelectionTimeoutMS: 10000,
-      connectTimeoutMS: 10000,
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000,
       socketTimeoutMS: 45000,
       maxPoolSize: 100,
       minPoolSize: 10,

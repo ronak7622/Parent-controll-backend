@@ -275,10 +275,13 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
 
     console.log(`[PAIRING-SUCCESS] Parent ${parentUserId} paired with device ${device.deviceId} (code: ${code})`);
 
+    const deviceData = device.toObject();
+    delete deviceData.installedApps;
+
     return res.json({
       success: true,
       message: 'Child device paired successfully.',
-      device,
+      device: deviceData,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -356,12 +359,15 @@ export const pairChildDevice = async (req: any, res: Response) => {
       { expiresIn: '3650d' }
     );
 
+    const deviceData = device.toObject();
+    delete deviceData.installedApps;
+
     return res.json({
       success: true,
       message: 'Child device paired successfully.',
       deviceId: device.deviceId,
       deviceToken,
-      device,
+      device: deviceData,
       parentUid: device.parentUserId ? device.parentUserId.toString() : 'parent',
     });
   } catch (error: any) {
@@ -380,7 +386,9 @@ export const getParentDevices = async (req: AuthRequest, res: Response) => {
       const allDevices = await Device.find({
         isPaired: true,
         deviceId: { $not: /^session_/ }
-      }).sort({ updatedAt: -1 });
+      })
+      .select('-installedApps')
+      .sort({ updatedAt: -1 });
       return res.json({
         success: true,
         devices: allDevices,
@@ -392,7 +400,9 @@ export const getParentDevices = async (req: AuthRequest, res: Response) => {
         { parentUserId },
         { isPaired: true, parentUserId: null, deviceId: { $not: /^session_/ } }
       ]
-    }).sort({ updatedAt: -1 });
+    })
+    .select('-installedApps')
+    .sort({ updatedAt: -1 });
 
     const realDevices = rawDevices.filter(d => !d.deviceId.startsWith('session_'));
 
@@ -598,7 +608,7 @@ export const disconnectDevice = async (req: any, res: Response) => {
     const targetId = device?.deviceId || deviceId;
 
     if (device) {
-      // Emit UNPAIR signal to child device socket room & FCM
+      // Signal child to stop monitoring + unpair (socket + FCM)
       getSignalingIo()?.to(targetId).emit('remote-command', { command: 'UNPAIR', deviceId: targetId });
       if (device.fcmToken) {
         try {
@@ -607,26 +617,20 @@ export const disconnectDevice = async (req: any, res: Response) => {
       }
     }
 
-    // 100% Complete Data Erasure across all MongoDB collections for this deviceId
+    // ✅ STEP 1: Erase ALL media (R2) + text logs + recalc parent storage accounting.
+    // Covers MediaCapture, Recording, CallRecording (+ R2 bulk delete), 13 text collections,
+    // and recalculateStorage() so the parent gets their storage quota back.
+    // parentUserId may be undefined for device-initiated /device/unpair — eraseAllDeviceData
+    // resolves it internally via resolveParentUserId(deviceId), so this is safe for both callers.
+    const { StorageDeleteService } = require('../services/StorageDeleteService');
+    await StorageDeleteService.eraseAllDeviceData(targetId, (req as any).user?.userId);
+
+    // ✅ STEP 2: Remove the device record + device-config collections NOT handled above.
     await Promise.all([
       Device.deleteMany({ $or: [{ deviceId: targetId }, ...(isObjId ? [{ _id: deviceId }] : [])] }),
-      AppUsage.deleteMany({ deviceId: targetId }),
-      AppSession.deleteMany({ deviceId: targetId }),
       AppLimit.deleteMany({ deviceId: targetId }),
       AppBlockRule.deleteMany({ deviceId: targetId }),
-      BrowserHistory.deleteMany({ deviceId: targetId }),
-      CallLog.deleteMany({ deviceId: targetId }),
-      CallRecording.deleteMany({ deviceId: targetId }),
       Contact.deleteMany({ deviceId: targetId }),
-      DrivingTrip.deleteMany({ deviceId: targetId }),
-      InternetLog.deleteMany({ deviceId: targetId }),
-      KeyboardLog.deleteMany({ deviceId: targetId }),
-      LocationLog.deleteMany({ deviceId: targetId }),
-      MediaCapture.deleteMany({ deviceId: targetId }),
-      ChildNotification.deleteMany({ deviceId: targetId }),
-      WifiLog.deleteMany({ deviceId: targetId }),
-      YouTubeHistory.deleteMany({ deviceId: targetId }),
-      YouTubeSession.deleteMany({ deviceId: targetId }),
       ScheduleConfig.deleteMany({ deviceId: targetId }),
     ]);
 
@@ -637,11 +641,11 @@ export const disconnectDevice = async (req: any, res: Response) => {
       cacheService.keys.deviceInfo(targetId),
     ]);
 
-    console.log(`[DISCONNECT-PURGE-SUCCESS] All data permanently deleted for device ${targetId}`);
+    console.log(`[DISCONNECT-PURGE-SUCCESS] Device ${targetId}: all data + R2 media erased, storage recalculated.`);
 
     return res.json({
       success: true,
-      message: 'Device and all associated data permanently deleted.',
+      message: 'Device disconnected and all associated data permanently deleted.',
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

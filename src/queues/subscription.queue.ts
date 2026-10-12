@@ -1,25 +1,10 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { config } from '../config/env';
 import { Subscription } from '../models/Subscription';
-import { StorageUsage } from '../models/StorageUsage';
-import { Device } from '../models/Device';
-import { MediaCapture } from '../models/MediaCapture';
-import { CallRecording } from '../models/CallRecording';
-import { CallLog } from '../models/CallLog';
-import { BrowserHistory } from '../models/BrowserHistory';
-import { YouTubeHistory } from '../models/YouTubeHistory';
-import { YouTubeSession } from '../models/YouTubeSession';
-import { AppSession } from '../models/AppSession';
-import { ChildNotification } from '../models/ChildNotification';
-import { LocationLog } from '../models/LocationLog';
-import { DrivingTrip } from '../models/DrivingTrip';
-import { KeyboardLog } from '../models/KeyboardLog';
-import { WifiLog } from '../models/wifi-log.model';
-import { InternetLog } from '../models/internet-log.model';
-import { bulkDeleteMediaFromR2 } from '../services/r2.service';
-import { sendFcmTopicNotification, sendFcmDataCommand } from '../services/fcm.service';
+import { sendFcmTopicNotification } from '../services/fcm.service';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { ConfigService } from '../services/ConfigService';
+import { SubscriptionJob } from '../jobs/SubscriptionJob';
 
 let subscriptionQueue: Queue | null = null;
 let subscriptionWorker: Worker | null = null;
@@ -35,113 +20,17 @@ const processSubscriptionJobs = async () => {
   const options: Record<string, any> = await ConfigService.getMergedOptions().catch(() => ({}));
 
   // -----------------------------------------------------------------
-  // 1. ACTIVE -> GRACE TRANSITION
+  // 1. UNIFIED SUBSCRIPTION LIFECYCLE (Active, Trial, Queued, Grace, Expired & Wipe)
+  // Single source of truth in SubscriptionJob.processSubscriptionLifecycle()
   // -----------------------------------------------------------------
   try {
-    const expiredActiveSubs = await Subscription.find({
-      status: 'active',
-      expireAt: { $lte: now },
-    });
-
-    for (const sub of expiredActiveSubs) {
-      const graceDays = sub.planSnapshot?.graceDays || options.graceDays || 3;
-      sub.status = 'grace';
-      sub.graceEndsAt = new Date(now.getTime() + graceDays * 24 * 60 * 60 * 1000);
-      await sub.save();
-
-      console.log(`[SUBSCRIPTION-JOB] Parent ${sub.parentUserId} subscription moved to GRACE state (ends at ${sub.graceEndsAt})`);
-
-      await sendFcmTopicNotification(
-        `parent_${sub.parentUserId}`,
-        'Subscription Expired — Grace Period Active',
-        `Your plan has expired. You have ${graceDays} days grace period to renew before data cleanup.`,
-        { type: 'subscription_grace', status: 'grace' }
-      );
-    }
+    await SubscriptionJob.processSubscriptionLifecycle();
   } catch (err: any) {
-    console.error(`[SUBSCRIPTION-GRACE-SCAN-ERROR] ${err?.message}`);
+    console.error(`[SUBSCRIPTION-LIFECYCLE-SCAN-ERROR] ${err?.message}`);
   }
 
   // -----------------------------------------------------------------
-  // 2. GRACE -> EXPIRED TRANSITION + DATA PURGE & MONITORING STOP
-  // -----------------------------------------------------------------
-  try {
-    const expiredGraceSubs = await Subscription.find({
-      status: 'grace',
-      graceEndsAt: { $lte: now },
-    });
-
-    for (const sub of expiredGraceSubs) {
-      sub.status = 'expired';
-      await sub.save();
-
-      const parentUserId = sub.parentUserId;
-      console.log(`[SUBSCRIPTION-JOB] Parent ${parentUserId} GRACE ENDED. Executing post-grace data purge...`);
-
-      const devices = await Device.find({ parentUserId });
-      const deviceIds = devices.map((d) => d.deviceId).filter(Boolean);
-
-      if (deviceIds.length > 0) {
-        // Collect media URLs for R2 bulk delete
-        const mediaCaptures = await MediaCapture.find({ deviceId: { $in: deviceIds } }).select('mediaUrl cdnUrl');
-        const callRecordings = await CallRecording.find({ deviceId: { $in: deviceIds } }).select('audioUrl mediaUrl');
-
-        const mediaUrls: string[] = [
-          ...mediaCaptures.map((m: any) => m.mediaUrl || m.cdnUrl).filter(Boolean),
-          ...callRecordings.map((c: any) => c.audioUrl || c.mediaUrl).filter(Boolean),
-        ];
-
-        // Purge Mongo documents for these devices
-        await Promise.all([
-          MediaCapture.deleteMany({ deviceId: { $in: deviceIds } }),
-          CallRecording.deleteMany({ deviceId: { $in: deviceIds } }),
-          CallLog.deleteMany({ deviceId: { $in: deviceIds } }),
-          BrowserHistory.deleteMany({ deviceId: { $in: deviceIds } }),
-          YouTubeHistory.deleteMany({ deviceId: { $in: deviceIds } }),
-          YouTubeSession.deleteMany({ deviceId: { $in: deviceIds } }),
-          AppSession.deleteMany({ deviceId: { $in: deviceIds } }),
-          ChildNotification.deleteMany({ deviceId: { $in: deviceIds } }),
-          LocationLog.deleteMany({ deviceId: { $in: deviceIds } }),
-          DrivingTrip.deleteMany({ deviceId: { $in: deviceIds } }),
-          KeyboardLog.deleteMany({ deviceId: { $in: deviceIds } }),
-          WifiLog.deleteMany({ deviceId: { $in: deviceIds } }),
-          InternetLog.deleteMany({ deviceId: { $in: deviceIds } }),
-        ]);
-
-        // R2 bulk delete
-        if (mediaUrls.length > 0) {
-          await bulkDeleteMediaFromR2(mediaUrls);
-        }
-
-        // Send FCM command to child devices to delete local data & stop background monitoring
-        for (const devId of deviceIds) {
-          await sendFcmDataCommand(devId, 'COMMAND_WIPE_LOCAL_DATA', {
-            action: 'stop_monitoring',
-            reason: 'subscription_expired',
-          });
-        }
-      }
-
-      // Reset StorageUsage counter
-      await StorageUsage.findOneAndUpdate(
-        { parentUserId },
-        { totalBytes: 0, videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, perDevice: [] },
-        { upsert: true }
-      );
-
-      await sendFcmTopicNotification(
-        `parent_${parentUserId}`,
-        'Account Expired & Storage Reset',
-        'Your subscription grace period has ended. Local and cloud storage data has been cleaned up.',
-        { type: 'subscription_expired', status: 'expired' }
-      );
-    }
-  } catch (err: any) {
-    console.error(`[SUBSCRIPTION-PURGE-SCAN-ERROR] ${err?.message}`);
-  }
-
-  // -----------------------------------------------------------------
-  // 3. SCHEDULED BATCH FCM NOTIFICATIONS (Storage Warn % & Expiry)
+  // 2. SCHEDULED BATCH FCM NOTIFICATIONS (Storage Warn % & Expiry)
   // -----------------------------------------------------------------
   try {
     const activeSubs = await Subscription.find({ status: { $in: ['active', 'trial', 'grace'] } });
@@ -190,7 +79,7 @@ const processSubscriptionJobs = async () => {
   }
 };
 
-export const initSubscriptionQueue = () => {
+export const initSubscriptionQueue = async () => {
   if (!config.redisUri) {
     console.warn('[SUBSCRIPTION-QUEUE-WARN] REDIS_URI not configured. Subscription BullMQ jobs disabled.');
     return;
@@ -215,17 +104,25 @@ export const initSubscriptionQueue = () => {
       console.error(`[SUBSCRIPTION-QUEUE] Job ${job?.id} failed:`, err.message);
     });
 
-    // Schedule repeatable job every 1 hour (3600000 ms)
-    (subscriptionQueue.add as any)(
-      'hourly-subscription-scan',
+    // Remove stale repeatables so interval changes take effect
+    const reps = await (subscriptionQueue as any).getRepeatableJobs().catch(() => []);
+    for (const r of reps) {
+      await (subscriptionQueue as any).removeRepeatableByKey(r.key).catch(() => {});
+    }
+
+    const scanMs = Number(process.env.SUBSCRIPTION_SCAN_MS) || 60000;
+
+    // Schedule repeatable job
+    await (subscriptionQueue.add as any)(
+      'subscription-scan-job',
       {},
       {
-        repeat: { every: 3600000 },
-        jobId: 'repeatable-hourly-subscription-scan',
+        repeat: { every: scanMs },
+        jobId: 'repeatable-subscription-scan-job',
       }
     );
 
-    console.log('[SUBSCRIPTION-QUEUE] Subscription & Notification BullMQ Queue initialized with hourly repeatable scan.');
+    console.log(`[SUBSCRIPTION-QUEUE] Subscription & Notification BullMQ Queue initialized with scan interval: ${scanMs}ms.`);
   } catch (err: any) {
     console.warn('[SUBSCRIPTION-QUEUE-ERROR] Failed to initialize subscription queue:', err.message);
   }

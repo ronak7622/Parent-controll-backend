@@ -7,11 +7,35 @@ export interface IPlanSnapshot {
   price: number;
   storageBytes: number;
   liveMinutesTotal: number;
+  liveLimitPerDay: number; // daily plan limit (resets local midnight)
   liveSessionMaxMin: number;
   deviceLimit: number;
+  dayLimit: number;
+  durationMs?: number;
   graceDays: number;
   storageWarnPercent: number;
   features: string[];
+}
+
+export interface IQueuedPlan {
+  planSnapshot: IPlanSnapshot;
+  durationDays: number;
+  durationMs?: number;
+  txnId: string;
+  region: string;
+  purchasedAt: Date;
+  storageAddon?: {
+    addonId: string;
+    name: string;
+    storageBytes: number;
+    price: number;
+  };
+  liveAddon?: {
+    addonId: string;
+    name: string;
+    liveMinutes: number;
+    price: number;
+  };
 }
 
 export interface ISubscription extends Document {
@@ -19,6 +43,10 @@ export interface ISubscription extends Document {
   status: 'trial' | 'active' | 'grace' | 'expired';
   planSnapshot: IPlanSnapshot;
   addonStorageBytes: number;
+  addonLiveMinutesPool: number; // one-time live pool for validity duration
+  lastPurchasedStorageAddonId?: string;
+  lastPurchasedLiveAddonId?: string;
+  queuedPlan?: IQueuedPlan;
   startAt: Date;
   expireAt: Date;
   graceEndsAt: Date;
@@ -38,11 +66,38 @@ const PlanSnapshotSchema: Schema = new Schema(
     price: { type: Number, default: 0 },
     storageBytes: { type: Number, required: true },
     liveMinutesTotal: { type: Number, default: 60 },
+    liveLimitPerDay: { type: Number, default: 15 },
     liveSessionMaxMin: { type: Number, default: 5 },
     deviceLimit: { type: Number, default: 3 },
+    dayLimit: { type: Number, default: 30 },
+    durationMs: { type: Number, default: 0 },
     graceDays: { type: Number, default: 3 },
     storageWarnPercent: { type: Number, default: 80 },
     features: [{ type: String }],
+  },
+  { _id: false }
+);
+
+const QueuedPlanSchema: Schema = new Schema(
+  {
+    planSnapshot: { type: PlanSnapshotSchema, required: true },
+    durationDays: { type: Number, default: 30 },
+    durationMs: { type: Number, default: 0 },
+    txnId: { type: String, required: true },
+    region: { type: String, default: 'HIGH_USD' },
+    purchasedAt: { type: Date, default: Date.now },
+    storageAddon: {
+      addonId: String,
+      name: String,
+      storageBytes: Number,
+      price: Number,
+    },
+    liveAddon: {
+      addonId: String,
+      name: String,
+      liveMinutes: Number,
+      price: Number,
+    },
   },
   { _id: false }
 );
@@ -58,6 +113,10 @@ const SubscriptionSchema: Schema = new Schema(
     },
     planSnapshot: { type: PlanSnapshotSchema, required: true },
     addonStorageBytes: { type: Number, default: 0 },
+    addonLiveMinutesPool: { type: Number, default: 0 },
+    lastPurchasedStorageAddonId: { type: String },
+    lastPurchasedLiveAddonId: { type: String },
+    queuedPlan: { type: QueuedPlanSchema, default: null },
     startAt: { type: Date, default: Date.now },
     expireAt: { type: Date, required: true, index: true },
     graceEndsAt: { type: Date, required: true },

@@ -5,7 +5,33 @@ import { AddonPlan } from '../models/AddonPlan';
 
 dotenv.config();
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/parent_control';
+const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/child_protect_db';
+
+const commonFeatures = (deviceText: string, storageText: string) => [
+  'No ads',
+  deviceText,
+  'Live screen mirro',
+  'Live video camera',
+  'Live Audio',
+  'Screenshot schedule and capture silent screenshot',
+  'Youtube history and Control',
+  'Browser history and control',
+  'Live location trakcer',
+  'Location history',
+  'Driving detection',
+  'Call history',
+  'contact management',
+  'auto call recording',
+  'sms message history',
+  'App uses and screen time',
+  'App mangement block schedule and uses time limit',
+  'wifi logger',
+  'internet logger',
+  'keyword trackker and key logger',
+  'all apps Notifications',
+  'Remotly rec video audio and screen recording',
+  storageText,
+];
 
 async function resetPlans() {
   try {
@@ -16,49 +42,70 @@ async function resetPlans() {
     await Plan.deleteMany({});
     await AddonPlan.deleteMany({});
 
-    console.log('Inserting updated default plans...');
+    console.log('Inserting updated default plans & 1-day free trial...');
     await Plan.create([
       {
-        planId: 'plan_starter_monthly',
-        name: 'Starter Monthly',
-        type: 'monthly',
-        priceByRegion: { IN_INR: 199, LOW_USD: 2.99, HIGH_USD: 5.99 },
-        storageBytes: 5368709120, // 5 GB
-        dayLimit: 30,
-        liveMinutesTotal: 30,
-        liveSessionMaxMin: 5,
+        planId: 'plan_1_day_trial',
+        name: '1 Day Free Trial',
+        type: 'trial',
+        priceByRegion: { IN_INR: 0, LOW_USD: 0, HIGH_USD: 0 },
+        storageBytes: 104857600, // 100 MB
+        dayLimit: 1,
+        liveMinutesTotal: 10,
+        liveLimitPerDay: 10,
+        liveSessionMaxMin: 2,
         deviceLimit: 1,
-        features: ['5 GB Storage', '1 Connected Device', '30 Live Minutes', 'Basic History'],
+        features: commonFeatures('1 device connect', '100 mb storage'),
         isActive: true,
+        isRecommended: false,
+        sortOrder: 0,
+      },
+      {
+        planId: 'plan_1_month',
+        name: '1 Month Plan',
+        type: 'monthly',
+        priceByRegion: { IN_INR: 1000, LOW_USD: 14.99, HIGH_USD: 24.99 },
+        storageBytes: 21474836480, // 20 GB
+        dayLimit: 30,
+        liveMinutesTotal: 1800,
+        liveLimitPerDay: 60,
+        liveSessionMaxMin: 10,
+        deviceLimit: 1000, // Unlimited
+        features: commonFeatures('Unlimited device connect', '20 gb storage'),
+        isActive: true,
+        isRecommended: false,
         sortOrder: 1,
       },
       {
-        planId: 'plan_pro_monthly',
-        name: 'Pro Family Monthly',
-        type: 'monthly',
-        priceByRegion: { IN_INR: 399, LOW_USD: 5.99, HIGH_USD: 11.99 },
+        planId: 'plan_6_months',
+        name: '6 Months Plan',
+        type: '6_months',
+        priceByRegion: { IN_INR: 2500, LOW_USD: 34.99, HIGH_USD: 59.99 },
         storageBytes: 21474836480, // 20 GB
-        dayLimit: 30,
-        liveMinutesTotal: 120,
-        liveSessionMaxMin: 5,
-        deviceLimit: 3,
-        features: ['20 GB Storage', '3 Connected Devices', '120 Live Minutes', 'Priority Support'],
+        dayLimit: 180,
+        liveMinutesTotal: 10800,
+        liveLimitPerDay: 60,
+        liveSessionMaxMin: 10,
+        deviceLimit: 1000, // Unlimited
+        features: commonFeatures('Unlimited device connect', '20 gb storage'),
         isActive: true,
-        isRecommended: true,
+        isRecommended: false,
         sortOrder: 2,
       },
       {
-        planId: 'plan_pro_yearly',
-        name: 'Pro Family Yearly',
+        planId: 'plan_1_year',
+        name: '1 Year Plan',
         type: 'yearly',
-        priceByRegion: { IN_INR: 2999, LOW_USD: 49.99, HIGH_USD: 99.99 },
-        storageBytes: 53687091200, // 50 GB
+        priceByRegion: { IN_INR: 2000, LOW_USD: 29.99, HIGH_USD: 49.99 },
+        storageBytes: 21474836480, // 20 GB
         dayLimit: 365,
-        liveMinutesTotal: 1500,
-        liveSessionMaxMin: 5,
-        deviceLimit: 5,
-        features: ['50 GB Storage', '5 Connected Devices', '1500 Live Minutes', 'Best Value (40% OFF)'],
+        liveMinutesTotal: 21900,
+        liveLimitPerDay: 60,
+        liveSessionMaxMin: 10,
+        deviceLimit: 1000, // Unlimited
+        features: commonFeatures('Unlimited device connect', '20 gb storage'),
         isActive: true,
+        isRecommended: true,
         sortOrder: 3,
       },
     ]);
@@ -109,7 +156,7 @@ async function resetPlans() {
       },
     ]);
 
-    console.log('✅ Plans successfully reset & updated in MongoDB!');
+    console.log('✅ Plans successfully reset & updated in MongoDB with full features list!');
     process.exit(0);
   } catch (err) {
     console.error('❌ Error resetting plans:', err);

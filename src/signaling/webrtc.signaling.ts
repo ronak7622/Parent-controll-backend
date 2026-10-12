@@ -8,6 +8,7 @@ import { config } from '../config/env';
 import { Device } from '../models/Device';
 import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
+import { LiveUsageService } from '../services/LiveUsageService';
 
 let signalingIo: any = null;
 
@@ -209,42 +210,33 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
 
       console.log(`[WEBRTC-REQUEST] Relaying stream request for device: ${targetDeviceId} (raw: ${inputDeviceId}), type: ${data?.type}`);
 
-      // Subscription & Live Usage Enforcement Check
+      const sessionId = data?.sessionId || `live_${targetDeviceId}_${Date.now()}`;
+      if (!data) data = {};
+      data.sessionId = sessionId;
+
+      // Subscription & Live Usage Enforcement Check (§3 & §10)
       try {
         const { StorageAccountingService } = require('../services/StorageAccountingService');
-        const { Subscription } = require('../models/Subscription');
-        const { LiveUsage } = require('../models/LiveUsage');
-
         const parentUserId = await StorageAccountingService.resolveParentUserId(targetDeviceId);
         if (parentUserId) {
-          const sub = await Subscription.findOne({ parentUserId, status: { $in: ['active', 'trial', 'grace'] } });
-          if (!sub || sub.status === 'expired') {
+          const grant = await LiveUsageService.grantSession({
+            sessionId,
+            parentUserId,
+            deviceId: targetDeviceId,
+            rawDeviceId: inputDeviceId,
+            parentSocketId: socket.id,
+            type: data?.type || 'camera',
+          });
+
+          if (!grant.allowed) {
+            console.warn(`[WEBRTC-REQUEST-REJECTED] Device ${targetDeviceId}: ${grant.reason} - ${grant.message}`);
             socket.emit('stream-failed', {
               deviceId: inputDeviceId,
               type: data?.type,
-              sessionId: data?.sessionId,
-              reason: 'SUBSCRIPTION_EXPIRED',
-              message: 'Subscription plan expired. Please renew plan to access live view/stream.',
-            });
-            return;
-          }
-
-          const liveMinutesTotal = sub.planSnapshot?.liveMinutesTotal || 60;
-          const now = new Date();
-          const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-          let liveUsage = await LiveUsage.findOne({ parentUserId, monthKey });
-          if (!liveUsage) {
-            liveUsage = await LiveUsage.create({ parentUserId, monthKey, minutesUsed: 0, resetAt: new Date(now.getFullYear(), now.getMonth() + 1, 1) });
-          }
-
-          const remaining = liveMinutesTotal - (liveUsage.minutesUsed || 0);
-          if (remaining <= 0) {
-            socket.emit('stream-failed', {
-              deviceId: inputDeviceId,
-              type: data?.type,
-              sessionId: data?.sessionId,
-              reason: 'LIVE_MINUTES_EXCEEDED',
-              message: 'Monthly live minutes quota exceeded for your plan. Please upgrade for additional live stream time.',
+              sessionId,
+              reason: grant.reason || 'LIVE_MINUTES_EXCEEDED',
+              message: grant.message || 'Daily live limit & booster minutes exhausted. Buy a booster or try again tomorrow.',
+              canRetry: grant.canRetry ?? false,
             });
             return;
           }
@@ -272,6 +264,7 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
         const childPresentRetry = (await isChildInRoom(targetDeviceId)) || (await isChildInRoom(inputDeviceId));
         if (!childPresentRetry) {
           console.warn(`[WEBRTC-REQUEST] Still no child socket in room ${targetDeviceId} after grace period! Emitting stream-failed (DEVICE_OFFLINE)`);
+          LiveUsageService.cancelSession(sessionId, targetDeviceId, socket.id);
           socket.emit('stream-failed', {
             deviceId: inputDeviceId,
             type: data?.type,
@@ -294,6 +287,7 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
           const elapsed = Math.max(0, Math.floor((Date.now() - activeRec.startedAt.getTime()) / 1000));
           const remaining = Math.max(0, activeRec.durationSeconds - elapsed);
           console.warn(`[WEBRTC-REQUEST] Device ${targetDeviceId} has active ${activeRec.recordingType} recording! Emitting stream-failed (RECORDING_IN_PROGRESS)`);
+          LiveUsageService.cancelSession(sessionId, targetDeviceId, socket.id);
           socket.emit('stream-failed', {
             deviceId: inputDeviceId,
             type: data?.type,
@@ -326,6 +320,8 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
     // Handle stream failure / screen off notification
     socket.on('stream-failed', (data: any) => {
       const deviceId = data?.deviceId;
+      const sessId = data?.sessionId;
+      LiveUsageService.cancelSession(sessId, deviceId, socket.id);
       console.log(`[WEBRTC-FAILED] Stream failed reported for device: ${deviceId}, reason: ${data?.reason}`);
       if (deviceId) {
         socket.to(deviceId).emit('stream-failed', data);
@@ -447,6 +443,7 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
     // Relay SDP Offer (from Child or Parent)
     socket.on('offer', (data: any) => {
       const deviceId = data?.deviceId;
+      LiveUsageService.markMediaConnected(data?.sessionId, deviceId, socket.id);
       const rawOffer = data?.offer || data?.sdp;
       const offerObj = typeof rawOffer === 'object' ? rawOffer : { type: 'offer', sdp: rawOffer };
       const sdpStr = typeof rawOffer === 'string' ? rawOffer : (rawOffer?.sdp || '');
@@ -473,6 +470,7 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
     // Relay SDP Answer
     socket.on('answer', (data: any) => {
       const deviceId = data?.deviceId;
+      LiveUsageService.markMediaConnected(data?.sessionId, deviceId, socket.id);
       const rawAnswer = data?.answer || data?.sdp;
       const answerObj = typeof rawAnswer === 'object' ? rawAnswer : { type: 'answer', sdp: rawAnswer };
       const sdpStr = typeof rawAnswer === 'string' ? rawAnswer : (rawAnswer?.sdp || '');
@@ -520,13 +518,17 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
     });
 
     // Stop Stream Signal
-    socket.on('stop-stream', (data: any) => {
+    socket.on('stop-stream', async (data: any) => {
       const deviceId = typeof data === 'string' ? data : data?.deviceId;
-      console.log(`[WEBRTC-STOP] Stop stream requested for room: ${deviceId}`);
+      const sessId = typeof data === 'object' ? data?.sessionId : undefined;
+      console.log(`[WEBRTC-STOP] Stop stream requested for room: ${deviceId}, sessionId: ${sessId}`);
+
+      await LiveUsageService.endSession(sessId || deviceId || socket.id, 'STOP_STREAM');
+
       if (deviceId) {
-        socket.to(deviceId).emit('stop-stream', { deviceId });
+        socket.to(deviceId).emit('stop-stream', { deviceId, sessionId: sessId });
         if (socket.data.deviceId && socket.data.deviceId !== deviceId) {
-          socket.to(socket.data.deviceId).emit('stop-stream', { deviceId });
+          socket.to(socket.data.deviceId).emit('stop-stream', { deviceId, sessionId: sessId });
         }
       }
     });
@@ -540,8 +542,9 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       }
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       console.log(`[WEBRTC-DISCONNECT] Socket disconnected: ${socket.id}`);
+      await LiveUsageService.endSession(socket.id, 'SOCKET_DISCONNECT');
     });
   });
 

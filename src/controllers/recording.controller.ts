@@ -11,6 +11,7 @@ import { getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { DeletedRecording } from '../models/DeletedRecording';
 import { deleteMediaFromR2, bulkDeleteMediaFromR2 } from '../services/r2.service';
+import { checkQuotaBlocked } from './ingest.controller';
 
 // Format duration helper
 const formatDuration = (seconds: number): string => {
@@ -561,6 +562,14 @@ export const getRecordingPresignedUrl = async (req: Request, res: Response) => {
     const { deviceId, recordingType = 'audio', extension = 'aac' } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        uploadBlocked: true,
+        message: 'Storage quota exceeded or subscription not active. Recording upload blocked.',
+      });
+    }
+
     const key = `recordings/${recordingType}/${deviceId}/${uuidv4()}.${extension}`;
     return res.json({
       success: true,
@@ -635,6 +644,14 @@ export const completeRecording = async (req: Request, res: Response) => {
 
     if (!deviceId || !sessionId) {
       return res.status(400).json({ success: false, message: 'Missing required completion parameters' });
+    }
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        uploadBlocked: true,
+        message: 'Storage quota exceeded or subscription not active. Recording upload blocked.',
+      });
     }
 
     const numSize = Number(fileSizeBytes) || 0;

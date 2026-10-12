@@ -1921,9 +1921,37 @@ export const getAppSessions = async (req: AuthRequest, res: Response) => {
       date: targetDate,
     }).sort({ startTime: 1 });
 
+    // Filter out transient normal launches (<= 5s) that coincide with a limit/blocked attempt at the same timestamp
+    const attemptSessions = rawSessions.filter(
+      (s: any) => s.sessionType === 'limit_exceeded_attempt' || s.sessionType === 'blocked_attempt'
+    );
+
+    const dedupedRawSessions = rawSessions.filter((sess: any) => {
+      const sType = sess.sessionType || 'normal';
+      if (sType !== 'normal') return true;
+
+      const sStart = new Date(sess.startTime).getTime();
+      const sEnd = new Date(sess.endTime).getTime();
+      const sDur = sess.durationSeconds || Math.round((sEnd - sStart) / 1000);
+
+      // Only suppress short transient launches killed by the blocker
+      if (sDur > 5) return true;
+
+      const isDupe = attemptSessions.some((att: any) => {
+        const aStart = new Date(att.startTime).getTime();
+        const aEnd = new Date(att.endTime).getTime();
+        const startDiff = Math.abs(sStart - aStart);
+        const endDiff = Math.abs(sEnd - aEnd);
+        const overlaps = sStart <= aEnd + 3000 && sEnd >= aStart - 3000;
+        return startDiff <= 5000 || endDiff <= 5000 || overlaps;
+      });
+
+      return !isDupe;
+    });
+
     // Consolidate overlapping sessions only (gap <= 0 seconds) to preserve exact session boundaries
     const mergedSessions: any[] = [];
-    for (const sess of rawSessions) {
+    for (const sess of dedupedRawSessions) {
       const obj = sess.toObject ? sess.toObject() : { ...sess };
       if (!obj.sessionType) {
         obj.sessionType = 'normal';

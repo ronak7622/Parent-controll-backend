@@ -9,6 +9,8 @@ import {
   getSubscriptionStatus,
   getAutoDeleteConfig,
   updateAutoDeleteConfig,
+  getPurchaseHistory,
+  deleteAccount,
 } from '../controllers/subscription.controller';
 import {
   generatePairingCode,
@@ -149,7 +151,7 @@ import {
   deleteInternetHistoryAll,
   deleteInternetLogItem,
 } from '../controllers/internet.controller';
-import { authenticateJwt, authenticateDevice } from '../middleware/auth';
+import { authenticateJwt, authenticateDevice, optionalAuthenticateJwt } from '../middleware/auth';
 import { verifyDeviceOwnership } from '../middleware/ownership';
 import { getRemoteConfig } from '../controllers/config.controller';
 import {
@@ -168,11 +170,12 @@ router.get('/config/remote', getRemoteConfig);
 router.get('/config/options', getOptionsConfig);
 
 // Subscription, Plans, Add-ons & Auto-Delete Routes
-router.get('/plans', getPlans);
+router.get('/plans', optionalAuthenticateJwt, getPlans);
 router.post('/subscribe', authenticateJwt, subscribe);
 router.post('/trial/activate', authenticateJwt, activateTrial);
 router.post('/purchase-addon', authenticateJwt, purchaseAddon);
 router.get('/subscription/status', authenticateJwt, getSubscriptionStatus);
+router.get('/subscription/history', authenticateJwt, getPurchaseHistory);
 router.get('/storage/auto-delete', authenticateJwt, getAutoDeleteConfig);
 router.post('/storage/auto-delete', authenticateJwt, updateAutoDeleteConfig);
 
@@ -180,6 +183,9 @@ router.post('/storage/auto-delete', authenticateJwt, updateAutoDeleteConfig);
 router.get('/parent/storage-status', authenticateJwt, getSubscriptionStatus);
 router.post('/parent/purchase-plan', authenticateJwt, subscribe);
 router.post('/parent/purchase-addon', authenticateJwt, purchaseAddon);
+router.get('/parent/purchase-history', authenticateJwt, getPurchaseHistory);
+router.delete('/parent/delete-account', authenticateJwt, deleteAccount);
+router.post('/parent/delete-account', authenticateJwt, deleteAccount);
 router.post('/parent/auto-delete-settings', authenticateJwt, updateAutoDeleteConfig);
 
 

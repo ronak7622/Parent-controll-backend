@@ -30,8 +30,9 @@ export const checkQuotaBlocked = async (deviceId: string): Promise<boolean> => {
     const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
     if (!parentUserId) return false;
     const sub = await Subscription.findOne({ parentUserId });
-    if (!sub || sub.status === 'expired') return true;
-    const allowedBytes = sub.planSnapshot?.storageBytes || 10737418240;
+    // Block uploads if no subscription, expired, or in grace period (grace is local only)
+    if (!sub || (sub.status !== 'active' && sub.status !== 'trial')) return true;
+    const allowedBytes = (sub.planSnapshot?.storageBytes || 10737418240) + (sub.addonStorageBytes || 0);
     const usage = await StorageAccountingService.getStorageUsage(parentUserId);
     return (usage?.totalBytes || 0) >= allowedBytes;
   } catch {
@@ -89,19 +90,36 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
     let uploadBlocked = false;
     let isExpired = false;
+    let isGrace = false;
+    let expiryAtStr: string | null = null;
+    let graceEndsAtStr: string | null = null;
+    let hasQueuedPlan = false;
+
     if (parentUserId) {
       const sub = await Subscription.findOne({ parentUserId });
-      // Only sub.status === 'expired' is considered expired (after grace period ends).
-      // !sub (new install, trial window, pairing window) is NOT expired.
-      if (sub && sub.status === 'expired') {
-        isExpired = true;
-        uploadBlocked = true;
-      } else if (sub) {
-        const usage = await StorageAccountingService.getStorageUsage(parentUserId);
-        const allowed = sub.planSnapshot?.storageBytes || 10737418240;
-        if ((usage?.totalBytes || 0) >= allowed) {
+      if (sub) {
+        expiryAtStr = sub.expireAt ? sub.expireAt.toISOString() : null;
+        graceEndsAtStr = sub.graceEndsAt ? sub.graceEndsAt.toISOString() : null;
+        hasQueuedPlan = Boolean(sub.queuedPlan && sub.queuedPlan.planSnapshot);
+
+        if (sub.status === 'expired') {
+          isExpired = true;
           uploadBlocked = true;
+        } else if (sub.status === 'grace') {
+          isGrace = true;
+          uploadBlocked = true; // Grace period: keep data local only, do not upload to server until renewed
+        } else if (sub.status !== 'active' && sub.status !== 'trial') {
+          uploadBlocked = true;
+        } else {
+          const usage = await StorageAccountingService.getStorageUsage(parentUserId);
+          const allowed = (sub.planSnapshot?.storageBytes || 10737418240) + (sub.addonStorageBytes || 0);
+          if ((usage?.totalBytes || 0) >= allowed) {
+            uploadBlocked = true;
+          }
         }
+      } else {
+        // No subscription found
+        uploadBlocked = true;
       }
     }
 
@@ -112,6 +130,10 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       message: 'Heartbeat updated.',
       uploadBlocked,
       isExpired,
+      isGrace,
+      expiryAt: expiryAtStr,
+      graceEndsAt: graceEndsAtStr,
+      hasQueuedPlan,
       restrictions: {
         youtubeBlocked: device.youtubeBlocked ?? false,
         youtubeShortsBlocked: device.youtubeShortsBlocked ?? false,
@@ -134,6 +156,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         blockedOutgoingPhoneNumbers: device.blockedOutgoingPhoneNumbers || [],
         uploadBlocked,
         isExpired,
+        isGrace,
       },
     });
   } catch (error: any) {
@@ -1043,6 +1066,14 @@ export const ingestCallRecording = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'deviceId and phoneNumber are required' });
     }
 
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        uploadBlocked: true,
+        message: 'Storage quota exceeded or subscription not active. Call recording upload blocked.',
+      });
+    }
+
     const base64Data = audioBase64 || audioData;
     if (!base64Data) {
       return res.status(400).json({ success: false, message: 'audio data is required' });
@@ -1107,6 +1138,14 @@ export const ingestCallRecordingStream = async (req: Request, res: Response) => 
 
     if (!deviceId || !rawPhone) {
       return res.status(400).json({ success: false, message: 'x-device-id and x-phone-number headers required' });
+    }
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        uploadBlocked: true,
+        message: 'Storage quota exceeded or subscription not active. Call recording stream blocked.',
+      });
     }
 
     let phoneNumber = rawPhone;

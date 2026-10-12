@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { StorageUsage, IStorageUsage } from '../models/StorageUsage';
 import { Device } from '../models/Device';
 import { Recording } from '../models/Recording';
@@ -30,13 +31,19 @@ export class StorageAccountingService {
    */
   static async resolveParentUserId(deviceIdOrParentUserId: string): Promise<string | null> {
     if (!deviceIdOrParentUserId) return null;
-    const device = await Device.findOne({
-      $or: [{ deviceId: deviceIdOrParentUserId }, { _id: deviceIdOrParentUserId }],
-    }).select('parentUserId');
-    if (device && device.parentUserId) {
-      return device.parentUserId.toString();
+    try {
+      const orConditions: any[] = [{ deviceId: deviceIdOrParentUserId }];
+      if (mongoose.isValidObjectId(deviceIdOrParentUserId)) {
+        orConditions.push({ _id: deviceIdOrParentUserId });
+      }
+      const device = await Device.findOne({ $or: orConditions }).select('parentUserId');
+      if (device && device.parentUserId) {
+        return device.parentUserId.toString();
+      }
+      return deviceIdOrParentUserId; // Assume it's parentUserId if not found as device
+    } catch {
+      return deviceIdOrParentUserId;
     }
-    return deviceIdOrParentUserId; // Assume it's parentUserId if not found as device
   }
 
   /**

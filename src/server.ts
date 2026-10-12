@@ -92,7 +92,7 @@ const startServer = async () => {
   await connectDatabase();
   await migrateYoutubeAppBlockToAppRule();
   initIngestQueue();
-  initSubscriptionQueue();
+  await initSubscriptionQueue();
 
   // Run continuous storage auto-delete check every 60 seconds (1 min)
   setInterval(async () => {

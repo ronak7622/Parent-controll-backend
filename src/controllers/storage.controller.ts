@@ -3,6 +3,7 @@ import { User } from '../models/User';
 import { Device } from '../models/Device';
 import { MediaCapture } from '../models/MediaCapture';
 import { CallRecording } from '../models/CallRecording';
+import { toMs } from '../utils/duration';
 
 /**
  * Get Parent Storage Status & Plan Expiry Warnings
@@ -96,8 +97,8 @@ export const purchasePlan = async (req: Request, res: Response) => {
 
     const now = new Date();
     const durationDays = planType === 'yearly' ? 365 : 30;
-    const planExpiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
-    const planGracePeriodEndsAt = new Date(planExpiresAt.getTime() + 3 * 24 * 60 * 60 * 1000); // 3 days grace period
+    const planExpiresAt = new Date(now.getTime() + toMs(durationDays, 'days'));
+    const planGracePeriodEndsAt = new Date(planExpiresAt.getTime() + toMs(3, 'days')); // 3 days grace period
 
     const user = await User.findByIdAndUpdate(
       parentUserId,

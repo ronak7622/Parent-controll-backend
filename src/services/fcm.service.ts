@@ -76,7 +76,19 @@ export const sendFcmTopicNotification = async (
         priority: 'high',
         notification: {
           sound: 'default',
-          channelId: 'child_protect_alerts',
+          channelId: 'high_importance_channel',
+          priority: 'max',
+          defaultSound: true,
+          defaultVibrateTimings: true,
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+            contentAvailable: true,
+          },
         },
       },
     };

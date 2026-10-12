@@ -99,8 +99,6 @@ export const DEFAULT_OPTIONS = {
 
   syncIntervalMs: 300000,
   jitterWindowMs: 15000,
-  storageWarnPercent: 80,
-  storageWarnNotificationIntervalMin: 120,
 
   statusGoodUntilStorage: 50,
   statusAverageUntilStorage: 70,
@@ -116,6 +114,21 @@ export const DEFAULT_OPTIONS = {
   defaultGraceHours: 72,
   graceDays: 3,
 
+  // Subscription lifecycle & warnings config
+  storageBackupAfterExpirPlan: 72, // hours (used for grace/backup window)
+  expringSoonWarNotificationBeforeDay: 3, // days before expiry
+  expringSoonWarNotificationInterval: 120, // minutes
+  expringSoonWarDialogBeforeDay: 3, // days before expiry
+  expringSoonWarDialogInterval: 1440, // minutes (default 1 day)
+  expredWarNotificationAfterDay: 3, // days after expiry
+  expredWarNotificationInterval: 120, // minutes
+  expredWarDialogAfterDay: 3, // days after expiry
+  expredWarDialogInterval: 1440, // minutes (default 1 day)
+  storageWarnPercent: 80, // %
+  storageWarnNotificationIntervalMin: 120, // minutes
+  storageWarnPercentForDialog: 80, // %
+  storageWarnIntervalForDialog: 1440, // minutes (default 1 day)
+
   planValidityExpireNotificationIntervalMin: 120,
   liveSessionMaxMin: 5,
   liveVideoPerSessionLimitMin: 5,
@@ -125,15 +138,8 @@ export const DEFAULT_OPTIONS = {
   showLiveLimitAddonPlanForFirst: true,
   showStorageAddonPlanForRenew: true,
   showLiveLimitAddonPlanForRenew: true,
-
-  trialPlanConfig: {
-    name: '3-Day Free Trial',
-    durationUnit: 'days', // 'days' | 'hours'
-    durationValue: 3,     // e.g. 3 days or 72 hours
-    storageBytes: 2147483648, // 2 GB
-    liveMinutes: 15,
-    deviceLimit: 1,
-  },
+  testPlanEmails: [] as string[],
+  testPlanPhones: [] as string[],
 
   regionTierMap: {
     IN: 'IN_INR',
@@ -173,6 +179,17 @@ export const DEFAULT_OPTIONS = {
   ],
   demoScreenVideos: [
     'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenmirror1.mp4',
+  ],
+  demoPictures: [
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot1.png',
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot2.png',
+  ],
+  demoScreenshots: [
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot1.png',
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot2.png',
+  ],
+  demoKeywordScreenshots: [
+    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot1.png',
   ],
 };
 
@@ -240,6 +257,21 @@ export class ConfigService {
       await Config.findOneAndUpdate(
         { key: 'demoScreenVideos' },
         { key: 'demoScreenVideos', value: DEFAULT_OPTIONS.demoScreenVideos },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoPictures' },
+        { key: 'demoPictures', value: DEFAULT_OPTIONS.demoPictures },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoScreenshots' },
+        { key: 'demoScreenshots', value: DEFAULT_OPTIONS.demoScreenshots },
+        { upsert: true }
+      );
+      await Config.findOneAndUpdate(
+        { key: 'demoKeywordScreenshots' },
+        { key: 'demoKeywordScreenshots', value: DEFAULT_OPTIONS.demoKeywordScreenshots },
         { upsert: true }
       );
 
