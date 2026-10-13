@@ -19,6 +19,7 @@ import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
 import { KeyboardLog } from '../models/KeyboardLog';
+import { ChatMessage } from '../models/ChatMessage';
 import { Device } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
@@ -351,11 +352,12 @@ export const deleteYouTubeHistoryForDevice = async (req: AuthRequest, res: Respo
 export const getCapturedMedia = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { type, captureType, date, limit = 100 } = req.query;
+    const { type, captureType, date, packageName, limit = 100 } = req.query;
 
     const query: any = { deviceId };
     if (type) query.type = type;
     if (captureType) query.captureType = captureType;
+    if (packageName) query.packageName = packageName;
     if (date) {
       const start = new Date(date as string);
       start.setHours(0, 0, 0, 0);
@@ -2577,7 +2579,7 @@ export const getNotificationApps = async (req: AuthRequest, res: Response) => {
 export const getInstalledApps = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const device = await Device.findOne({ deviceId }).select('installedApps');
+    const device = await Device.findOne({ deviceId }).select('installedApps updatedAt lastUsageSyncTime');
     if (!device) {
       return res.status(404).json({ success: false, message: 'Device not found', apps: [] });
     }
@@ -2587,7 +2589,7 @@ export const getInstalledApps = async (req: AuthRequest, res: Response) => {
       appIcon: a.appIcon || null,
       isSystemApp: a.isSystemApp || false,
     }));
-    return res.json({ success: true, apps });
+    return res.json({ success: true, apps, lastSyncedAt: device.updatedAt || device.lastUsageSyncTime || null });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message, apps: [] });
   }
@@ -3191,6 +3193,170 @@ export const deleteKeyboardLogItem = async (req: AuthRequest, res: Response) => 
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * GET /parent/device/:deviceId/chat-threads?packageName=&date=
+ * Fetch conversation threads grouped by contact with last message preview
+ */
+export const getChatThreads = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName, date } = req.query;
+
+    const matchQuery: any = { deviceId };
+    if (packageName) {
+      matchQuery.packageName = packageName as string;
+    }
+    if (date && typeof date === 'string') {
+      const startOfDay = new Date(`${date}T00:00:00.000Z`);
+      const endOfDay = new Date(`${date}T23:59:59.999Z`);
+      matchQuery.timestamp = { $gte: startOfDay, $lte: endOfDay };
+    }
+
+    const threads = await ChatMessage.aggregate([
+      { $match: matchQuery },
+      { $sort: { timestamp: -1, orderIndex: -1 } },
+      {
+        $group: {
+          _id: '$contactId',
+          contactId: { $first: '$contactId' },
+          contactName: { $first: '$contactName' },
+          contactNumber: { $first: '$contactNumber' },
+          packageName: { $first: '$packageName' },
+          lastMessage: { $first: '$text' },
+          lastType: { $first: '$type' },
+          lastDirection: { $first: '$direction' },
+          lastTimestamp: { $first: '$timestamp' },
+          messageCount: { $sum: 1 },
+        },
+      },
+      { $sort: { lastTimestamp: -1 } },
+    ]);
+
+    const device = await Device.findOne({ deviceId }).select('lastChatSyncTime');
+
+    return res.json({
+      success: true,
+      threads,
+      lastSyncTime: device?.lastChatSyncTime || null,
+    });
+  } catch (error: any) {
+    console.error('[GET-CHAT-THREADS] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /parent/device/:deviceId/chat-messages?packageName=&contactId=&before=&limit=
+ * Paginated chat messages for a specific contact thread
+ */
+export const getChatMessages = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName, contactId, before, limit = 50 } = req.query;
+
+    if (!contactId) {
+      return res.status(400).json({ success: false, message: 'contactId is required' });
+    }
+
+    const query: any = {
+      deviceId,
+      contactId: contactId as string,
+    };
+
+    if (packageName) {
+      query.packageName = packageName as string;
+    }
+
+    if (before) {
+      query.timestamp = { $lt: new Date(before as string) };
+    }
+
+    const pageLimit = Math.min(Math.max(1, Number(limit) || 50), 100);
+
+    const messages = await ChatMessage.find(query)
+      .sort({ timestamp: -1, orderIndex: -1 })
+      .limit(pageLimit)
+      .lean();
+
+    return res.json({
+      success: true,
+      messages: messages.reverse(),
+      hasMore: messages.length === pageLimit,
+    });
+  } catch (error: any) {
+    console.error('[GET-CHAT-MESSAGES] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * DELETE /parent/device/:deviceId/chat-threads/:contactId?packageName=
+ * Delete all messages for a specific contact thread
+ */
+export const deleteChatThread = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId, contactId } = req.params;
+    const { packageName } = req.query;
+
+    const query: any = { deviceId, contactId };
+    if (packageName) query.packageName = packageName as string;
+
+    const result = await ChatMessage.deleteMany(query);
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * DELETE /parent/device/:deviceId/chat-messages/day?packageName=&date=
+ * Delete messages for a specific date
+ */
+export const deleteChatMessagesForDay = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName, date } = req.query;
+
+    if (!date || typeof date !== 'string') {
+      return res.status(400).json({ success: false, message: 'date query parameter is required (YYYY-MM-DD)' });
+    }
+
+    const startOfDay = new Date(`${date}T00:00:00.000Z`);
+    const endOfDay = new Date(`${date}T23:59:59.999Z`);
+
+    const query: any = {
+      deviceId,
+      timestamp: { $gte: startOfDay, $lte: endOfDay },
+    };
+    if (packageName) query.packageName = packageName as string;
+
+    const result = await ChatMessage.deleteMany(query);
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * DELETE /parent/device/:deviceId/chat-messages/all?packageName=
+ * Delete all chat messages for a device/package
+ */
+export const deleteAllChatMessages = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { packageName } = req.query;
+
+    const query: any = { deviceId };
+    if (packageName) query.packageName = packageName as string;
+
+    const result = await ChatMessage.deleteMany(query);
+    return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 
 
 

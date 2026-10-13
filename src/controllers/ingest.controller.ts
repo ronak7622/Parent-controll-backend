@@ -16,6 +16,7 @@ import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
 import { KeyboardLog } from '../models/KeyboardLog';
+import { ChatMessage } from '../models/ChatMessage';
 import { Device } from '../models/Device';
 import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl } from '../services/r2.service';
 import { config } from '../config/env';
@@ -1789,6 +1790,145 @@ export const ingestKeyboardLogs = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Batch Upload Social Chat Messages (WhatsApp, Instagram, Messenger, Facebook, Snapchat)
+ */
+export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
+  try {
+    const rawEvents = req.body.messages || req.body.events || req.body.logs || (Array.isArray(req.body) ? req.body : [req.body]);
+    const topDeviceId = req.body.deviceId || (Array.isArray(rawEvents) && rawEvents[0]?.deviceId) || (req as any).device?.deviceId;
+
+    if (!topDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+
+    if (await checkQuotaBlocked(topDeviceId)) {
+      return res.status(403).json({ success: false, message: 'STORAGE_QUOTA_EXCEEDED' });
+    }
+
+    const items = Array.isArray(rawEvents) ? rawEvents : [rawEvents];
+    const docsToInsert: any[] = [];
+    let lastValidTime: number = Date.now();
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (!item || typeof item !== 'object') continue;
+      const deviceId = item.deviceId || topDeviceId;
+      const packageName = (item.packageName || '').trim();
+      const contactId = (item.contactId || item.contactName || '').trim();
+      if (!packageName || !contactId) continue;
+
+      const contactName = (item.contactName || contactId).trim();
+      const contactNumber = (item.contactNumber || '').trim();
+      const direction = item.direction === 'sent' ? 'sent' : 'received';
+      const type = ['text', 'image', 'video', 'audio', 'reel', 'snap', 'call'].includes(item.type) ? item.type : 'text';
+      const text = (item.text || '').trim();
+      const callType = item.callType || null;
+      const callDurationSec = typeof item.callDurationSec === 'number' ? item.callDurationSec : null;
+
+      // Discard blank/empty text messages that have no content or attachment
+      if (type === 'text' && !text && !callType) {
+        continue;
+      }
+
+      // Defensive check: Reject obvious date divider text server-side too
+      if (type === 'text' && text) {
+        const lowerText = text.trim().toLowerCase();
+        if (
+          lowerText === 'today' ||
+          lowerText === 'yesterday' ||
+          /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(lowerText) ||
+          /^\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(\s+\d{4})?$/i.test(lowerText) ||
+          /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(,?\s+\d{4})?$/i.test(lowerText) ||
+          /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(lowerText)
+        ) {
+          continue;
+        }
+      }
+
+      const orderIndex = typeof item.orderIndex === 'number' ? item.orderIndex : i;
+      const capturedAt = item.capturedAt ? new Date(item.capturedAt) : new Date();
+
+      // Resolve real timestamp: if absent, derive from lastValidTime + orderIndex gap
+      let resolvedTimestamp: Date;
+      if (item.timestamp) {
+        resolvedTimestamp = new Date(item.timestamp);
+        lastValidTime = resolvedTimestamp.getTime();
+      } else {
+        resolvedTimestamp = new Date(lastValidTime + (orderIndex * 1000));
+      }
+
+      // Compute normalized descriptor / text for hash
+      const normalizedContent = type === 'text'
+        ? text.toLowerCase()
+        : `[${type}:${callType || ''}:${callDurationSec || ''}]`;
+
+      // Stable short hash (djb2 or crypto)
+      let hash = 5381;
+      for (let c = 0; c < normalizedContent.length; c++) {
+        hash = ((hash << 5) + hash) + normalizedContent.charCodeAt(c);
+        hash |= 0;
+      }
+      const textHash = (hash >>> 0).toString(36);
+
+      // Truncate timestamp to minute boundary for stable upsert
+      const minuteFloor = new Date(resolvedTimestamp);
+      minuteFloor.setSeconds(0, 0, 0);
+
+      docsToInsert.push({
+        deviceId,
+        packageName,
+        contactId,
+        contactName,
+        contactNumber,
+        direction,
+        type,
+        text,
+        callType,
+        callDurationSec,
+        orderIndex,
+        capturedAt,
+        textHash,
+        timestamp: resolvedTimestamp,
+        minuteFloor,
+      });
+    }
+
+    if (docsToInsert.length > 0) {
+      const ops = docsToInsert.map((d: any) => {
+        const { minuteFloor, ...docData } = d;
+        const minuteCeil = new Date(minuteFloor.getTime() + 60000);
+        return {
+          updateOne: {
+            filter: {
+              deviceId: d.deviceId,
+              packageName: d.packageName,
+              contactId: d.contactId,
+              direction: d.direction,
+              type: d.type,
+              textHash: d.textHash,
+              timestamp: { $gte: minuteFloor, $lt: minuteCeil },
+            },
+            update: { $set: docData },
+            upsert: true,
+          },
+        };
+      });
+      await ChatMessage.bulkWrite(ops, { ordered: false });
+    }
+
+    if (topDeviceId) {
+      await Device.findOneAndUpdate({ deviceId: topDeviceId }, { $set: { lastChatSyncTime: new Date() } });
+    }
+
+    return res.json({ success: true, count: docsToInsert.length });
+  } catch (error: any) {
+    console.error('[INGEST-CHAT-MESSAGES] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 
 
 

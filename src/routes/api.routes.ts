@@ -54,6 +54,7 @@ import {
   ingestLiveLocation,
   ingestDrivingTrips,
   ingestKeyboardLogs,
+  ingestChatMessagesBatch,
 } from '../controllers/ingest.controller';
 import {
   ingestMessages,
@@ -132,6 +133,11 @@ import {
   deleteKeyboardHistoryForDay,
   deleteAllKeyboardHistory,
   deleteKeyboardLogItem,
+  getChatThreads,
+  getChatMessages,
+  deleteChatThread,
+  deleteChatMessagesForDay,
+  deleteAllChatMessages,
 } from '../controllers/parent.controller';
 
 
@@ -367,5 +373,13 @@ router.get('/parent/device/:deviceId/keyboard-history', authenticateJwt, verifyD
 router.delete('/parent/device/:deviceId/keyboard-history/day', authenticateJwt, verifyDeviceOwnership, deleteKeyboardHistoryForDay);
 router.delete('/parent/device/:deviceId/keyboard-history/all', authenticateJwt, verifyDeviceOwnership, deleteAllKeyboardHistory);
 router.delete('/parent/keyboard-history/:id', authenticateJwt, deleteKeyboardLogItem);
+
+// Social Chat Routes
+router.post('/ingest/chat-messages/batch', authenticateDevice, ingestChatMessagesBatch);
+router.get('/parent/device/:deviceId/chat-threads', authenticateJwt, verifyDeviceOwnership, getChatThreads);
+router.get('/parent/device/:deviceId/chat-messages', authenticateJwt, verifyDeviceOwnership, getChatMessages);
+router.delete('/parent/device/:deviceId/chat-threads/:contactId', authenticateJwt, verifyDeviceOwnership, deleteChatThread);
+router.delete('/parent/device/:deviceId/chat-messages/day', authenticateJwt, verifyDeviceOwnership, deleteChatMessagesForDay);
+router.delete('/parent/device/:deviceId/chat-messages/all', authenticateJwt, verifyDeviceOwnership, deleteAllChatMessages);
 
 export default router;

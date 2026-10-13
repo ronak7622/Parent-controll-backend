@@ -14,6 +14,7 @@ import { KeyboardLog } from '../models/KeyboardLog';
 import { DrivingTrip } from '../models/DrivingTrip';
 import { WifiLog } from '../models/wifi-log.model';
 import { InternetLog } from '../models/internet-log.model';
+import { ChatMessage } from '../models/ChatMessage';
 import { User } from '../models/User';
 import { Device } from '../models/Device';
 import { deleteMediaFromR2, bulkDeleteMediaFromR2 } from './r2.service';
@@ -390,6 +391,7 @@ export class StorageDeleteService {
         KeyboardLog.deleteMany({ deviceId }),
         WifiLog.deleteMany({ deviceId }),
         InternetLog.deleteMany({ deviceId }),
+        ChatMessage.deleteMany({ deviceId }),
       ];
 
       const deleteResults = await Promise.all(textCollections);

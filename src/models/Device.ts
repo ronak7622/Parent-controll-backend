@@ -86,6 +86,7 @@ export interface IDevice extends Document {
   lastMessageSyncTime?: Date;
   lastLocationSyncTime?: Date;
   lastKeyboardSyncTime?: Date;
+  lastChatSyncTime?: Date;
   lastLocation?: {
     latitude: number;
     longitude: number;
@@ -207,6 +208,7 @@ const DeviceSchema = new Schema<IDevice>(
     lastMessageSyncTime: { type: Date },
     lastLocationSyncTime: { type: Date },
     lastKeyboardSyncTime: { type: Date },
+    lastChatSyncTime: { type: Date },
     lastLocation: {
       latitude: { type: Number },
       longitude: { type: Number },
