@@ -1819,11 +1819,51 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
       const contactId = (item.contactId || item.contactName || '').trim();
       if (!packageName || !contactId) continue;
 
-      const contactName = (item.contactName || contactId).trim();
+      const cleanContactName = (item.contactName || contactId).trim().replace(/\.+$/, '');
+      const cleanContactId = (item.contactId || item.contactName || '').trim().replace(/\.+$/, '');
+      const contactLower = cleanContactName.toLowerCase();
+      if (
+        contactLower === 'chats' ||
+        contactLower === 'messages' ||
+        contactLower.startsWith('meta ai') ||
+        contactLower === "what's up?" ||
+        contactLower === "what's up" ||
+        contactLower === "whats up" ||
+        contactLower === 'search'
+      ) {
+        continue;
+      }
+
+      const contactName = cleanContactName;
       const contactNumber = (item.contactNumber || '').trim();
-      const direction = item.direction === 'sent' ? 'sent' : 'received';
+      let direction = item.direction === 'sent' ? 'sent' : 'received';
       const type = ['text', 'image', 'video', 'audio', 'reel', 'snap', 'call'].includes(item.type) ? item.type : 'text';
-      const text = (item.text || '').trim();
+      let text = (item.text || '').trim();
+
+      // Server-side cleaning for Facebook Messenger accessibility boilerplate
+      if (packageName === 'com.facebook.orca' || packageName === 'com.facebook.katana') {
+        text = text.replace(/,?\s*double tap[\s\S]*$/i, '').trim();
+        text = text.replace(/[\s\n]*(delivered|seen|sent)(\s+.*)?$/i, '').trim();
+        const lowerT = text.toLowerCase();
+        if (
+          !lowerT ||
+          lowerT.startsWith('delivered') ||
+          lowerT.startsWith('seen') ||
+          lowerT.startsWith('sent') ||
+          lowerT.startsWith('sending') ||
+          lowerT.startsWith('double tap') ||
+          lowerT.includes('double tap to see')
+        ) {
+          continue;
+        }
+
+        const replyMatch = text.match(/^(.*? replied to (?:you|[^,\n]+))[\s\n]+([\s\S]*?)[\s\n]+([A-Za-z0-9_ ]+),\s*([\s\S]*)$/);
+        if (replyMatch) {
+          text = replyMatch[4].trim();
+        } else if (contactName && text.toLowerCase().startsWith(contactName.toLowerCase() + ',')) {
+          text = text.substring(contactName.length + 1).trim();
+        }
+      }
       const callType = item.callType || null;
       const callDurationSec = typeof item.callDurationSec === 'number' ? item.callDurationSec : null;
 
@@ -1874,12 +1914,14 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
 
       // Truncate timestamp to minute boundary for stable upsert
       const minuteFloor = new Date(resolvedTimestamp);
-      minuteFloor.setSeconds(0, 0, 0);
+      minuteFloor.setSeconds(0, 0);
+
+      const intraKey = item.intraKey ? String(item.intraKey).trim() : null;
 
       docsToInsert.push({
         deviceId,
         packageName,
-        contactId,
+        contactId: cleanContactId,
         contactName,
         contactNumber,
         direction,
@@ -1890,6 +1932,7 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
         orderIndex,
         capturedAt,
         textHash,
+        intraKey,
         timestamp: resolvedTimestamp,
         minuteFloor,
       });
@@ -1899,17 +1942,31 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
       const ops = docsToInsert.map((d: any) => {
         const { minuteFloor, ...docData } = d;
         const minuteCeil = new Date(minuteFloor.getTime() + 60000);
+        const filter: any = {
+          deviceId: d.deviceId,
+          packageName: d.packageName,
+          contactId: d.contactId,
+          direction: d.direction,
+          type: d.type,
+          textHash: d.textHash,
+        };
+        if (d.packageName === 'com.instagram.android') {
+          // For Instagram:
+          // Unique messages (sentences/conversations, length > 6):
+          // Match by (deviceId, packageName, contactId, direction, type, textHash)
+          // so any prior provisional date or shifted intraKey is updated in place, preventing cross-date duplicates!
+          // Short repeated tokens (e.g. "ok", "hi") still use intraKey to differentiate occurrences.
+          if (d.text && d.text.trim().length <= 6 && d.intraKey) {
+            filter.intraKey = d.intraKey;
+          }
+        } else if (d.intraKey) {
+          filter.intraKey = d.intraKey;
+        } else {
+          filter.timestamp = { $gte: minuteFloor, $lt: minuteCeil };
+        }
         return {
           updateOne: {
-            filter: {
-              deviceId: d.deviceId,
-              packageName: d.packageName,
-              contactId: d.contactId,
-              direction: d.direction,
-              type: d.type,
-              textHash: d.textHash,
-              timestamp: { $gte: minuteFloor, $lt: minuteCeil },
-            },
+            filter,
             update: { $set: docData },
             upsert: true,
           },

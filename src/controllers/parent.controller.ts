@@ -3279,9 +3279,25 @@ export const getChatMessages = async (req: AuthRequest, res: Response) => {
       .limit(pageLimit)
       .lean();
 
+    // Defense-in-depth: For Instagram, filter out any duplicate message text (length > 6)
+    // within this thread to ensure the parent app view is always 100% deduplicated.
+    let cleanMessages = messages;
+    if (packageName === 'com.instagram.android') {
+      const seen = new Set<string>();
+      cleanMessages = messages.filter((m: any) => {
+        const txt = (m.text || '').trim().toLowerCase();
+        if (txt.length > 6) {
+          const k = `${m.direction}|${m.type}|${txt}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+        }
+        return true;
+      });
+    }
+
     return res.json({
       success: true,
-      messages: messages.reverse(),
+      messages: cleanMessages.reverse(),
       hasMore: messages.length === pageLimit,
     });
   } catch (error: any) {

@@ -15,6 +15,7 @@ export interface IChatMessage extends Document {
   orderIndex?: number;
   capturedAt?: Date;
   textHash?: string;
+  intraKey?: string;
   timestamp: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -39,6 +40,7 @@ const ChatMessageSchema: Schema = new Schema(
     orderIndex: { type: Number, default: 0 },
     capturedAt: { type: Date, default: null },
     textHash: { type: String, index: true },
+    intraKey: { type: String, default: null, index: true },
     timestamp: { type: Date, required: true, index: true },
   },
   { timestamps: true }
@@ -46,6 +48,7 @@ const ChatMessageSchema: Schema = new Schema(
 
 ChatMessageSchema.index({ deviceId: 1, packageName: 1, contactId: 1, timestamp: -1, orderIndex: -1 });
 ChatMessageSchema.index({ deviceId: 1, packageName: 1, contactId: 1, direction: 1, type: 1, textHash: 1, timestamp: 1 });
+ChatMessageSchema.index({ deviceId: 1, packageName: 1, contactId: 1, direction: 1, type: 1, textHash: 1, intraKey: 1 });
 ChatMessageSchema.index({ deviceId: 1, timestamp: -1 });
 applyTtlIndex(ChatMessageSchema, 'timestamp');
 
