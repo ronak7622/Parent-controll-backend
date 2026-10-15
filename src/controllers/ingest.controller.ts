@@ -1817,14 +1817,24 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
       const deviceId = item.deviceId || topDeviceId;
       const packageName = (item.packageName || '').trim();
       const contactId = (item.contactId || item.contactName || '').trim();
-      if (!packageName || !contactId) continue;
-
-      const cleanContactName = (item.contactName || contactId).trim().replace(/\.+$/, '');
-      const cleanContactId = (item.contactId || item.contactName || '').trim().replace(/\.+$/, '');
+      const sanitizeContact = (name: string): string => {
+        return name
+          .replace(/\s*\(\d+\s*(?:messages?|unread(?:\s*messages?)?|new(?:\s*messages?)?|msgs?)?\)/gi, '')
+          .replace(/\s*\(\d+\)$/, '')
+          .trim();
+      };
+      const cleanContactName = sanitizeContact((item.contactName || contactId).trim().replace(/\.+$/, ''));
+      const cleanContactId = sanitizeContact((item.contactId || item.contactName || '').trim().replace(/\.+$/, ''));
       const contactLower = cleanContactName.toLowerCase();
       if (
+        !cleanContactName ||
         contactLower === 'chats' ||
         contactLower === 'messages' ||
+        contactLower === 'communities' ||
+        contactLower === 'community' ||
+        contactLower === 'new community' ||
+        contactLower === 'new group' ||
+        contactLower === 'new broadcast' ||
         contactLower.startsWith('meta ai') ||
         contactLower === "what's up?" ||
         contactLower === "what's up" ||
@@ -1950,7 +1960,13 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
           type: d.type,
           textHash: d.textHash,
         };
-        if (d.packageName === 'com.instagram.android') {
+        if (d.packageName === 'com.snapchat.android') {
+          // Snapchat messages have stable timeline intraKeys (snap_$gSeq).
+          // Always match by (deviceId, packageName, contactId, intraKey) to update in place and guarantee 0 duplicates.
+          if (d.intraKey) {
+            filter.intraKey = d.intraKey;
+          }
+        } else if (d.packageName === 'com.instagram.android') {
           // For Instagram:
           // Unique messages (sentences/conversations, length > 6):
           // Match by (deviceId, packageName, contactId, direction, type, textHash)
