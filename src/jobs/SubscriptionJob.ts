@@ -149,7 +149,7 @@ export class SubscriptionJob {
         // Reset storage usage accounting to 0
         await StorageUsage.findOneAndUpdate(
           { parentUserId: sub.parentUserId },
-          { totalBytes: 0, videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, perDevice: [] }
+          { totalBytes: 0, videoBytes: 0, audioBytes: 0, photoBytes: 0, chatBytes: 0, textBytes: 0, perDevice: [] }
         );
       }
     } catch (err: any) {

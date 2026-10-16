@@ -138,6 +138,7 @@ import {
   deleteChatThread,
   deleteChatMessagesForDay,
   deleteAllChatMessages,
+  getChatStorageBreakdown,
 } from '../controllers/parent.controller';
 
 
@@ -381,5 +382,6 @@ router.get('/parent/device/:deviceId/chat-messages', authenticateJwt, verifyDevi
 router.delete('/parent/device/:deviceId/chat-threads/:contactId', authenticateJwt, verifyDeviceOwnership, deleteChatThread);
 router.delete('/parent/device/:deviceId/chat-messages/day', authenticateJwt, verifyDeviceOwnership, deleteChatMessagesForDay);
 router.delete('/parent/device/:deviceId/chat-messages/all', authenticateJwt, verifyDeviceOwnership, deleteAllChatMessages);
+router.get('/parent/device/:deviceId/chat-storage', authenticateJwt, verifyDeviceOwnership, getChatStorageBreakdown);
 
 export default router;

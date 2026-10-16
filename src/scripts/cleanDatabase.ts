@@ -68,7 +68,6 @@ async function cleanDatabase() {
         dayLimit: 1,
         liveMinutesTotal: 10,
         liveLimitPerDay: 10,
-        liveSessionMaxMin: 2,
         deviceLimit: 1,
         features: commonFeatures('1 device connect', '100 mb storage'),
         isActive: true,
@@ -84,7 +83,6 @@ async function cleanDatabase() {
         dayLimit: 30,
         liveMinutesTotal: 1800,
         liveLimitPerDay: 60,
-        liveSessionMaxMin: 10,
         deviceLimit: 1000, // Unlimited
         features: commonFeatures('Unlimited device connect', '20 gb storage'),
         isActive: true,
@@ -100,7 +98,6 @@ async function cleanDatabase() {
         dayLimit: 180,
         liveMinutesTotal: 10800,
         liveLimitPerDay: 60,
-        liveSessionMaxMin: 10,
         deviceLimit: 1000, // Unlimited
         features: commonFeatures('Unlimited device connect', '20 gb storage'),
         isActive: true,
@@ -116,7 +113,6 @@ async function cleanDatabase() {
         dayLimit: 365,
         liveMinutesTotal: 21900,
         liveLimitPerDay: 60,
-        liveSessionMaxMin: 10,
         deviceLimit: 1000, // Unlimited
         features: commonFeatures('Unlimited device connect', '20 gb storage'),
         isActive: true,

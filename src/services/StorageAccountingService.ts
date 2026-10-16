@@ -20,6 +20,7 @@ import { KeyboardLog } from '../models/KeyboardLog';
 import { WifiLog } from '../models/wifi-log.model';
 import { InternetLog } from '../models/internet-log.model';
 import { ChildMessage } from '../models/ChildMessage';
+import { ChatMessage } from '../models/ChatMessage';
 
 export class StorageAccountingService {
   private static CACHE_PREFIX = 'storage:usage:';
@@ -63,11 +64,12 @@ export class StorageAccountingService {
     let parentTotalAudio = 0;
     let parentTotalPhoto = 0;
     let parentTotalText = 0;
+    let parentTotalChat = 0;
 
-    const perDeviceMap: Record<string, { videoBytes: number; audioBytes: number; photoBytes: number; textBytes: number; totalBytes: number }> = {};
+    const perDeviceMap: Record<string, { videoBytes: number; audioBytes: number; photoBytes: number; textBytes: number; chatBytes: number; totalBytes: number }> = {};
 
     for (const dId of deviceIds) {
-      perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, totalBytes: 0 };
+      perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, chatBytes: 0, totalBytes: 0 };
     }
 
     if (deviceIds.length > 0) {
@@ -88,7 +90,7 @@ export class StorageAccountingService {
         const bytes = item.totalBytes || 0;
 
         if (!perDeviceMap[dId]) {
-          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, totalBytes: 0 };
+          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, chatBytes: 0, totalBytes: 0 };
         }
 
         if (rType === 'video' || rType === 'screen') {
@@ -110,7 +112,7 @@ export class StorageAccountingService {
         const dId = item._id;
         const bytes = item.totalBytes || 0;
         if (!perDeviceMap[dId]) {
-          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, totalBytes: 0 };
+          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, chatBytes: 0, totalBytes: 0 };
         }
         perDeviceMap[dId].audioBytes += bytes;
         parentTotalAudio += bytes;
@@ -126,7 +128,7 @@ export class StorageAccountingService {
         const dId = item._id;
         const bytes = item.totalBytes || 0;
         if (!perDeviceMap[dId]) {
-          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, totalBytes: 0 };
+          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, chatBytes: 0, totalBytes: 0 };
         }
         perDeviceMap[dId].photoBytes += bytes;
         parentTotalPhoto += bytes;
@@ -149,6 +151,7 @@ export class StorageAccountingService {
           keylogCount,
           locCount,
           drivingCount,
+          chatCount,
         ] = await Promise.all([
           BrowserHistory.countDocuments({ deviceId: dId }),
           InternetLog.countDocuments({ deviceId: dId }),
@@ -164,6 +167,7 @@ export class StorageAccountingService {
           KeyboardLog.countDocuments({ deviceId: dId }),
           LocationLog.countDocuments({ deviceId: dId }),
           DrivingTrip.countDocuments({ deviceId: dId }),
+          ChatMessage.countDocuments({ deviceId: dId }),
         ]);
 
         const textSum =
@@ -180,17 +184,21 @@ export class StorageAccountingService {
           locCount * 200 +
           drivingCount * 500;
 
+        const chatSum = chatCount * 300;
+
         if (!perDeviceMap[dId]) {
-          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, totalBytes: 0 };
+          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, chatBytes: 0, totalBytes: 0 };
         }
         perDeviceMap[dId].textBytes = textSum;
+        perDeviceMap[dId].chatBytes = chatSum;
         parentTotalText += textSum;
+        parentTotalChat += chatSum;
       }
     }
 
     const perDeviceList = Object.keys(perDeviceMap).map((dId) => {
       const item = perDeviceMap[dId];
-      const sum = item.videoBytes + item.audioBytes + item.photoBytes + item.textBytes;
+      const sum = item.videoBytes + item.audioBytes + item.photoBytes + item.textBytes + (item.chatBytes || 0);
       return {
         deviceId: dId,
         deviceName: deviceMap.get(dId) || 'Child Device',
@@ -198,11 +206,12 @@ export class StorageAccountingService {
         audioBytes: item.audioBytes,
         photoBytes: item.photoBytes,
         textBytes: item.textBytes,
+        chatBytes: item.chatBytes || 0,
         totalBytes: sum,
       };
     });
 
-    const grandTotal = parentTotalVideo + parentTotalAudio + parentTotalPhoto + parentTotalText;
+    const grandTotal = parentTotalVideo + parentTotalAudio + parentTotalPhoto + parentTotalText + parentTotalChat;
 
     const usageDoc = await StorageUsage.findOneAndUpdate(
       { parentUserId },
@@ -214,6 +223,7 @@ export class StorageAccountingService {
           audioBytes: parentTotalAudio,
           photoBytes: parentTotalPhoto,
           textBytes: parentTotalText,
+          chatBytes: parentTotalChat,
           perDevice: perDeviceList,
         },
       },
@@ -484,7 +494,7 @@ export class StorageAccountingService {
   static async updateStorage(
     parentUserId: string,
     deviceId: string,
-    category: 'video' | 'audio' | 'photo' | 'text',
+    category: 'video' | 'audio' | 'photo' | 'text' | 'chat',
     byteDelta: number
   ): Promise<void> {
     if (!parentUserId || byteDelta === 0) return;

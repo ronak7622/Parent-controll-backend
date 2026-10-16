@@ -15,6 +15,11 @@ import { DrivingTrip } from '../models/DrivingTrip';
 import { WifiLog } from '../models/wifi-log.model';
 import { InternetLog } from '../models/internet-log.model';
 import { ChatMessage } from '../models/ChatMessage';
+import { Contact } from '../models/Contact';
+import { AppBlockRule } from '../models/AppBlockRule';
+import { AppLimit } from '../models/AppLimit';
+import { ScheduleConfig } from '../models/ScheduleConfig';
+import { DeletedRecording } from '../models/DeletedRecording';
 import { User } from '../models/User';
 import { Device } from '../models/Device';
 import { deleteMediaFromR2, bulkDeleteMediaFromR2 } from './r2.service';
@@ -304,6 +309,11 @@ export class StorageDeleteService {
           ]);
         }
 
+        // 5b. Social Chat History (WhatsApp, Instagram, Snapchat, Messenger)
+        if (isAll || categories.includes('social_chat')) {
+          await ChatMessage.deleteMany(logFilter);
+        }
+
         anyPurged = true;
         const devDisplayName = dev.deviceName || dev.deviceModel || dev.deviceId;
         console.log(`[AUTO-DELETE-PURGE] Device ${devId} (${devDisplayName}) purge completed. Retention: ${retentionMinutes} mins, Categories: ${categories.join(', ')}`);
@@ -392,6 +402,11 @@ export class StorageDeleteService {
         WifiLog.deleteMany({ deviceId }),
         InternetLog.deleteMany({ deviceId }),
         ChatMessage.deleteMany({ deviceId }),
+        Contact.deleteMany({ deviceId }),
+        AppBlockRule.deleteMany({ deviceId }),
+        AppLimit.deleteMany({ deviceId }),
+        ScheduleConfig.deleteMany({ deviceId }),
+        DeletedRecording.deleteMany({ deviceId }),
       ];
 
       const deleteResults = await Promise.all(textCollections);

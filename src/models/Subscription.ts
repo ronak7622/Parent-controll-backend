@@ -8,13 +8,14 @@ export interface IPlanSnapshot {
   storageBytes: number;
   liveMinutesTotal: number;
   liveLimitPerDay: number; // daily plan limit (resets local midnight)
-  liveSessionMaxMin: number;
+  liveSessionMaxMin?: number;
   deviceLimit: number;
   dayLimit: number;
   durationMs?: number;
   graceDays: number;
   storageWarnPercent: number;
   features: string[];
+  isAllowSocialAppChatHistory?: boolean;
 }
 
 export interface IQueuedPlan {
@@ -67,13 +68,14 @@ const PlanSnapshotSchema: Schema = new Schema(
     storageBytes: { type: Number, required: true },
     liveMinutesTotal: { type: Number, default: 60 },
     liveLimitPerDay: { type: Number, default: 15 },
-    liveSessionMaxMin: { type: Number, default: 5 },
+    liveSessionMaxMin: { type: Number },
     deviceLimit: { type: Number, default: 3 },
     dayLimit: { type: Number, default: 30 },
     durationMs: { type: Number, default: 0 },
     graceDays: { type: Number, default: 3 },
     storageWarnPercent: { type: Number, default: 80 },
     features: [{ type: String }],
+    isAllowSocialAppChatHistory: { type: Boolean, default: false },
   },
   { _id: false }
 );

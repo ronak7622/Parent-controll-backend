@@ -16,12 +16,13 @@ export interface IPlan extends Document {
   isTestPlan?: boolean;
   liveMinutesTotal: number;
   liveLimitPerDay: number;
-  liveSessionMaxMin: number;
+  liveSessionMaxMin?: number;
   deviceLimit: number;
   features: string[];
   isActive: boolean;
   isRecommended: boolean;
   sortOrder: number;
+  isAllowSocialAppChatHistory?: boolean;
 }
 
 const PlanSchema: Schema = new Schema(
@@ -43,12 +44,13 @@ const PlanSchema: Schema = new Schema(
     isTestPlan: { type: Boolean, default: false, index: true },
     liveMinutesTotal: { type: Number, default: 60 },
     liveLimitPerDay: { type: Number, default: 15 },
-    liveSessionMaxMin: { type: Number, default: 5 },
+    liveSessionMaxMin: { type: Number },
     deviceLimit: { type: Number, default: 3 },
     features: [{ type: String }],
     isActive: { type: Boolean, default: true, index: true },
     isRecommended: { type: Boolean, default: false },
     sortOrder: { type: Number, default: 0 },
+    isAllowSocialAppChatHistory: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

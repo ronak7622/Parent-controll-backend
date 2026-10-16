@@ -24,7 +24,7 @@ import { InternetLog } from '../models/internet-log.model';
 import { ScheduleConfig } from '../models/ScheduleConfig';
 import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
-import { cacheService } from '../services/cache.service';
+import { cacheService, getRedisClient } from '../services/cache.service';
 
 // "1h 5m" / "45m" / "30s"
 const formatDurationShort = (totalSeconds: number): string => {
@@ -689,6 +689,53 @@ export const getChildAppLimits = async (req: any, res: Response) => {
   }
 };
 
+const alertThrottleMap = new Map<string, number>();
+const shouldSendAlert = (key: string, cooldownMs: number): boolean => {
+  const now = Date.now();
+  const last = alertThrottleMap.get(key) || 0;
+  if (now - last < cooldownMs) return false;
+  alertThrottleMap.set(key, now);
+  if (alertThrottleMap.size > 2000) {
+    for (const [k, v] of alertThrottleMap.entries()) {
+      if (now - v > 3600000) alertThrottleMap.delete(k);
+    }
+  }
+  return true;
+};
+
+/**
+ * Shared atomic throttle across multiple backend cluster instances / pods.
+ * 1. Primary: Redis SET key 1 PX ttlMs NX (atomic set-if-not-exists with TTL).
+ * 2. Secondary fallback: MongoDB atomic findOneAndUpdate with cutoff timestamp on the rule document.
+ * 3. Process fallback: In-memory Map throttle.
+ */
+export const shouldSendAlertShared = async (
+  key: string,
+  ttlMs: number,
+  dbFallback?: () => Promise<boolean>
+): Promise<boolean> => {
+  try {
+    const redis = getRedisClient();
+    if (redis && redis.status === 'ready') {
+      const res = await redis.set(key, '1', 'PX', ttlMs, 'NX');
+      return res === 'OK';
+    }
+  } catch (err: any) {
+    console.warn('[REDIS-ALERT-THROTTLE] Redis error, falling back:', err?.message || err);
+  }
+
+  if (dbFallback) {
+    try {
+      const allowed = await dbFallback();
+      return allowed;
+    } catch (err: any) {
+      console.warn('[DB-ALERT-THROTTLE] DB atomic guard error, falling back:', err?.message || err);
+    }
+  }
+
+  return shouldSendAlert(key, ttlMs);
+};
+
 /**
  * Child Device: Report App Limit Reached (Sends FCM push notification to Parent)
  */
@@ -705,6 +752,32 @@ export const reportLimitReached = async (req: any, res: Response) => {
       return res.json({ success: true, message: 'Notification disabled by parent.' });
     }
 
+    // Deduplicate / throttle: do not send more than 1 notification per 30s per app across all instances
+    const throttleKey = `limit_${deviceId}_${packageName}`;
+    const canSend = await shouldSendAlertShared(throttleKey, 30000, async () => {
+      const now = new Date();
+      const cutoff = new Date(now.getTime() - 30000);
+      const updated = await AppLimit.findOneAndUpdate(
+        {
+          deviceId,
+          packageName,
+          $or: [
+            { lastParentNotifiedAt: { $exists: false } },
+            { lastParentNotifiedAt: null },
+            { lastParentNotifiedAt: { $lt: cutoff } },
+          ],
+        },
+        { $set: { lastParentNotifiedAt: now } },
+        { new: true }
+      );
+      if (!limit) return true;
+      return !!updated;
+    });
+
+    if (!canSend) {
+      return res.json({ success: true, message: 'Limit reached push throttled (duplicate prevented).' });
+    }
+
     const device = await Device.findOne({ deviceId });
     const childName = device?.deviceName || 'Child Device';
     const name = appName || limit?.appName || packageName;
@@ -716,16 +789,10 @@ export const reportLimitReached = async (req: any, res: Response) => {
     const title = `App Limit Reached: ${name}`;
     const body = `${childName} crossed the ${limitText} daily limit for ${name} at ${eventTime}. Used today: ${formatDurationShort(usedSec)}.`;
 
-    // Send to parent topics
+    // Send single push to parent user topic
     if (device?.parentUserId) {
       const parentTopic = `parent_${device.parentUserId}`;
       await sendFcmTopicNotification(parentTopic, title, body, {
-        type: 'APP_LIMIT_REACHED',
-        deviceId,
-        packageName,
-        appName: name,
-      });
-      await sendFcmTopicNotification(`device_alerts_${deviceId}`, title, body, {
         type: 'APP_LIMIT_REACHED',
         deviceId,
         packageName,
@@ -754,6 +821,32 @@ export const reportBlockedAppAttempt = async (req: any, res: Response) => {
       return res.json({ success: true, message: 'Notification disabled by parent.' });
     }
 
+    // Deduplicate / throttle: do not send more than 1 notification per 30s per app across all instances
+    const throttleKey = `block_${deviceId}_${packageName}`;
+    const canSend = await shouldSendAlertShared(throttleKey, 30000, async () => {
+      const now = new Date();
+      const cutoff = new Date(now.getTime() - 30000);
+      const updated = await AppBlockRule.findOneAndUpdate(
+        {
+          deviceId,
+          packageName,
+          $or: [
+            { lastParentNotifiedAt: { $exists: false } },
+            { lastParentNotifiedAt: null },
+            { lastParentNotifiedAt: { $lt: cutoff } },
+          ],
+        },
+        { $set: { lastParentNotifiedAt: now } },
+        { new: true }
+      );
+      if (!rule) return true;
+      return !!updated;
+    });
+
+    if (!canSend) {
+      return res.json({ success: true, message: 'Blocked attempt push throttled (duplicate prevented).' });
+    }
+
     const device = await Device.findOne({ deviceId });
     const childName = device?.deviceName || 'Child Device';
     const name = appName || rule?.appName || packageName;
@@ -766,12 +859,6 @@ export const reportBlockedAppAttempt = async (req: any, res: Response) => {
     if (device?.parentUserId) {
       const parentTopic = `parent_${device.parentUserId}`;
       await sendFcmTopicNotification(parentTopic, title, body, {
-        type: 'APP_BLOCK_ATTEMPT',
-        deviceId,
-        packageName,
-        appName: name,
-      });
-      await sendFcmTopicNotification(`device_alerts_${deviceId}`, title, body, {
         type: 'APP_BLOCK_ATTEMPT',
         deviceId,
         packageName,

@@ -11,6 +11,7 @@ export interface IAppLimit extends Document {
   selectedDate?: string; // YYYY-MM-DD (for 'once')
   notifyOnLimitReached: boolean;
   showDialogToChild: boolean;
+  lastParentNotifiedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -31,6 +32,7 @@ const AppLimitSchema = new Schema<IAppLimit>(
     selectedDate: { type: String },
     notifyOnLimitReached: { type: Boolean, default: true },
     showDialogToChild: { type: Boolean, default: true },
+    lastParentNotifiedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

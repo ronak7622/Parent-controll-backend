@@ -51,14 +51,16 @@ async function resetPlans() {
         priceByRegion: { IN_INR: 0, LOW_USD: 0, HIGH_USD: 0 },
         storageBytes: 104857600, // 100 MB
         dayLimit: 1,
+        durationValue: 1,
+        durationUnit: 'days',
         liveMinutesTotal: 10,
         liveLimitPerDay: 10,
-        liveSessionMaxMin: 2,
         deviceLimit: 1,
         features: commonFeatures('1 device connect', '100 mb storage'),
         isActive: true,
         isRecommended: false,
         sortOrder: 0,
+        isAllowSocialAppChatHistory: false,
       },
       {
         planId: 'plan_1_month',
@@ -69,12 +71,12 @@ async function resetPlans() {
         dayLimit: 30,
         liveMinutesTotal: 1800,
         liveLimitPerDay: 60,
-        liveSessionMaxMin: 10,
         deviceLimit: 1000, // Unlimited
         features: commonFeatures('Unlimited device connect', '20 gb storage'),
         isActive: true,
         isRecommended: false,
         sortOrder: 1,
+        isAllowSocialAppChatHistory: true,
       },
       {
         planId: 'plan_6_months',
@@ -85,12 +87,12 @@ async function resetPlans() {
         dayLimit: 180,
         liveMinutesTotal: 10800,
         liveLimitPerDay: 60,
-        liveSessionMaxMin: 10,
         deviceLimit: 1000, // Unlimited
         features: commonFeatures('Unlimited device connect', '20 gb storage'),
         isActive: true,
         isRecommended: false,
         sortOrder: 2,
+        isAllowSocialAppChatHistory: true,
       },
       {
         planId: 'plan_1_year',
@@ -101,12 +103,12 @@ async function resetPlans() {
         dayLimit: 365,
         liveMinutesTotal: 21900,
         liveLimitPerDay: 60,
-        liveSessionMaxMin: 10,
         deviceLimit: 1000, // Unlimited
         features: commonFeatures('Unlimited device connect', '20 gb storage'),
         isActive: true,
         isRecommended: true,
         sortOrder: 3,
+        isAllowSocialAppChatHistory: true,
       },
     ]);
 

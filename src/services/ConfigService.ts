@@ -53,12 +53,12 @@ export const DEFAULT_OPTIONS = {
   keywordTrackerScreenshotQuality: 80,
 
   scheduleScreenshotOptions: [
-    { seconds: 150, label: '2.5 min', quality: 'lowest', qualityLabel: 'Lowest (120p)', approxSize: '15 KB' },
-    { seconds: 300, label: '5 min', quality: 'low', qualityLabel: 'Low (240p)', approxSize: '25 KB' },
-    { seconds: 600, label: '10 min', quality: 'medium', qualityLabel: 'Medium (480p)', approxSize: '35 KB' },
-    { seconds: 900, label: '15 min', quality: 'good', qualityLabel: 'Good (720p)', approxSize: '45 KB' },
-    { seconds: 1800, label: '30 min', quality: 'high', qualityLabel: 'High (720p HD)', approxSize: '60 KB' },
-    { seconds: 3600, label: '1 hour', quality: 'ultra', qualityLabel: 'Ultra (1080p)', approxSize: '80 KB' },
+    { seconds: 150, label: '2.5 min', quality: 120, qualityLabel: 'Lowest (120p)', approxSize: '15 KB' },
+    { seconds: 300, label: '5 min', quality: 240, qualityLabel: 'Low (240p)', approxSize: '25 KB' },
+    { seconds: 600, label: '10 min', quality: 480, qualityLabel: 'Medium (480p)', approxSize: '35 KB' },
+    { seconds: 900, label: '15 min', quality: 720, qualityLabel: 'Good (720p)', approxSize: '45 KB' },
+    { seconds: 1800, label: '30 min', quality: 720, qualityLabel: 'High (720p HD)', approxSize: '60 KB' },
+    { seconds: 3600, label: '1 hour', quality: 1080, qualityLabel: 'Ultra (1080p)', approxSize: '80 KB' },
   ],
   scheduleScreenshotDefaultInterval: 600,
 
@@ -94,6 +94,7 @@ export const DEFAULT_OPTIONS = {
     { key: 'videos', label: 'Videos & Screen Captures' },
     { key: 'audio', label: 'Call & Mic Audio' },
     { key: 'text', label: 'Text & Database Logs' },
+    { key: 'social_chat', label: 'Social Chat History' },
   ],
   defaultAutoDeleteCategory: 'all',
 

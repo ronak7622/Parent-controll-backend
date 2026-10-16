@@ -1,6 +1,7 @@
 import { LiveUsage } from '../models/LiveUsage';
 import { Subscription } from '../models/Subscription';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { ConfigService } from './ConfigService';
 
 export interface ActiveLiveSession {
   sessionId: string;
@@ -130,10 +131,24 @@ export class LiveUsageService {
       };
     }
 
-    // Per-session limit cap (from plan snapshot or options, default 5 min)
-    const perSessionCap = remaining.sub?.planSnapshot?.liveSessionMaxMin || 5;
-    const sessionAllowedMinutes = Math.min(remaining.totalRemaining, perSessionCap);
-    const limitedBySessionCap = perSessionCap < remaining.totalRemaining;
+    // Per-session limit cap strictly from ConfigService based on session/feature type
+    const options = await ConfigService.getMergedOptions();
+    let perSessionCap = 5;
+
+    const sessionType = (type || '').toLowerCase();
+    if (sessionType.includes('audio') || sessionType.includes('mic')) {
+      perSessionCap = Number(options.liveAudioPerSessionLimitMin) || 5;
+    } else if (sessionType.includes('screen') || sessionType.includes('mirror')) {
+      perSessionCap = Number(options.liveScreenMirrorPerSessionLimitMin) || 5;
+    } else {
+      // video, camera, or default
+      perSessionCap = Number(options.liveVideoPerSessionLimitMin) || Number(options.liveSessionMaxMin) || 5;
+    }
+
+    const sessionAllowedMinutes = perSessionCap > 0
+      ? Math.min(remaining.totalRemaining, perSessionCap)
+      : remaining.totalRemaining;
+    const limitedBySessionCap = perSessionCap > 0 && perSessionCap < remaining.totalRemaining;
 
     if (sessionAllowedMinutes <= 0) {
       return {

@@ -17,6 +17,7 @@ export interface IAppBlockRule extends Document {
   scheduleEndTime: string; // HH:mm
   notifyParentOnAccess: boolean;
   notifyChildOnBlock: boolean;
+  lastParentNotifiedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -39,6 +40,7 @@ const AppBlockRuleSchema = new Schema<IAppBlockRule>(
     scheduleEndTime: { type: String, default: '23:59' },
     notifyParentOnAccess: { type: Boolean, default: true },
     notifyChildOnBlock: { type: Boolean, default: true },
+    lastParentNotifiedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

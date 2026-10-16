@@ -6,6 +6,7 @@ export interface IPerDeviceUsage {
   audioBytes: number;
   photoBytes: number;
   textBytes: number;
+  chatBytes: number;
   totalBytes: number;
 }
 
@@ -16,6 +17,7 @@ export interface IStorageUsage extends Document {
   audioBytes: number;
   photoBytes: number;
   textBytes: number;
+  chatBytes: number;
   perDevice: IPerDeviceUsage[];
   updatedAt: Date;
 }
@@ -27,6 +29,7 @@ const PerDeviceUsageSchema: Schema = new Schema(
     audioBytes: { type: Number, default: 0 },
     photoBytes: { type: Number, default: 0 },
     textBytes: { type: Number, default: 0 },
+    chatBytes: { type: Number, default: 0 },
     totalBytes: { type: Number, default: 0 },
   },
   { _id: false }
@@ -40,6 +43,7 @@ const StorageUsageSchema: Schema = new Schema(
     audioBytes: { type: Number, default: 0 },
     photoBytes: { type: Number, default: 0 },
     textBytes: { type: Number, default: 0 },
+    chatBytes: { type: Number, default: 0 },
     perDevice: [PerDeviceUsageSchema],
   },
   { timestamps: true }

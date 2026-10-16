@@ -92,6 +92,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     let uploadBlocked = false;
     let isExpired = false;
     let isGrace = false;
+    let subState: 'active' | 'grace' | 'expired' = 'active';
     let expiryAtStr: string | null = null;
     let graceEndsAtStr: string | null = null;
     let hasQueuedPlan = false;
@@ -104,14 +105,19 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         hasQueuedPlan = Boolean(sub.queuedPlan && sub.queuedPlan.planSnapshot);
 
         if (sub.status === 'expired') {
+          subState = 'expired';
           isExpired = true;
           uploadBlocked = true;
         } else if (sub.status === 'grace') {
+          subState = 'grace';
           isGrace = true;
           uploadBlocked = true; // Grace period: keep data local only, do not upload to server until renewed
         } else if (sub.status !== 'active' && sub.status !== 'trial') {
+          subState = 'expired';
+          isExpired = true;
           uploadBlocked = true;
         } else {
+          subState = 'active';
           const usage = await StorageAccountingService.getStorageUsage(parentUserId);
           const allowed = (sub.planSnapshot?.storageBytes || 10737418240) + (sub.addonStorageBytes || 0);
           if ((usage?.totalBytes || 0) >= allowed) {
@@ -120,6 +126,8 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         }
       } else {
         // No subscription found
+        subState = 'expired';
+        isExpired = true;
         uploadBlocked = true;
       }
     }
@@ -129,6 +137,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       isPaired: true,
       unpaired: false,
       message: 'Heartbeat updated.',
+      subState,
       uploadBlocked,
       isExpired,
       isGrace,
@@ -155,6 +164,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         blockedApps: device.blockedApps || [],
         blockedPhoneNumbers: device.blockedPhoneNumbers || [],
         blockedOutgoingPhoneNumbers: device.blockedOutgoingPhoneNumbers || [],
+        subState,
         uploadBlocked,
         isExpired,
         isGrace,
@@ -1989,6 +1999,16 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
         };
       });
       await ChatMessage.bulkWrite(ops, { ordered: false });
+
+      try {
+        const parentUserId = await StorageAccountingService.resolveParentUserId(topDeviceId);
+        if (parentUserId) {
+          const estimatedBytes = docsToInsert.length * 300;
+          await StorageAccountingService.updateStorage(parentUserId, topDeviceId, 'chat', estimatedBytes);
+        }
+      } catch (err: any) {
+        console.warn('[INGEST-CHAT-STORAGE-WARNING]', err?.message);
+      }
     }
 
     if (topDeviceId) {

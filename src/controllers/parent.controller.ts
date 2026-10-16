@@ -25,6 +25,7 @@ import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
 import { getReadQuery, buildShardFilter, clampPaginationLimit } from '../dal/db.dal';
 import { cacheService } from '../services/cache.service';
+import { StorageAccountingService } from '../services/StorageAccountingService';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC+5:30
 
@@ -444,7 +445,7 @@ export const updateScheduleConfig = async (req: AuthRequest, res: Response) => {
 export const deleteCapturedMedia = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { id, date, all, deleteAll } = req.query;
+    const { id, date, all, deleteAll, packageName, type } = req.query;
 
     const query: any = { deviceId };
 
@@ -458,6 +459,13 @@ export const deleteCapturedMedia = async (req: AuthRequest, res: Response) => {
       query.timestamp = { $gte: start, $lte: end };
     } else if (all !== 'true' && deleteAll !== 'true') {
       return res.status(400).json({ success: false, message: 'Specify id, date, or all=true' });
+    }
+
+    if (packageName && typeof packageName === 'string' && packageName.trim().length > 0) {
+      query.packageName = packageName.trim();
+    }
+    if (type && typeof type === 'string' && type.trim().length > 0) {
+      query.type = type.trim();
     }
 
     const result = await MediaCapture.deleteMany(query);
@@ -3348,6 +3356,11 @@ export const deleteChatMessagesForDay = async (req: AuthRequest, res: Response) 
     if (packageName) query.packageName = packageName as string;
 
     const result = await ChatMessage.deleteMany(query);
+    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
+    const parentId = parentUserId || (await StorageAccountingService.resolveParentUserId(deviceId));
+    if (parentId && result.deletedCount > 0) {
+      await StorageAccountingService.updateStorage(parentId, deviceId, 'chat', -(result.deletedCount * 300));
+    }
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -3367,7 +3380,92 @@ export const deleteAllChatMessages = async (req: AuthRequest, res: Response) => 
     if (packageName) query.packageName = packageName as string;
 
     const result = await ChatMessage.deleteMany(query);
+    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
+    const parentId = parentUserId || (await StorageAccountingService.resolveParentUserId(deviceId));
+    if (parentId && result.deletedCount > 0) {
+      await StorageAccountingService.updateStorage(parentId, deviceId, 'chat', -(result.deletedCount * 300));
+    }
     return res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /parent/device/:deviceId/chat-storage
+ * Returns per-packageName breakdown of stored chat messages, counts & bytes
+ */
+export const getChatStorageBreakdown = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const appMeta: Record<string, { label: string; icon: string }> = {
+      'com.whatsapp': { label: 'WhatsApp', icon: 'whatsapp' },
+      'com.instagram.android': { label: 'Instagram', icon: 'instagram' },
+      'com.snapchat.android': { label: 'Snapchat', icon: 'snapchat' },
+      'com.facebook.orca': { label: 'Messenger', icon: 'facebook' },
+      'com.facebook.katana': { label: 'Facebook', icon: 'facebook' },
+    };
+
+    const agg = await ChatMessage.aggregate([
+      { $match: { deviceId } },
+      {
+        $group: {
+          _id: '$packageName',
+          count: { $sum: 1 },
+          lastMessageAt: { $max: '$timestamp' },
+        },
+      },
+      { $sort: { count: -1 } },
+    ]);
+
+    const categories: any[] = [];
+    const seenPackages = new Set<string>();
+
+    for (const item of agg) {
+      const pkg = item._id || 'unknown';
+      seenPackages.add(pkg);
+      const meta = appMeta[pkg] || { label: pkg, icon: 'chat' };
+      const bytes = item.count * 300;
+      categories.push({
+        packageName: pkg,
+        label: meta.label,
+        appName: meta.label,
+        count: item.count,
+        bytes,
+        icon: meta.icon,
+        lastMessageAt: item.lastMessageAt,
+      });
+    }
+
+    const defaultApps = ['com.whatsapp', 'com.instagram.android', 'com.snapchat.android', 'com.facebook.orca'];
+    for (const pkg of defaultApps) {
+      if (!seenPackages.has(pkg)) {
+        const meta = appMeta[pkg];
+        categories.push({
+          packageName: pkg,
+          label: meta.label,
+          appName: meta.label,
+          count: 0,
+          bytes: 0,
+          icon: meta.icon,
+          lastMessageAt: null,
+        });
+      }
+    }
+
+    const totalBytes = categories.reduce((sum, c) => sum + c.bytes, 0);
+    const totalCount = categories.reduce((sum, c) => sum + c.count, 0);
+
+    return res.json({
+      success: true,
+      deviceId,
+      categories,
+      apps: categories,
+      totalBytes,
+      totalCount,
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

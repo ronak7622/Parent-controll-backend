@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { Plan } from '../models/Plan';
 import { AddonPlan } from '../models/AddonPlan';
 import { Subscription } from '../models/Subscription';
@@ -8,10 +9,17 @@ import { LiveUsage } from '../models/LiveUsage';
 import { User } from '../models/User';
 import { Device } from '../models/Device';
 import { Order } from '../models/Order';
+import { AppLimit } from '../models/AppLimit';
+import { AppBlockRule } from '../models/AppBlockRule';
+import { Contact } from '../models/Contact';
+import { ScheduleConfig } from '../models/ScheduleConfig';
+import { DeletedRecording } from '../models/DeletedRecording';
 import { ConfigService } from '../services/ConfigService';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { StorageDeleteService } from '../services/StorageDeleteService';
 import { sendFcmDataCommand } from '../services/fcm.service';
+import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { cacheService } from '../services/cache.service';
 import { toMs, DurationUnit } from '../utils/duration';
 
 export const getOptionsConfig = async (req: Request, res: Response) => {
@@ -40,9 +48,9 @@ export const getPlans = async (req: Request, res: Response) => {
       HIGH_USD: ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'AE', 'SA', 'JP', 'SG', 'NZ', 'KR', 'IT', 'ES', 'NL', 'SE', 'GLOBAL'],
     };
 
-    // Seed default plans if DB empty or trial plan missing
+    // Seed default plans if DB empty or trial plan missing / needs field update
     const trialPlanExists = await Plan.findOne({ planId: 'plan_1_day_trial' });
-    if (!trialPlanExists) {
+    if (!trialPlanExists || trialPlanExists.isAllowSocialAppChatHistory === undefined) {
       const makeFeatures = (deviceText: string, storageText: string) => [
         'No ads',
         deviceText,
@@ -77,14 +85,16 @@ export const getPlans = async (req: Request, res: Response) => {
           priceByRegion: { IN_INR: 0, LOW_USD: 0, HIGH_USD: 0 },
           storageBytes: 104857600, // 100 MB
           dayLimit: 1,
+          durationValue: 1,
+          durationUnit: 'days',
           liveMinutesTotal: 10,
           liveLimitPerDay: 10,
-          liveSessionMaxMin: 2,
           deviceLimit: 1,
           features: makeFeatures('1 device connect', '100 mb storage'),
           isActive: true,
           isRecommended: false,
           sortOrder: 0,
+          isAllowSocialAppChatHistory: false,
         },
         {
           planId: 'plan_1_month',
@@ -95,11 +105,11 @@ export const getPlans = async (req: Request, res: Response) => {
           dayLimit: 30,
           liveMinutesTotal: 1800,
           liveLimitPerDay: 60,
-          liveSessionMaxMin: 10,
           deviceLimit: 1000, // Unlimited
           features: makeFeatures('Unlimited device connect', '20 gb storage'),
           isActive: true,
           sortOrder: 1,
+          isAllowSocialAppChatHistory: true,
         },
         {
           planId: 'plan_6_months',
@@ -110,12 +120,12 @@ export const getPlans = async (req: Request, res: Response) => {
           dayLimit: 180,
           liveMinutesTotal: 10800,
           liveLimitPerDay: 60,
-          liveSessionMaxMin: 10,
           deviceLimit: 1000, // Unlimited
           features: makeFeatures('Unlimited device connect', '20 gb storage'),
           isActive: true,
           isRecommended: false,
           sortOrder: 2,
+          isAllowSocialAppChatHistory: true,
         },
         {
           planId: 'plan_1_year',
@@ -126,12 +136,12 @@ export const getPlans = async (req: Request, res: Response) => {
           dayLimit: 365,
           liveMinutesTotal: 21900,
           liveLimitPerDay: 60,
-          liveSessionMaxMin: 10,
           deviceLimit: 1000, // Unlimited
           features: makeFeatures('Unlimited device connect', '20 gb storage'),
           isActive: true,
           isRecommended: true,
           sortOrder: 3,
+          isAllowSocialAppChatHistory: true,
         },
       ];
 
@@ -203,10 +213,27 @@ export const getPlans = async (req: Request, res: Response) => {
     const plans = await Plan.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
     const addons = await AddonPlan.find({ isActive: true }).lean();
 
-    const phone = (req as any).user?.phoneNumber || (req as any).user?.phone || '';
-    const email = (req as any).user?.email || '';
+    const phone = (req as any).user?.phoneNumber || (req as any).user?.phone || (req.query.phoneNumber as string) || '';
+    const email = (req as any).user?.email || (req.query.email as string) || '';
+    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id || (req.query.parentUserId as string);
+    const deviceId = (req.query.deviceId as string) || '';
+
+    let trialUsed = false;
+    if (parentUserId || phone || deviceId) {
+      const existingLedger = await TrialLedger.findOne({
+        $or: [
+          ...(phone ? [{ phoneNumber: phone }] : []),
+          ...(deviceId ? [{ deviceId }] : []),
+          ...(parentUserId ? [{ parentUserId }] : []),
+        ],
+      });
+      if (existingLedger) {
+        trialUsed = true;
+      }
+    }
+
     const canSeeTest = ((options as any).testPlanPhones || []).includes(phone) || ((options as any).testPlanEmails || []).includes(email);
-    const visiblePlans = plans.filter((p) => canSeeTest || !(p as any).isTestPlan);
+    const visiblePlans = plans.filter((p) => (canSeeTest || !(p as any).isTestPlan) && (!trialUsed || p.type !== 'trial'));
 
     // Compute monthly vs yearly savings dynamically from the plan data
     const monthlyPlan = visiblePlans.find((p) => p.type === 'monthly' && p.isRecommended) || visiblePlans.find((p) => p.type === 'monthly');
@@ -287,7 +314,6 @@ export const getPlans = async (req: Request, res: Response) => {
       durationValue: 1,
       storageBytes: 104857600,
       liveMinutes: 10,
-      liveSessionMaxMin: 2,
       deviceLimit: 1,
       features: [
         'No ads',
@@ -330,7 +356,6 @@ export const getPlans = async (req: Request, res: Response) => {
     const deviceLimit = trialOptions.deviceLimit ?? 1;
     const isTrialUnlimited = deviceLimit >= 1000;
     const liveMinutes = trialOptions.liveMinutes ?? 10;
-    const liveSessionMaxMin = trialOptions.liveSessionMaxMin ?? 2;
 
     const trialConfig = {
       name: trialOptions.name || `${durationText} Free Trial`,
@@ -344,7 +369,6 @@ export const getPlans = async (req: Request, res: Response) => {
       storageText: `${storageDisplay} Trial Storage`,
       liveMinutes,
       liveLimitPerDay: liveMinutes,
-      liveSessionMaxMin,
       deviceLimit,
       deviceLimitText: isTrialUnlimited ? 'Unlimited' : `${deviceLimit} Connected Device${deviceLimit > 1 ? 's' : ''}`,
       liveMinutesText: `${liveMinutes} Mins Daily Live`,
@@ -386,7 +410,9 @@ export const getPlans = async (req: Request, res: Response) => {
       addons: formattedAddons,
       storageAddons,
       liveMinutesAddons,
-      trialConfig,
+      trialUsed,
+      trialEligible: !trialUsed,
+      trialConfig: trialUsed ? null : trialConfig,
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
@@ -434,13 +460,13 @@ export const subscribe = async (req: Request, res: Response) => {
       storageBytes: plan.storageBytes,
       liveMinutesTotal: plan.liveMinutesTotal,
       liveLimitPerDay,
-      liveSessionMaxMin: plan.liveSessionMaxMin || 5,
       deviceLimit: plan.deviceLimit,
       dayLimit: durationDays,
       durationMs,
       graceDays: Math.ceil(backupHours / 24),
       storageWarnPercent: options.storageWarnPercent || 80,
       features: plan.features,
+      isAllowSocialAppChatHistory: (plan as any).isAllowSocialAppChatHistory ?? false,
     };
 
     // Check optional add-ons bought in this transaction
@@ -690,9 +716,9 @@ export const activateTrial = async (req: Request, res: Response) => {
       name: '1-Day Free Trial',
       durationUnit: 'days',
       durationValue: 1,
+      dayLimit: 1,
       storageBytes: 104857600,
       liveMinutesTotal: 10,
-      liveSessionMaxMin: 2,
       deviceLimit: 1,
       features: [
         'No ads',
@@ -722,7 +748,8 @@ export const activateTrial = async (req: Request, res: Response) => {
     };
 
     const durationUnit = (trialOptions.durationUnit || 'days') as DurationUnit;
-    const durationValue = trialOptions.durationValue ?? 1;
+    const effVal = (trialOptions.durationValue && trialOptions.durationValue > 0) ? trialOptions.durationValue : ((trialOptions as any).dayLimit || 1);
+    const durationValue = effVal;
     const durationMs = toMs(durationValue, durationUnit);
 
     const startAt = new Date();
@@ -739,7 +766,6 @@ export const activateTrial = async (req: Request, res: Response) => {
     const deviceLimit = trialOptions.deviceLimit ?? 1;
     const isTrialUnlimited = deviceLimit >= 1000;
     const liveMinutes = (trialOptions as any).liveMinutes ?? (trialOptions as any).liveMinutesTotal ?? 10;
-    const liveSessionMaxMin = trialOptions.liveSessionMaxMin ?? 2;
     const durationText = durationUnit === 'minutes'
       ? `${durationValue} Minute${durationValue > 1 ? 's' : ''}`
       : (durationUnit === 'hours'
@@ -754,12 +780,12 @@ export const activateTrial = async (req: Request, res: Response) => {
       storageBytes: storageBytesVal,
       liveMinutesTotal: liveMinutes,
       liveLimitPerDay: liveMinutes,
-      liveSessionMaxMin,
       deviceLimit,
       dayLimit: durationUnit === 'days' ? durationValue : 1,
       durationMs,
       graceDays: Math.ceil(backupHours / 24),
       storageWarnPercent: options.storageWarnPercent || 80,
+      isAllowSocialAppChatHistory: false,
       features: trialOptions.features || [
         'No ads',
         '1 Connected device',
@@ -1133,50 +1159,117 @@ export const getPurchaseHistory = async (req: Request, res: Response) => {
 };
 
 /**
- * Delete Account (Permanent Account & All Data Wipe) (§11)
+ * Delete Account (Permanent Account, Data, Devices, Purchases & Storage Wipe)
  */
 export const deleteAccount = async (req: Request, res: Response) => {
   try {
     const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    console.warn(`[DELETE-ACCOUNT] Deleting all data and account for parent: ${parentUserId}`);
+    console.warn(`[DELETE-ACCOUNT] Starting permanent data & account wipe for parent: ${parentUserId}`);
 
-    // 1. Find all devices connected to this parent
-    const devices = await Device.find({ parentUserId });
+    // Resolve user record to get phone number and Mongo ObjectId
+    const user = await User.findById(parentUserId) || ((req as any).user?.phoneNumber ? await User.findOne({ phoneNumber: (req as any).user.phoneNumber }) : null);
+    const userObjId = user?._id || (mongoose.isValidObjectId(parentUserId) ? new mongoose.Types.ObjectId(parentUserId) : null);
+    const parentUserIds: any[] = [parentUserId];
+    if (userObjId) parentUserIds.push(userObjId.toString());
+    if (user?._id) parentUserIds.push(user._id.toString());
+    const uniqueParentUserIds = Array.from(new Set(parentUserIds));
+
+    // 1. Find ALL devices connected to this parent (handling both ObjectId and String formats)
+    const devices = await Device.find({
+      $or: [
+        { parentUserId: { $in: [userObjId, parentUserId].filter(Boolean) } },
+        { parentUserId: { $in: uniqueParentUserIds } },
+      ],
+    });
+
+    const deviceIds = Array.from(new Set(devices.map((d) => d.deviceId).filter(Boolean)));
+    console.log(`[DELETE-ACCOUNT] Found ${devices.length} devices (${deviceIds.join(', ')}) for parent ${parentUserId}`);
+
+    // 2. Erase each device data and signal child
     for (const dev of devices) {
       try {
-        // Erase media in R2 + all 13 Mongo text log collections
+        // Erase media in R2 + all Mongo text/log collections
         await StorageDeleteService.eraseAllDeviceData(dev.deviceId, parentUserId);
 
-        // Send high-priority wipe & unpair signal to child
+        // Signal child via Socket to unpair immediately
+        try {
+          getSignalingIo()?.to(dev.deviceId).emit('remote-command', { command: 'UNPAIR', deviceId: dev.deviceId });
+        } catch (_) {}
+
+        // Send high-priority wipe & unpair signal via FCM to child
         if (dev.fcmToken) {
           await sendFcmDataCommand(dev.fcmToken, 'DELETE_ACCOUNT_WIPE', {
             command: 'UNPAIR_AND_WIPE_LOCAL',
+            action: 'UNPAIR',
           }).catch(() => {});
         }
+
+        // Invalidate Redis/Cache keys for this device
+        try {
+          await cacheService.del([
+            cacheService.keys.appLimits(dev.deviceId),
+            cacheService.keys.appBlocks(dev.deviceId),
+            cacheService.keys.deviceRules(dev.deviceId),
+            cacheService.keys.deviceInfo(dev.deviceId),
+          ]);
+        } catch (_) {}
       } catch (err: any) {
         console.error(`[DELETE-ACCOUNT-DEVICE-ERROR] ${dev.deviceId}: ${err?.message}`);
       }
     }
 
-    // 2. Remove all devices belonging to parent
-    await Device.deleteMany({ parentUserId });
+    // 3. Remove all device-level records (rules, limits, contacts, schedules, tombstones)
+    if (deviceIds.length > 0) {
+      await Promise.all([
+        AppLimit.deleteMany({ deviceId: { $in: deviceIds } }),
+        AppBlockRule.deleteMany({ deviceId: { $in: deviceIds } }),
+        Contact.deleteMany({ deviceId: { $in: deviceIds } }),
+        ScheduleConfig.deleteMany({ deviceId: { $in: deviceIds } }),
+        DeletedRecording.deleteMany({ deviceId: { $in: deviceIds } }),
+      ]);
+    }
 
-    // 3. Remove Subscription, LiveUsage, StorageUsage, Orders (Keep TrialLedger forever for anti-fraud)
-    await Subscription.deleteMany({ parentUserId });
-    await LiveUsage.deleteMany({ parentUserId });
-    await StorageUsage.deleteMany({ parentUserId });
-    await Order.deleteMany({ parentUserId });
+    // 4. Remove all Device documents belonging to this parent
+    await Device.deleteMany({
+      $or: [
+        { parentUserId: { $in: [userObjId, parentUserId].filter(Boolean) } },
+        { parentUserId: { $in: uniqueParentUserIds } },
+        ...(deviceIds.length > 0 ? [{ deviceId: { $in: deviceIds } }] : []),
+      ],
+    });
 
-    // 4. Remove User record
-    await User.findByIdAndDelete(parentUserId);
+    // 5. Remove all Parent-level data: Subscriptions, Orders, LiveUsage, StorageUsage, TrialLedger, User
+    const phoneFilter = user?.phoneNumber || (req as any).user?.phoneNumber;
+    await Promise.all([
+      Subscription.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
+      LiveUsage.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
+      StorageUsage.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
+      Order.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
+      TrialLedger.deleteMany({
+        $or: [
+          { parentUserId: { $in: uniqueParentUserIds } },
+          ...(phoneFilter ? [{ phoneNumber: phoneFilter }] : []),
+          ...(deviceIds.length > 0 ? [{ deviceId: { $in: deviceIds } }] : []),
+        ],
+      }),
+      User.deleteMany({
+        $or: [
+          { _id: { $in: [parentUserId, userObjId].filter(Boolean) } },
+          ...(phoneFilter ? [{ phoneNumber: phoneFilter }] : []),
+        ],
+      }),
+    ]);
+
+    console.warn(`[DELETE-ACCOUNT] Permanently wiped all account, device, storage, purchase and user data for: ${parentUserId}`);
 
     return res.json({
       success: true,
-      message: 'Your account and all associated data, media, device connections, and history have been permanently deleted.',
+      message: 'Your account and all associated data, media, device connections, and purchase history have been permanently deleted.',
     });
   } catch (err: any) {
+    console.error(`[DELETE-ACCOUNT-ERROR] ${err?.message}`);
     return res.status(500).json({ success: false, message: err?.message });
   }
 };
