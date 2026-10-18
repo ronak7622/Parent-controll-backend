@@ -7,6 +7,7 @@ import fs from 'fs';
 import { config } from './config/env';
 import { connectDatabase } from './config/database';
 import { migrateYoutubeAppBlockToAppRule } from './migrations/youtubeAppBlockToAppRule';
+import { runPlanI18nMigration } from './services/PlanMigrationService';
 import apiRoutes from './routes/api.routes';
 import { setupWebRtcSignaling } from './signaling/webrtc.signaling';
 
@@ -102,6 +103,9 @@ const startServer = async () => {
       console.error('[AUTO-DELETE-INTERVAL-ERROR]', err?.message);
     }
   }, 60000);
+  // Run i18n migration for plans and addons
+  await runPlanI18nMigration();
+
   server.listen(config.port, '0.0.0.0', () => {
     console.log(`=======================================================`);
     console.log(`🚀 CHILD PROTECT BACKEND SERVER IS RUNNING ON PORT ${config.port}`);

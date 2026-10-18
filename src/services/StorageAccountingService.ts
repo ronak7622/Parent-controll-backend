@@ -4,6 +4,7 @@ import { Device } from '../models/Device';
 import { Recording } from '../models/Recording';
 import { MediaCapture } from '../models/MediaCapture';
 import { CallRecording } from '../models/CallRecording';
+import { Subscription } from '../models/Subscription';
 import { cacheService } from './cache.service';
 
 import { BrowserHistory } from '../models/BrowserHistory';
@@ -229,6 +230,60 @@ export class StorageAccountingService {
       },
       { upsert: true, new: true }
     ).lean();
+
+    // Check if storage is full and broadcast update
+    try {
+      const sub = await Subscription.findOne({ parentUserId });
+      const allowedBytes = (sub?.planSnapshot?.storageBytes || 10737418240) + (sub?.addonStorageBytes || 0);
+      const isStorageFull = grandTotal >= allowedBytes;
+
+      const { getSignalingIo } = require('../signaling/webrtc.signaling');
+      const io = getSignalingIo();
+
+      // If storage is full, immediately auto-stop any active recording sessions on child devices and save
+      if (isStorageFull && deviceIds.length > 0) {
+        const activeRecordings = await Recording.find({
+          deviceId: { $in: deviceIds },
+          status: { $in: ['in_progress', 'saving'] },
+        });
+
+        if (activeRecordings.length > 0) {
+          for (const rec of activeRecordings) {
+            console.log(`[STORAGE-FULL-AUTO-STOP] Storage is full (${grandTotal}/${allowedBytes} bytes). Auto-stopping active ${rec.recordingType} recording ${rec.sessionId} on device ${rec.deviceId}...`);
+            if (io) {
+              io.to(rec.deviceId).emit('remote-command', {
+                command: 'STOP_RECORDING',
+                deviceId: rec.deviceId,
+                sessionId: rec.sessionId,
+                reason: 'STORAGE_FULL',
+              });
+              io.to(`user_${parentUserId}`).emit('recording-stopped-storage-full', {
+                deviceId: rec.deviceId,
+                sessionId: rec.sessionId,
+                recordingType: rec.recordingType,
+              });
+            }
+          }
+        }
+      }
+
+      if (io) {
+        const payload = {
+          storageUsage: {
+            ...usageDoc,
+            isFull: isStorageFull,
+          },
+          isFull: isStorageFull,
+          timestamp: Date.now(),
+        };
+        io.to(`user_${parentUserId}`).emit('storage-updated', payload);
+        for (const dId of deviceIds) {
+          io.to(dId).emit('storage-updated', payload);
+        }
+      }
+    } catch (e: any) {
+      console.warn('[STORAGE-BROADCAST-WARN]', e?.message);
+    }
 
     return usageDoc;
   }

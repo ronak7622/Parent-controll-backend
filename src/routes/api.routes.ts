@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requestOtp, verifyOtp } from '../controllers/auth.controller';
+import { requestOtp, verifyOtp, updateUserLanguage } from '../controllers/auth.controller';
 import {
   getOptionsConfig,
   getPlans,
@@ -22,6 +22,8 @@ import {
   getParentDevices,
   getDeviceDetails,
   updateDeviceSettings,
+  updateDeviceProtection,
+  verifyChildSecretCode,
   sendRemoteCommand,
   disconnectDevice,
   clearAllDeviceData,
@@ -202,6 +204,8 @@ router.post('/parent/auto-delete-settings', authenticateJwt, updateAutoDeleteCon
 router.post('/auth/send-otp', requestOtp);
 router.post('/auth/request-otp', requestOtp);
 router.post('/auth/verify-otp', verifyOtp);
+router.post('/user/language', authenticateJwt, updateUserLanguage);
+router.put('/user/language', authenticateJwt, updateUserLanguage);
 
 // ===================================
 // 2. Device Pairing & Management Routes
@@ -222,6 +226,9 @@ router.put('/parent/device/:deviceId/restrictions', authenticateJwt, verifyDevic
 router.post('/parent/device/:deviceId/restrictions', authenticateJwt, verifyDeviceOwnership, updateDeviceSettings);
 router.post('/device/:deviceId/settings', authenticateJwt, verifyDeviceOwnership, updateDeviceSettings);
 router.post('/device/:deviceId/command', authenticateJwt, verifyDeviceOwnership, sendRemoteCommand);
+router.put('/parent/device/:deviceId/protection', authenticateJwt, verifyDeviceOwnership, updateDeviceProtection);
+router.post('/parent/device/:deviceId/protection', authenticateJwt, verifyDeviceOwnership, updateDeviceProtection);
+router.post('/device/verify-secret-code', verifyChildSecretCode);
 router.post('/parent/device/:deviceId/disconnect', authenticateJwt, verifyDeviceOwnership, disconnectDevice);
 router.post('/parent/device/:deviceId/clear-all-data', authenticateJwt, verifyDeviceOwnership, clearAllDeviceData);
 router.delete('/parent/device/:deviceId/clear-all-data', authenticateJwt, verifyDeviceOwnership, clearAllDeviceData);

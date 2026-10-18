@@ -4,7 +4,7 @@ import { User } from '../models/User';
 import { Device } from '../models/Device';
 import { ConfigService } from '../services/ConfigService';
 import { StorageDeleteService } from '../services/StorageDeleteService';
-import { sendFcmDataCommand } from '../services/fcm.service';
+import { sendFcmDataCommand, sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
 import { toMs } from '../utils/duration';
 
 export class SubscriptionJob {
@@ -14,8 +14,20 @@ export class SubscriptionJob {
   static async processSubscriptionLifecycle(): Promise<void> {
     const now = new Date();
     try {
-      const options = await ConfigService.getMergedOptions();
-      const backupHours = options.storageBackupAfterExpirPlan || (options.graceDays ? options.graceDays * 24 : 72);
+      const getGraceMs = (sub: any) => {
+        if (sub.planSnapshot?.graceTimeInMinute && sub.planSnapshot.graceTimeInMinute > 0) {
+          return sub.planSnapshot.graceTimeInMinute * 60 * 1000;
+        }
+        return 4320 * 60 * 1000; // 3 days (4320 minutes)
+      };
+
+      const getDurationMs = (q: any) => {
+        if (q.durationMs && q.durationMs > 0) return q.durationMs;
+        if (q.planSnapshot?.planDurationValueInMinute && q.planSnapshot.planDurationValueInMinute > 0) {
+          return q.planSnapshot.planDurationValueInMinute * 60 * 1000;
+        }
+        return toMs(q.durationDays || q.planSnapshot?.dayLimit || 30, 'days');
+      };
 
       // 1. Check for Active / Trial subs that reached expireAt:
       // If a queued advance plan exists -> auto-activate queued plan!
@@ -29,10 +41,10 @@ export class SubscriptionJob {
         if (sub.queuedPlan && sub.queuedPlan.planSnapshot) {
           // AUTO-ACTIVATE QUEUED ADVANCE PLAN
           const q = sub.queuedPlan;
-          const dMs = q.durationMs || toMs(q.durationDays || q.planSnapshot?.dayLimit || 30, 'days');
+          const dMs = getDurationMs(q);
           const newStartAt = now;
           const newExpireAt = new Date(newStartAt.getTime() + dMs);
-          const graceEndsAt = new Date(newExpireAt.getTime() + backupHours * 60 * 60 * 1000);
+          const graceEndsAt = new Date(newExpireAt.getTime() + getGraceMs({ planSnapshot: q.planSnapshot }));
 
           sub.status = 'active';
           sub.planSnapshot = q.planSnapshot;
@@ -42,6 +54,7 @@ export class SubscriptionJob {
           sub.txnId = q.txnId;
           sub.region = q.region || sub.region;
           sub.isTrial = false;
+          sub.planLiveMinutesUsed = 0;
 
           // Apply queued add-ons if any
           if (q.storageAddon) {
@@ -71,9 +84,37 @@ export class SubscriptionJob {
         } else {
           // Transition to GRACE state
           sub.status = 'grace';
-          sub.graceEndsAt = new Date(sub.expireAt.getTime() + backupHours * 60 * 60 * 1000);
+          sub.graceEndsAt = new Date(sub.expireAt.getTime() + getGraceMs(sub));
           await sub.save();
           console.log(`[SUBSCRIPTION-JOB] Transitioned parent ${sub.parentUserId} to GRACE state. Grace ends at: ${sub.graceEndsAt}`);
+
+          // Send FCM Notification to parent device (received even when parent app is killed / closed)
+          try {
+            const isTrial = sub.isTrial || sub.planSnapshot?.type === 'trial';
+            const remainingGraceMin = Math.round(getGraceMs(sub) / (60 * 1000));
+            const days = Math.floor(remainingGraceMin / 1440);
+            const hours = Math.floor((remainingGraceMin % 1440) / 60);
+            const mins = remainingGraceMin % 60;
+            const graceText = days > 0
+                ? `${days} Day${days > 1 ? 's' : ''}${hours > 0 ? ` ${hours} Hr${hours > 1 ? 's' : ''}` : ''}`
+                : hours > 0
+                    ? `${hours} Hr${hours > 1 ? 's' : ''}${mins > 0 ? ` ${mins} Min${mins > 1 ? 's' : ''}` : ''}`
+                    : `${mins} Min${mins > 1 ? 's' : ''}`;
+
+            const templateKey = isTrial ? 'TRIAL_EXPIRED_GRACE' : 'PLAN_EXPIRED_GRACE';
+            await sendLocalizedFcmTopicNotification(
+              `parent_${sub.parentUserId}`,
+              templateKey,
+              { graceText },
+              undefined,
+              {
+                type: 'plan_expired_grace',
+                isTrial: String(isTrial),
+              }
+            );
+          } catch (e: any) {
+            console.error(`[SUBSCRIPTION-JOB-FCM-GRACE-ERROR] ${e?.message}`);
+          }
         }
       }
 
@@ -88,10 +129,10 @@ export class SubscriptionJob {
         // If a queued plan arrived, activate it instead of wiping
         if (sub.queuedPlan && sub.queuedPlan.planSnapshot) {
           const q = sub.queuedPlan;
-          const dMs = q.durationMs || toMs(q.durationDays || q.planSnapshot?.dayLimit || 30, 'days');
+          const dMs = getDurationMs(q);
           const newStartAt = now;
           const newExpireAt = new Date(newStartAt.getTime() + dMs);
-          const graceEndsAt = new Date(newExpireAt.getTime() + backupHours * 60 * 60 * 1000);
+          const graceEndsAt = new Date(newExpireAt.getTime() + getGraceMs({ planSnapshot: q.planSnapshot }));
 
           sub.status = 'active';
           sub.planSnapshot = q.planSnapshot;
@@ -101,6 +142,7 @@ export class SubscriptionJob {
           sub.txnId = q.txnId;
           sub.region = q.region || sub.region;
           sub.isTrial = false;
+          sub.planLiveMinutesUsed = 0;
 
           if (q.storageAddon) {
             sub.addonStorageBytes = (sub.addonStorageBytes || 0) + (q.storageAddon.storageBytes || 0);
@@ -121,6 +163,25 @@ export class SubscriptionJob {
         sub.addonStorageBytes = 0;
         sub.addonLiveMinutesPool = 0;
         await sub.save();
+
+        // Send FCM Notification to parent device (received even when parent app is killed / closed)
+        try {
+          const isTrial = sub.isTrial || sub.planSnapshot?.type === 'trial';
+          const templateKey = isTrial ? 'TRIAL_EXPIRED_STOPPED' : 'PLAN_EXPIRED_STOPPED';
+
+          await sendLocalizedFcmTopicNotification(
+            `parent_${sub.parentUserId}`,
+            templateKey,
+            {},
+            undefined,
+            {
+              type: 'plan_expired_stopped',
+              isTrial: String(isTrial),
+            }
+          );
+        } catch (e: any) {
+          console.error(`[SUBSCRIPTION-JOB-FCM-EXPIRED-ERROR] ${e?.message}`);
+        }
 
         console.warn(`[SUBSCRIPTION-JOB] Grace ended for parent ${sub.parentUserId}! Purging server media + text data (Wipe Cron)...`);
 

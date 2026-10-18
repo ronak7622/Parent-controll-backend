@@ -1,7 +1,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { config } from '../config/env';
 import { Subscription } from '../models/Subscription';
-import { sendFcmTopicNotification } from '../services/fcm.service';
+import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { ConfigService } from '../services/ConfigService';
 import { SubscriptionJob } from '../jobs/SubscriptionJob';
@@ -30,47 +30,99 @@ const processSubscriptionJobs = async () => {
   }
 
   // -----------------------------------------------------------------
-  // 2. SCHEDULED BATCH FCM NOTIFICATIONS (Storage Warn % & Expiry)
+  // 2. SCHEDULED BATCH FCM NOTIFICATIONS (Expiring Soon & Storage Alerts)
+  // Ensures notifications arrive even when parent app is killed / closed!
   // -----------------------------------------------------------------
   try {
-    const activeSubs = await Subscription.find({ status: { $in: ['active', 'trial', 'grace'] } });
+    const activeSubs = await Subscription.find({ status: { $in: ['active', 'trial'] } });
 
     for (const sub of activeSubs) {
       const parentUserId = sub.parentUserId;
+
+      // ─── A. EXPIRING SOON FCM NOTIFICATION (Minutes & Interval from Remote Config) ───
+      if (sub.expireAt && sub.expireAt.getTime() > now.getTime()) {
+        const isTrial = sub.isTrial || sub.planSnapshot?.type === 'trial';
+        const remainingMinutes = Math.round((sub.expireAt.getTime() - now.getTime()) / (60 * 1000));
+
+        const beforeMinutes = isTrial
+          ? (options.trialExpringSoonWarNotificationBeforeTimeInMinute || 240)
+          : (options.expringSoonWarNotificationBeforeTimeInMinute || 4320);
+
+        const intervalMinutes = isTrial
+          ? (options.trialExpringSoonWarNotificationIntervalInMinute || 120)
+          : (options.expringSoonWarNotificationIntervalInMinute || 1440);
+
+        if (remainingMinutes <= beforeMinutes) {
+          const lastExpireNotif = sub.lastExpireWarnNotificationAt ? new Date(sub.lastExpireWarnNotificationAt).getTime() : 0;
+          if (now.getTime() - lastExpireNotif >= intervalMinutes * 60 * 1000) {
+            const days = Math.floor(remainingMinutes / 1440);
+            const hours = Math.floor((remainingMinutes % 1440) / 60);
+            const mins = remainingMinutes % 60;
+            const timeText = days > 0
+              ? `${days} Day${days > 1 ? 's' : ''}${hours > 0 ? ` ${hours} Hr${hours > 1 ? 's' : ''}` : ''}`
+              : hours > 0
+                ? `${hours} Hr${hours > 1 ? 's' : ''}${mins > 0 ? ` ${mins} Min${mins > 1 ? 's' : ''}` : ''}`
+                : `${mins} Min${mins > 1 ? 's' : ''}`;
+
+            const templateKey = isTrial ? 'TRIAL_EXPIRING_SOON' : 'PLAN_EXPIRING_SOON';
+            const templateParams: Record<string, string | number> = isTrial
+              ? { hours: Math.max(1, Math.ceil(remainingMinutes / 60)) }
+              : { days: Math.max(1, Math.ceil(remainingMinutes / 1440)), deviceName: 'your devices' };
+
+            await sendLocalizedFcmTopicNotification(
+              `parent_${parentUserId}`,
+              templateKey,
+              templateParams,
+              undefined,
+              {
+                type: 'expiring_soon',
+                isTrial: String(isTrial),
+                remainingMinutes: String(remainingMinutes),
+              }
+            );
+
+            sub.lastExpireWarnNotificationAt = now;
+            await sub.save();
+            console.log(`[SUBSCRIPTION-QUEUE-NOTIF] Sent Expiring Soon FCM to parent_${parentUserId} (${timeText} left)`);
+          }
+        }
+      }
+
+      // ─── B. STORAGE USAGE FCM NOTIFICATION (Warn % & 100% Full with Interval) ───
       const allowedBytes = sub.planSnapshot?.storageBytes || 10737418240;
-      const warnPercent = options.storageWarnPercent || sub.planSnapshot?.storageWarnPercent || 80;
+      const warnPercent = options.storageWarnNotificationPercent || options.storageWarnPercent || sub.planSnapshot?.storageWarnPercent || 80;
+      const storageIntervalMin = options.storageWarnNotificationIntervalInMinute || options.storageWarnNotificationIntervalMin || 120;
 
       const usage = await StorageAccountingService.getStorageUsage(parentUserId);
       const totalBytes = usage?.totalBytes || 0;
       const percent = allowedBytes > 0 ? (totalBytes / allowedBytes) * 100 : 0;
 
-      if (percent >= 100) {
-        await sendFcmTopicNotification(
-          `parent_${parentUserId}`,
-          'Storage Quota 100% Full',
-          'Your cloud storage space is full. Media uploads are currently paused.',
-          { type: 'storage_full', percent: percent.toFixed(1) }
-        );
-      } else if (percent >= warnPercent) {
-        await sendFcmTopicNotification(
-          `parent_${parentUserId}`,
-          `Storage ${percent.toFixed(0)}% Full Warning`,
-          `Your storage has reached ${percent.toFixed(0)}% of your allowed plan quota.`,
-          { type: 'storage_warning', percent: percent.toFixed(1) }
-        );
-      }
+      const lastStorageNotif = sub.lastStorageWarnNotificationAt ? new Date(sub.lastStorageWarnNotificationAt).getTime() : 0;
+      const canSendStorageNotif = (now.getTime() - lastStorageNotif) >= storageIntervalMin * 60 * 1000;
 
-      // Expiry Warning (7, 3, 1 days before expireAt)
-      if (sub.expireAt) {
-        const diffMs = sub.expireAt.getTime() - now.getTime();
-        const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-        if (diffDays === 7 || diffDays === 3 || diffDays === 1) {
-          await sendFcmTopicNotification(
+      if (canSendStorageNotif) {
+        if (percent >= 100) {
+          await sendLocalizedFcmTopicNotification(
             `parent_${parentUserId}`,
-            `Subscription Expiring in ${diffDays} Day${diffDays > 1 ? 's' : ''}`,
-            `Your subscription plan expires on ${sub.expireAt.toLocaleDateString()}. Renew now to avoid interruption.`,
-            { type: 'expiry_warning', daysRemaining: String(diffDays) }
+            'STORAGE_FULL',
+            {},
+            undefined,
+            { type: 'storage_full', percent: percent.toFixed(1) }
           );
+          sub.lastStorageWarnNotificationAt = now;
+          await sub.save();
+          console.log(`[SUBSCRIPTION-QUEUE-NOTIF] Sent Storage 100% Full FCM to parent_${parentUserId}`);
+        } else if (percent >= warnPercent) {
+          await sendLocalizedFcmTopicNotification(
+            `parent_${parentUserId}`,
+            'STORAGE_WARNING',
+            { percent: percent.toFixed(1) },
+            undefined,
+            { type: 'storage_warning', percent: percent.toFixed(1) }
+          );
+          sub.lastStorageWarnNotificationAt = now;
+          await sub.save();
+          console.log(`[SUBSCRIPTION-QUEUE-NOTIF] Sent Storage Warning (${percent.toFixed(1)}%) FCM to parent_${parentUserId}`);
         }
       }
     }
@@ -81,7 +133,10 @@ const processSubscriptionJobs = async () => {
 
 export const initSubscriptionQueue = async () => {
   if (!config.redisUri) {
-    console.warn('[SUBSCRIPTION-QUEUE-WARN] REDIS_URI not configured. Subscription BullMQ jobs disabled.');
+    console.warn('[SUBSCRIPTION-QUEUE-WARN] REDIS_URI not configured. Running in-memory interval fallback (60s).');
+    setInterval(async () => {
+      await processSubscriptionJobs().catch((e) => console.error('[SUBSCRIPTION-CRON-FALLBACK-ERR]', e?.message));
+    }, 60000);
     return;
   }
 

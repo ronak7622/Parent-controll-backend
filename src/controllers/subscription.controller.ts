@@ -17,14 +17,19 @@ import { DeletedRecording } from '../models/DeletedRecording';
 import { ConfigService } from '../services/ConfigService';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { StorageDeleteService } from '../services/StorageDeleteService';
+import { LiveUsageService } from '../services/LiveUsageService';
 import { sendFcmDataCommand } from '../services/fcm.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { cacheService } from '../services/cache.service';
 import { toMs, DurationUnit } from '../utils/duration';
+// plansI18n imported ONLY for seeding/migration – NOT used in request response path
+import { PLAN_NAMES_I18N, ADDON_NAMES_I18N, localizeFeatureItem } from '../config/plansI18n';
 
 export const getOptionsConfig = async (req: Request, res: Response) => {
   try {
-    const options = await ConfigService.getMergedOptions();
+    const rawLang = ((req.query.lang || req.headers['accept-language'] || (req as any).user?.languageCode || 'en') as string);
+    const lang = rawLang.split(',')[0].split('-')[0].trim().toLowerCase();
+    const options = await ConfigService.getLocalizedOptions(lang);
     return res.json({ success: true, options });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
@@ -48,9 +53,10 @@ export const getPlans = async (req: Request, res: Response) => {
       HIGH_USD: ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'AE', 'SA', 'JP', 'SG', 'NZ', 'KR', 'IT', 'ES', 'NL', 'SE', 'GLOBAL'],
     };
 
-    // Seed default plans if DB empty or trial plan missing / needs field update
+    // Seed default plans if DB empty or trial plan needs field update
     const trialPlanExists = await Plan.findOne({ planId: 'plan_1_day_trial' });
-    if (!trialPlanExists || trialPlanExists.isAllowSocialAppChatHistory === undefined) {
+    if (!trialPlanExists || trialPlanExists.planDurationValueInMinute === undefined) {
+      const LANGS = ['en', 'hi', 'gu', 'es', 'fr'] as const;
       const makeFeatures = (deviceText: string, storageText: string) => [
         'No ads',
         deviceText,
@@ -77,6 +83,18 @@ export const getPlans = async (req: Request, res: Response) => {
         storageText,
       ];
 
+      // Build per-language nameI18n and featuresI18n maps for seeding
+      const buildI18n = (planId: string, enFeatures: string[]) => ({
+        nameI18n: Object.fromEntries(LANGS.map(l => [l, PLAN_NAMES_I18N[planId]?.[l] || ''])),
+        featuresI18n: Object.fromEntries(LANGS.map(l => [
+          l,
+          enFeatures.map(f => l === 'en' ? f : localizeFeatureItem(f, l)),
+        ])),
+      });
+
+      const trialFeatures = makeFeatures('1 device connect', '100 mb storage');
+      const paidFeatures = makeFeatures('Unlimited device connect', '20 gb storage');
+
       const defaultPlans = [
         {
           planId: 'plan_1_day_trial',
@@ -84,13 +102,15 @@ export const getPlans = async (req: Request, res: Response) => {
           type: 'trial',
           priceByRegion: { IN_INR: 0, LOW_USD: 0, HIGH_USD: 0 },
           storageBytes: 104857600, // 100 MB
-          dayLimit: 1,
-          durationValue: 1,
-          durationUnit: 'days',
-          liveMinutesTotal: 10,
-          liveLimitPerDay: 10,
+          planDurationValueInMinute: 1440,
+          planDurationUnit: 'minutes',
+          graceTimeInMinute: 4320,
+          planPriceDiscountPercen: 0,
+          liveLimitTotalInMinute: 10,
+          liveLimitPerDayInMinutes: 10,
           deviceLimit: 1,
-          features: makeFeatures('1 device connect', '100 mb storage'),
+          features: trialFeatures,
+          ...buildI18n('plan_1_day_trial', trialFeatures),
           isActive: true,
           isRecommended: false,
           sortOrder: 0,
@@ -102,11 +122,15 @@ export const getPlans = async (req: Request, res: Response) => {
           type: 'monthly',
           priceByRegion: { IN_INR: 1000, LOW_USD: 14.99, HIGH_USD: 24.99 },
           storageBytes: 21474836480, // 20 GB
-          dayLimit: 30,
-          liveMinutesTotal: 1800,
-          liveLimitPerDay: 60,
+          planDurationValueInMinute: 43200,
+          planDurationUnit: 'minutes',
+          graceTimeInMinute: 4320,
+          planPriceDiscountPercen: 0,
+          liveLimitTotalInMinute: 1800,
+          liveLimitPerDayInMinutes: 60,
           deviceLimit: 1000, // Unlimited
-          features: makeFeatures('Unlimited device connect', '20 gb storage'),
+          features: paidFeatures,
+          ...buildI18n('plan_1_month', paidFeatures),
           isActive: true,
           sortOrder: 1,
           isAllowSocialAppChatHistory: true,
@@ -117,11 +141,15 @@ export const getPlans = async (req: Request, res: Response) => {
           type: '6_months',
           priceByRegion: { IN_INR: 2500, LOW_USD: 34.99, HIGH_USD: 59.99 },
           storageBytes: 21474836480, // 20 GB
-          dayLimit: 180,
-          liveMinutesTotal: 10800,
-          liveLimitPerDay: 60,
+          planDurationValueInMinute: 259200,
+          planDurationUnit: 'minutes',
+          graceTimeInMinute: 4320,
+          planPriceDiscountPercen: 15,
+          liveLimitTotalInMinute: 10800,
+          liveLimitPerDayInMinutes: 60,
           deviceLimit: 1000, // Unlimited
-          features: makeFeatures('Unlimited device connect', '20 gb storage'),
+          features: paidFeatures,
+          ...buildI18n('plan_6_months', paidFeatures),
           isActive: true,
           isRecommended: false,
           sortOrder: 2,
@@ -133,11 +161,15 @@ export const getPlans = async (req: Request, res: Response) => {
           type: 'yearly',
           priceByRegion: { IN_INR: 2000, LOW_USD: 29.99, HIGH_USD: 49.99 },
           storageBytes: 21474836480, // 20 GB
-          dayLimit: 365,
-          liveMinutesTotal: 21900,
-          liveLimitPerDay: 60,
+          planDurationValueInMinute: 525600,
+          planDurationUnit: 'minutes',
+          graceTimeInMinute: 4320,
+          planPriceDiscountPercen: 35,
+          liveLimitTotalInMinute: 21900,
+          liveLimitPerDayInMinutes: 60,
           deviceLimit: 1000, // Unlimited
-          features: makeFeatures('Unlimited device connect', '20 gb storage'),
+          features: paidFeatures,
+          ...buildI18n('plan_1_year', paidFeatures),
           isActive: true,
           isRecommended: true,
           sortOrder: 3,
@@ -146,7 +178,7 @@ export const getPlans = async (req: Request, res: Response) => {
       ];
 
       for (const p of defaultPlans) {
-        await Plan.findOneAndUpdate({ planId: p.planId }, { $set: p }, { upsert: true, new: true });
+        await Plan.findOneAndUpdate({ planId: p.planId }, { $set: p, $unset: { dayLimit: 1, liveSessionMaxMin: 1 } }, { upsert: true, new: true });
       }
     }
 
@@ -249,10 +281,17 @@ export const getPlans = async (req: Request, res: Response) => {
       }
     }
 
-    const formattedPlans = visiblePlans.map((p) => {
+    const rawLang = ((req.query.lang || req.headers['accept-language'] || (req as any).user?.languageCode || 'en') as string);
+    const cleanLang = rawLang.split(',')[0].split('-')[0].trim().toLowerCase();
+
+    const formattedPlans = visiblePlans.map((p: any) => {
       const price = p.priceByRegion[resolvedRegion as keyof typeof p.priceByRegion] || p.priceByRegion.HIGH_USD;
       const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
-      const days = p.dayLimit || (p.type === 'yearly' ? 365 : (p.type === '6_months' || p.type === 'half_yearly' ? 180 : 30));
+      const durationMinutes = p.planDurationValueInMinute || (p.dayLimit ? p.dayLimit * 1440 : (p.type === 'yearly' ? 525600 : (p.type === '6_months' || p.type === 'half_yearly' ? 259200 : 43200)));
+      const days = Math.round(durationMinutes / 1440);
+      // Read localized name and features directly from DB fields (DB is the source of truth)
+      const localizedName = (p.nameI18n as any)?.[cleanLang] || p.name;
+      const localizedFeatures: string[] = (p.featuresI18n as any)?.[cleanLang] || p.features || [];
       
       // Calculate effective monthly price dynamically based on actual plan duration
       let months = days / 30;
@@ -261,7 +300,9 @@ export const getPlans = async (req: Request, res: Response) => {
       
       const storageGB = Math.round(p.storageBytes / (1024 * 1024 * 1024));
       const isUnlimitedDevices = (p.deviceLimit || 0) >= 1000;
-      const livePerDay = p.liveLimitPerDay || Math.round((p.liveMinutesTotal || 30) / 2) || 15;
+      const livePerDay = p.liveLimitPerDayInMinutes || p.liveLimitPerDay || 60;
+      const liveTotal = p.liveLimitTotalInMinute || p.liveMinutesTotal || (livePerDay * days);
+      const discountPercen = p.planPriceDiscountPercen !== undefined ? p.planPriceDiscountPercen : (p.type === 'yearly' ? dynamicSavePercent : 0);
 
       let billingCycleText = 'Billed monthly';
       if (p.type === 'yearly' || days >= 365) {
@@ -276,19 +317,29 @@ export const getPlans = async (req: Request, res: Response) => {
 
       return {
         ...p,
+        name: localizedName,
+        features: localizedFeatures,
+        featuresList: localizedFeatures,
         resolvedPrice: price,
         currency,
         perMonthPrice,
         storageGB,
+        planDurationValueInMinute: durationMinutes,
+        planDurationUnit: p.planDurationUnit || 'minutes',
+        graceTimeInMinute: p.graceTimeInMinute || 4320,
+        planPriceDiscountPercen: discountPercen,
+        liveLimitTotalInMinute: liveTotal,
+        liveLimitPerDayInMinutes: livePerDay,
+        liveSessionMaxMin: options.liveSessionMaxMin || 5,
         liveLimitPerDay: livePerDay,
+        liveMinutesTotal: liveTotal,
         deviceLimit: p.deviceLimit,
         deviceLimitText: isUnlimitedDevices ? 'Unlimited' : `${p.deviceLimit} Connected Device${p.deviceLimit > 1 ? 's' : ''}`,
         liveMinutesText: `${livePerDay} Mins Daily Live`,
         dayLimit: days,
-        featuresList: p.features,
         region: resolvedRegion,
         billingCycleText,
-        dynamicSavePercent: p.type === 'yearly' ? dynamicSavePercent : 0,
+        dynamicSavePercent: discountPercen,
       };
     });
 
@@ -296,8 +347,11 @@ export const getPlans = async (req: Request, res: Response) => {
       const price = a.priceByRegion[resolvedRegion as keyof typeof a.priceByRegion] || a.priceByRegion.HIGH_USD;
       const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
       const storageGB = a.storageBytes ? Math.round(a.storageBytes / (1024 * 1024 * 1024)) : 0;
+      // Read localized addon name from DB field; fall back to static dict then base name
+      const localizedAddonName = (a as any).nameI18n?.[cleanLang] || ADDON_NAMES_I18N[a.addonId]?.[cleanLang] || a.name;
       return {
         ...a,
+        name: localizedAddonName,
         resolvedPrice: price,
         currency,
         storageGB,
@@ -357,8 +411,40 @@ export const getPlans = async (req: Request, res: Response) => {
     const isTrialUnlimited = deviceLimit >= 1000;
     const liveMinutes = trialOptions.liveMinutes ?? 10;
 
+    // Prefer per-language features from trial plan's DB featuresI18n field
+    const trialDbPlan = visiblePlans.find((p: any) => p.type === 'trial') as any;
+    const trialFeaturesRaw: string[] = trialOptions.features || [
+      'No ads',
+      '1 Connected device',
+      'Live screen mirro',
+      'Live video camera',
+      'Live Audio',
+      'Screenshot schedule and capture silent screenshot',
+      'Youtube history and Control',
+      'Browser history and control',
+      'Live location trakcer',
+      'Location history',
+      'Driving detection',
+      'Call history',
+      'contact management',
+      'auto call recording',
+      'sms message history',
+      'App uses and screen time',
+      'App mangement block schedule and uses time limit',
+      'wifi logger',
+      'internet logger',
+      'keyword trackker and key logger',
+      'all apps Notifications',
+      'Remotly rec video audio and screen recording',
+      '100 MB storage',
+    ];
+    // Use DB featuresI18n if available (DB-driven), otherwise fall back to localizeFeatureItem
+    const trialFeatures: string[] = trialDbPlan?.featuresI18n?.[cleanLang] ||
+      trialFeaturesRaw.map((f: string) => localizeFeatureItem(f, cleanLang));
+
     const trialConfig = {
-      name: trialOptions.name || `${durationText} Free Trial`,
+      // Prefer DB nameI18n, then static dict, then base name
+      name: trialDbPlan?.nameI18n?.[cleanLang] || PLAN_NAMES_I18N['plan_1_day_trial']?.[cleanLang] || trialOptions.name || `${durationText} Free Trial`,
       durationUnit,
       durationValue,
       durationText,
@@ -373,31 +459,7 @@ export const getPlans = async (req: Request, res: Response) => {
       deviceLimitText: isTrialUnlimited ? 'Unlimited' : `${deviceLimit} Connected Device${deviceLimit > 1 ? 's' : ''}`,
       liveMinutesText: `${liveMinutes} Mins Daily Live`,
       planType: 'trial',
-      features: trialOptions.features || [
-        'No ads',
-        '1 Connected device',
-        'Live screen mirro',
-        'Live video camera',
-        'Live Audio',
-        'Screenshot schedule and capture silent screenshot',
-        'Youtube history and Control',
-        'Browser history and control',
-        'Live location trakcer',
-        'Location history',
-        'Driving detection',
-        'Call history',
-        'contact management',
-        'auto call recording',
-        'sms message history',
-        'App uses and screen time',
-        'App mangement block schedule and uses time limit',
-        'wifi logger',
-        'internet logger',
-        'keyword trackker and key logger',
-        'all apps Notifications',
-        'Remotly rec video audio and screen recording',
-        '100 MB storage',
-      ],
+      features: trialFeatures,
     };
 
     return res.json({
@@ -444,13 +506,16 @@ export const subscribe = async (req: Request, res: Response) => {
     const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
 
     const defaultDaysByType = (plan.type === 'yearly' ? 365 : (plan.type === '6_months' || plan.type === 'half_yearly' ? 180 : 30));
-    const durationDays = plan.dayLimit || defaultDaysByType;
-    const durUnit = ((plan as any).durationUnit || 'days') as DurationUnit;
-    const durVal = (plan as any).durationValue > 0 ? (plan as any).durationValue : (plan.dayLimit || defaultDaysByType);
-    const durationMs = toMs(durVal, durUnit);
-    const backupHours = options.storageBackupAfterExpirPlan || (options.graceDays ? options.graceDays * 24 : 72);
+    const durationMinutes = plan.planDurationValueInMinute || ((plan as any).durationValue > 0 ? (plan as any).durationValue * 1440 : (((plan as any).dayLimit || defaultDaysByType) * 1440));
+    const durationDays = Math.round(durationMinutes / 1440);
+    const durationMs = durationMinutes * 60 * 1000;
+    const durVal = durationMinutes;
+    const durUnit = 'minutes';
+    const graceTimeInMinute = plan.graceTimeInMinute || 4320;
+    const graceMs = graceTimeInMinute * 60 * 1000;
 
-    const liveLimitPerDay = plan.liveLimitPerDay || Math.round((plan.liveMinutesTotal || 30) / 2) || 15;
+    const liveLimitPerDay = plan.liveLimitPerDayInMinutes || (plan as any).liveLimitPerDay || 60;
+    const liveMinutesTotal = plan.liveLimitTotalInMinute || (plan as any).liveMinutesTotal || (liveLimitPerDay * durationDays);
 
     const planSnapshot = {
       planId: plan.planId,
@@ -458,13 +523,20 @@ export const subscribe = async (req: Request, res: Response) => {
       type: plan.type,
       price,
       storageBytes: plan.storageBytes,
-      liveMinutesTotal: plan.liveMinutesTotal,
+      liveMinutesTotal,
+      liveLimitTotalInMinute: liveMinutesTotal,
       liveLimitPerDay,
+      liveLimitPerDayInMinutes: liveLimitPerDay,
+      liveSessionMaxMin: options.liveSessionMaxMin || 5,
       deviceLimit: plan.deviceLimit,
       dayLimit: durationDays,
+      planDurationValueInMinute: durationMinutes,
+      planDurationUnit: plan.planDurationUnit || 'minutes',
+      graceTimeInMinute,
+      planPriceDiscountPercen: plan.planPriceDiscountPercen || 0,
       durationMs,
-      graceDays: Math.ceil(backupHours / 24),
-      storageWarnPercent: options.storageWarnPercent || 80,
+      graceDays: Math.ceil(graceTimeInMinute / 1440),
+      storageWarnPercent: options.storageWarnDialogPercent || options.storageWarnNotificationPercent || 80,
       features: plan.features,
       isAllowSocialAppChatHistory: (plan as any).isAllowSocialAppChatHistory ?? false,
     };
@@ -480,13 +552,14 @@ export const subscribe = async (req: Request, res: Response) => {
     }
 
     // Check current subscription for active status & advance queueing (§5 Jio-style)
+    // Only queue if user is on an ACTIVE PAID plan. If currently on Trial, activate immediately!
     const currentSub = await Subscription.findOne({ parentUserId });
     const now = new Date();
-    const isCurrentlyActive = currentSub && (currentSub.status === 'active' || currentSub.status === 'trial') && currentSub.expireAt > now;
+    const isRealPlanActive = currentSub && currentSub.status === 'active' && !currentSub.isTrial && currentSub.expireAt > now;
 
     const generatedTxnId = txnId || `txn_${Date.now()}`;
 
-    if (isCurrentlyActive) {
+    if (isRealPlanActive) {
       // ════════════════════════════════════════════════════════════
       // ADVANCE / QUEUED PLAN (§5)
       // Queued to activate automatically after current validity ends
@@ -587,7 +660,7 @@ export const subscribe = async (req: Request, res: Response) => {
     // ════════════════════════════════════════════════════════════
     const startAt = now;
     const expireAt = new Date(startAt.getTime() + durationMs);
-    const graceEndsAt = new Date(expireAt.getTime() + backupHours * 60 * 60 * 1000);
+    const graceEndsAt = new Date(expireAt.getTime() + graceMs);
 
     let initialAddonStorage = 0;
     let initialAddonLivePool = 0;
@@ -604,6 +677,7 @@ export const subscribe = async (req: Request, res: Response) => {
         parentUserId,
         status: 'active',
         planSnapshot,
+        planLiveMinutesUsed: 0,
         addonStorageBytes: initialAddonStorage,
         addonLiveMinutesPool: initialAddonLivePool,
         ...(storageAddonDoc ? { lastPurchasedStorageAddonId: storageAddonDoc.addonId } : {}),
@@ -712,17 +786,19 @@ export const activateTrial = async (req: Request, res: Response) => {
 
     // Find trial plan from Plan collection (DB plans table)
     const dbTrialPlan = await Plan.findOne({ type: 'trial', isActive: true });
-    const trialOptions = dbTrialPlan || {
-      name: '1-Day Free Trial',
-      durationUnit: 'days',
-      durationValue: 1,
-      dayLimit: 1,
+    const trialOptions: any = dbTrialPlan || {
+      planId: 'plan_1_day_trial',
+      name: '1 Day Free Trial',
+      planDurationValueInMinute: 1440,
+      planDurationUnit: 'minutes',
+      graceTimeInMinute: 4320,
       storageBytes: 104857600,
-      liveMinutesTotal: 10,
+      liveLimitTotalInMinute: 10,
+      liveLimitPerDayInMinutes: 10,
       deviceLimit: 1,
       features: [
         'No ads',
-        '1 Connected device',
+        '1 device connect',
         'Live screen mirro',
         'Live video camera',
         'Live Audio',
@@ -743,48 +819,46 @@ export const activateTrial = async (req: Request, res: Response) => {
         'keyword trackker and key logger',
         'all apps Notifications',
         'Remotly rec video audio and screen recording',
-        '100 MB storage',
+        '100 mb storage',
       ],
     };
 
-    const durationUnit = (trialOptions.durationUnit || 'days') as DurationUnit;
-    const effVal = (trialOptions.durationValue && trialOptions.durationValue > 0) ? trialOptions.durationValue : ((trialOptions as any).dayLimit || 1);
-    const durationValue = effVal;
-    const durationMs = toMs(durationValue, durationUnit);
+    const durationMinutes = trialOptions.planDurationValueInMinute || (trialOptions.durationValue ? toMs(trialOptions.durationValue, trialOptions.durationUnit || 'days') / 60000 : 1440);
+    const durationMs = durationMinutes * 60 * 1000;
+    const graceTimeInMinute = trialOptions.graceTimeInMinute || 4320;
+    const graceMs = graceTimeInMinute * 60 * 1000;
 
     const startAt = new Date();
     const expireAt = new Date(startAt.getTime() + durationMs);
     const options = await ConfigService.getMergedOptions();
-    const backupHours = options.storageBackupAfterExpirPlan || (options.graceDays ? options.graceDays * 24 : 72);
-    const graceEndsAt = new Date(expireAt.getTime() + backupHours * 60 * 60 * 1000);
+    const graceEndsAt = new Date(expireAt.getTime() + graceMs);
 
     const storageBytesVal = trialOptions.storageBytes || 104857600;
-    const storageMBVal = Math.round(storageBytesVal / (1024 * 1024));
-    const storageDisplay = storageMBVal >= 1024
-        ? `${Math.round(storageMBVal / 1024)} GB`
-        : `${storageMBVal} MB`;
     const deviceLimit = trialOptions.deviceLimit ?? 1;
-    const isTrialUnlimited = deviceLimit >= 1000;
-    const liveMinutes = (trialOptions as any).liveMinutes ?? (trialOptions as any).liveMinutesTotal ?? 10;
-    const durationText = durationUnit === 'minutes'
-      ? `${durationValue} Minute${durationValue > 1 ? 's' : ''}`
-      : (durationUnit === 'hours'
-          ? `${durationValue} Hour${durationValue > 1 ? 's' : ''}`
-          : `${durationValue} Day${durationValue > 1 ? 's' : ''}`);
+    const liveMinutes = trialOptions.liveLimitTotalInMinute ?? trialOptions.liveMinutesTotal ?? 10;
+    const liveLimitPerDay = trialOptions.liveLimitPerDayInMinutes ?? trialOptions.liveLimitPerDay ?? 10;
+    const durationDays = Math.round(durationMinutes / 1440) || 1;
 
     const planSnapshot = {
-      planId: `trial_free_${durationValue}${durationUnit.charAt(0)}`,
-      name: trialOptions.name || `${durationText} Free Trial`,
+      planId: trialOptions.planId || 'plan_1_day_trial',
+      name: trialOptions.name || '1 Day Free Trial',
       type: 'trial',
       price: 0,
       storageBytes: storageBytesVal,
       liveMinutesTotal: liveMinutes,
-      liveLimitPerDay: liveMinutes,
+      liveLimitTotalInMinute: liveMinutes,
+      liveLimitPerDay,
+      liveLimitPerDayInMinutes: liveLimitPerDay,
+      liveSessionMaxMin: options.liveSessionMaxMin || 5,
       deviceLimit,
-      dayLimit: durationUnit === 'days' ? durationValue : 1,
+      dayLimit: durationDays,
+      planDurationValueInMinute: durationMinutes,
+      planDurationUnit: trialOptions.planDurationUnit || 'minutes',
+      graceTimeInMinute,
+      planPriceDiscountPercen: 0,
       durationMs,
-      graceDays: Math.ceil(backupHours / 24),
-      storageWarnPercent: options.storageWarnPercent || 80,
+      graceDays: Math.ceil(graceTimeInMinute / 1440),
+      storageWarnPercent: options.storageWarnDialogPercent || options.storageWarnNotificationPercent || 80,
       isAllowSocialAppChatHistory: false,
       features: trialOptions.features || [
         'No ads',
@@ -821,6 +895,7 @@ export const activateTrial = async (req: Request, res: Response) => {
         parentUserId,
         status: 'trial',
         planSnapshot,
+        planLiveMinutesUsed: 0,
         addonStorageBytes: 0,
         addonLiveMinutesPool: 0,
         queuedPlan: undefined,
@@ -873,10 +948,10 @@ export const purchaseAddon = async (req: Request, res: Response) => {
 
     const subscription = await Subscription.findOne({ parentUserId });
     const now = new Date();
-    if (!subscription || subscription.status === 'expired' || (subscription.expireAt && subscription.expireAt < now)) {
+    if (!subscription || subscription.status === 'expired' || subscription.status === 'grace' || subscription.isTrial || subscription.planSnapshot?.type === 'trial' || (subscription.expireAt && subscription.expireAt < now)) {
       return res.status(400).json({
         success: false,
-        message: 'Cannot purchase Add-on booster on an expired subscription. Please renew or upgrade your main plan first.',
+        message: 'Add-on boosters are only available on an active paid plan. Please purchase or renew a subscription plan first.',
       });
     }
 
@@ -887,6 +962,7 @@ export const purchaseAddon = async (req: Request, res: Response) => {
     if (addon.type === 'live_minutes') {
       subscription.addonLiveMinutesPool = (subscription.addonLiveMinutesPool || 0) + (addon.liveMinutes || 0);
       subscription.lastPurchasedLiveAddonId = addon.addonId;
+      subscription.addonLiveExhaustedNotified = false;
     } else {
       subscription.addonStorageBytes = (subscription.addonStorageBytes || 0) + (addon.storageBytes || 0);
       subscription.lastPurchasedStorageAddonId = addon.addonId;
@@ -1025,10 +1101,11 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
       if (hasQueuedPlan) {
         // Activate queued plan immediately on status fetch if expired!
         const q = subscription.queuedPlan!;
-        const dMs = q.durationMs || toMs(q.durationDays || q.planSnapshot?.dayLimit || 30, 'days');
+        const dMs = q.durationMs || (q.planSnapshot?.planDurationValueInMinute ? q.planSnapshot.planDurationValueInMinute * 60 * 1000 : toMs(q.durationDays || q.planSnapshot?.dayLimit || 30, 'days'));
         const newStartAt = now;
         const newExpireAt = new Date(newStartAt.getTime() + dMs);
-        const newGraceEndsAt = new Date(newExpireAt.getTime() + backupHours * 60 * 60 * 1000);
+        const newGraceMs = (q.planSnapshot?.graceTimeInMinute || 4320) * 60 * 1000;
+        const newGraceEndsAt = new Date(newExpireAt.getTime() + newGraceMs);
 
         subscription.status = 'active';
         subscription.planSnapshot = q.planSnapshot;
@@ -1037,6 +1114,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
         subscription.graceEndsAt = newGraceEndsAt;
         subscription.txnId = q.txnId;
         subscription.isTrial = false;
+        subscription.planLiveMinutesUsed = 0;
         if (q.storageAddon) {
           subscription.addonStorageBytes = (subscription.addonStorageBytes || 0) + (q.storageAddon.storageBytes || 0);
           subscription.lastPurchasedStorageAddonId = q.storageAddon.addonId;
@@ -1055,7 +1133,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
       }
     }
 
-    const expireNotifyIntervalMin = options.expringSoonWarNotificationInterval || options.planValidityExpireNotificationIntervalMin || 120;
+    const expireNotifyIntervalMin = options.expringSoonWarNotificationIntervalInMinute || options.expringSoonWarNotificationInterval || 120;
     let shouldSendExpireWarnNotify = false;
 
     if (isPlanExpired && !hasQueuedPlan) {
@@ -1070,6 +1148,8 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
       await subscription.save();
     }
 
+    const liveRemaining = await LiveUsageService.getRemainingLiveMinutes(parentUserId);
+
     return res.json({
       success: true,
       subscription,
@@ -1081,13 +1161,18 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
       liveUsage: {
         dayKey,
         monthKey,
-        dailyMinutesUsed,
-        dailyLimit: dailyPlanLimit,
-        remainingDailyMinutes,
-        addonPool,
+        dailyMinutesUsed: liveRemaining.dailyUsed,
+        dailyLimit: liveRemaining.dailyLimit,
+        remainingDailyMinutes: liveRemaining.dailyRemaining,
+        planTotalLimit: liveRemaining.planTotalLimit,
+        planTotalUsed: liveRemaining.planTotalUsed,
+        planTotalRemaining: liveRemaining.planTotalRemaining,
+        basePlanRemainingToday: liveRemaining.basePlanRemainingToday,
+        addonPool: liveRemaining.addonPoolRemaining,
         addonMinutesUsed,
-        remainingAddonPool,
-        totalRemainingLiveMinutes,
+        remainingAddonPool: liveRemaining.addonPoolRemaining,
+        totalRemainingLiveMinutes: liveRemaining.totalRemaining,
+        liveSessionMaxMin: options.liveSessionMaxMin || 5,
       },
       alerts: {
         isStorageWarn,
@@ -1102,6 +1187,36 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
         graceEndsAt: subscription.graceEndsAt.toISOString(),
         hasQueuedPlan,
         shouldSendExpireWarnNotify: hasQueuedPlan ? false : shouldSendExpireWarnNotify,
+        liveSessionMaxMin: options.liveSessionMaxMin || 5,
+        statusGoodUntilStorage: options.statusGoodUntilStorage || 50,
+        statusAverageUntilStorage: options.statusAverageUntilStorage || 80,
+        statusBadAboveStorage: options.statusBadAboveStorage || 80,
+        configOptions: {
+          liveSessionMaxMin: options.liveSessionMaxMin || 5,
+          statusGoodUntilStorage: options.statusGoodUntilStorage || 50,
+          statusAverageUntilStorage: options.statusAverageUntilStorage || 80,
+          statusBadAboveStorage: options.statusBadAboveStorage || 80,
+          trialExpringSoonWarDialogIntervalInMinute: options.trialExpringSoonWarDialogIntervalInMinute || 120,
+          trialExpringSoonWarDialogBeforeTimeInMinute: options.trialExpringSoonWarDialogBeforeTimeInMinute || 240,
+          trialExpringSoonWarNotificationIntervalInMinute: options.trialExpringSoonWarNotificationIntervalInMinute || 120,
+          trialExpringSoonWarNotificationBeforeTimeInMinute: options.trialExpringSoonWarNotificationBeforeTimeInMinute || 240,
+          trialExpiredWarNotificationAfterTimeInMinute: options.trialExpiredWarNotificationAfterTimeInMinute || 60,
+          trialExpiredWarNotificationIntervalInMinute: options.trialExpiredWarNotificationIntervalInMinute || 120,
+          trialExpiredWarDialogAfterTimeInMinute: options.trialExpiredWarDialogAfterTimeInMinute || 60,
+          trialExpiredWarDialogIntervalInMinute: options.trialExpiredWarDialogIntervalInMinute || 120,
+          expringSoonWarDialogIntervalInMinute: options.expringSoonWarDialogIntervalInMinute || 1440,
+          expringSoonWarDialogBeforeTimeInMinute: options.expringSoonWarDialogBeforeTimeInMinute || 4320,
+          expringSoonWarNotificationIntervalInMinute: options.expringSoonWarNotificationIntervalInMinute || 1440,
+          expringSoonWarNotificationBeforeTimeInMinute: options.expringSoonWarNotificationBeforeTimeInMinute || 4320,
+          expiredWarNotificationAfterTimeInMinute: options.expiredWarNotificationAfterTimeInMinute || 60,
+          expiredWarNotificationIntervalInMinute: options.expiredWarNotificationIntervalInMinute || 1440,
+          expiredWarDialogAfterTimeInMinute: options.expiredWarDialogAfterTimeInMinute || 60,
+          expiredWarDialogIntervalInMinute: options.expiredWarDialogIntervalInMinute || 1440,
+          storageWarnNotificationPercent: options.storageWarnNotificationPercent || 80,
+          storageWarnNotificationIntervalInMinute: options.storageWarnNotificationIntervalInMinute || 120,
+          storageWarnDialogPercent: options.storageWarnDialogPercent || 80,
+          storageWarnDialogIntervalInMinute: options.storageWarnDialogIntervalInMinute || 120,
+        },
       },
     });
   } catch (err: any) {
@@ -1240,20 +1355,15 @@ export const deleteAccount = async (req: Request, res: Response) => {
       ],
     });
 
-    // 5. Remove all Parent-level data: Subscriptions, Orders, LiveUsage, StorageUsage, TrialLedger, User
+    // 5. Remove all Parent-level data: Subscriptions, Orders, LiveUsage, StorageUsage, User
+    // CRITICAL: TrialLedger is PRESERVED so that if the parent re-registers with the same phone or device ID,
+    // the Free Trial will NEVER be offered again!
     const phoneFilter = user?.phoneNumber || (req as any).user?.phoneNumber;
     await Promise.all([
       Subscription.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
       LiveUsage.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
       StorageUsage.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
       Order.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
-      TrialLedger.deleteMany({
-        $or: [
-          { parentUserId: { $in: uniqueParentUserIds } },
-          ...(phoneFilter ? [{ phoneNumber: phoneFilter }] : []),
-          ...(deviceIds.length > 0 ? [{ deviceId: { $in: deviceIds } }] : []),
-        ],
-      }),
       User.deleteMany({
         $or: [
           { _id: { $in: [parentUserId, userObjId].filter(Boolean) } },

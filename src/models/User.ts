@@ -20,6 +20,7 @@ export interface IUser extends Document {
   autoDeleteMinutes?: number;
   autoDeleteCategories?: string[];
   autoDeleteDeviceIds?: string[];
+  languageCode?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -45,6 +46,7 @@ const UserSchema = new Schema<IUser>(
     autoDeleteMinutes: { type: Number, default: 10080 },
     autoDeleteCategories: [{ type: String, default: ['all'] }],
     autoDeleteDeviceIds: [{ type: String }],
+    languageCode: { type: String, default: 'en' },
   },
   { timestamps: true }
 );

@@ -1,24 +1,42 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+export type I18nLangMap = {
+  en?: string;
+  hi?: string;
+  gu?: string;
+  es?: string;
+  fr?: string;
+};
+
 export interface IPlan extends Document {
   planId: string;
   name: string;
-  type: string; // 'monthly' | 'yearly' | '6_months' | '3_months' | 'quarterly' etc.
+  /** Per-language name stored in DB – single source of truth for translations */
+  nameI18n?: I18nLangMap;
+  type: string; // 'monthly' | 'yearly' | '6_months' | '3_months' | 'quarterly' | 'trial' etc.
   priceByRegion: {
     IN_INR: number;
     LOW_USD: number;
     HIGH_USD: number;
   };
   storageBytes: number;
-  dayLimit: number;
-  durationUnit?: 'minutes' | 'hours' | 'days';
-  durationValue?: number; // 0 => fallback to dayLimit
+  planDurationValueInMinute: number;
+  planDurationUnit: 'minutes' | 'hours' | 'days';
+  graceTimeInMinute: number;
+  planPriceDiscountPercen: number;
   isTestPlan?: boolean;
-  liveMinutesTotal: number;
-  liveLimitPerDay: number;
-  liveSessionMaxMin?: number;
+  liveLimitTotalInMinute: number;
+  liveLimitPerDayInMinutes: number;
   deviceLimit: number;
   features: string[];
+  /** Per-language feature lists stored in DB – same order as features[] */
+  featuresI18n?: {
+    en?: string[];
+    hi?: string[];
+    gu?: string[];
+    es?: string[];
+    fr?: string[];
+  };
   isActive: boolean;
   isRecommended: boolean;
   sortOrder: number;
@@ -36,17 +54,29 @@ const PlanSchema: Schema = new Schema(
       HIGH_USD: { type: Number, required: true, default: 9.99 },
     },
     storageBytes: { type: Number, required: true, default: 10737418240 }, // 10 GB
-    dayLimit: { type: Number, default: 30 },
-    // Effective validity value = durationValue > 0 ? durationValue : dayLimit, unit = durationUnit || 'days'.
-    // Real plans with only dayLimit and no durationUnit behave identically to today (defaulting to 'days').
-    durationUnit: { type: String, enum: ['minutes', 'hours', 'days'], default: 'days' },
-    durationValue: { type: Number, default: 0 },
+    planDurationValueInMinute: { type: Number, required: true, default: 43200 }, // 30 days in minutes
+    planDurationUnit: { type: String, enum: ['minutes', 'hours', 'days'], default: 'minutes' },
+    graceTimeInMinute: { type: Number, default: 4320 }, // 3 days in minutes
+    planPriceDiscountPercen: { type: Number, default: 0 },
     isTestPlan: { type: Boolean, default: false, index: true },
-    liveMinutesTotal: { type: Number, default: 60 },
-    liveLimitPerDay: { type: Number, default: 15 },
-    liveSessionMaxMin: { type: Number },
+    liveLimitTotalInMinute: { type: Number, default: 60 },
+    liveLimitPerDayInMinutes: { type: Number, default: 15 },
     deviceLimit: { type: Number, default: 3 },
     features: [{ type: String }],
+    featuresI18n: {
+      en: [{ type: String }],
+      hi: [{ type: String }],
+      gu: [{ type: String }],
+      es: [{ type: String }],
+      fr: [{ type: String }],
+    },
+    nameI18n: {
+      en: { type: String },
+      hi: { type: String },
+      gu: { type: String },
+      es: { type: String },
+      fr: { type: String },
+    },
     isActive: { type: Boolean, default: true, index: true },
     isRecommended: { type: Boolean, default: false },
     sortOrder: { type: Number, default: 0 },

@@ -310,8 +310,11 @@ export class StorageDeleteService {
         }
 
         // 5b. Social Chat History (WhatsApp, Instagram, Snapchat, Messenger)
-        if (isAll || categories.includes('social_chat')) {
-          await ChatMessage.deleteMany(logFilter);
+        if (isAll || categories.includes('chat') || categories.includes('social_chat')) {
+          const chatRes = await ChatMessage.deleteMany(logFilter);
+          if (chatRes.deletedCount > 0) {
+            console.log(`[AUTO-DELETE-PURGE] Purged ${chatRes.deletedCount} chat messages for device ${devId}`);
+          }
         }
 
         anyPurged = true;

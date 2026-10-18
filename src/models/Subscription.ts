@@ -6,13 +6,19 @@ export interface IPlanSnapshot {
   type: string;
   price: number;
   storageBytes: number;
-  liveMinutesTotal: number;
-  liveLimitPerDay: number; // daily plan limit (resets local midnight)
+  liveMinutesTotal?: number;
+  liveLimitPerDay?: number; // daily plan limit (resets local midnight)
+  liveLimitTotalInMinute?: number;
+  liveLimitPerDayInMinutes?: number;
   liveSessionMaxMin?: number;
   deviceLimit: number;
-  dayLimit: number;
+  dayLimit?: number;
+  planDurationValueInMinute?: number;
+  planDurationUnit?: string;
+  graceTimeInMinute?: number;
+  planPriceDiscountPercen?: number;
   durationMs?: number;
-  graceDays: number;
+  graceDays?: number;
   storageWarnPercent: number;
   features: string[];
   isAllowSocialAppChatHistory?: boolean;
@@ -20,7 +26,7 @@ export interface IPlanSnapshot {
 
 export interface IQueuedPlan {
   planSnapshot: IPlanSnapshot;
-  durationDays: number;
+  durationDays?: number;
   durationMs?: number;
   txnId: string;
   region: string;
@@ -57,6 +63,8 @@ export interface ISubscription extends Document {
   isTrial: boolean;
   lastStorageWarnNotificationAt?: Date;
   lastExpireWarnNotificationAt?: Date;
+  addonLiveExhaustedNotified?: boolean;
+  planLiveMinutesUsed?: number; // cumulative live minutes used from base plan
 }
 
 const PlanSnapshotSchema: Schema = new Schema(
@@ -68,9 +76,15 @@ const PlanSnapshotSchema: Schema = new Schema(
     storageBytes: { type: Number, required: true },
     liveMinutesTotal: { type: Number, default: 60 },
     liveLimitPerDay: { type: Number, default: 15 },
+    liveLimitTotalInMinute: { type: Number },
+    liveLimitPerDayInMinutes: { type: Number },
     liveSessionMaxMin: { type: Number },
     deviceLimit: { type: Number, default: 3 },
     dayLimit: { type: Number, default: 30 },
+    planDurationValueInMinute: { type: Number },
+    planDurationUnit: { type: String, default: 'minutes' },
+    graceTimeInMinute: { type: Number, default: 4320 },
+    planPriceDiscountPercen: { type: Number, default: 0 },
     durationMs: { type: Number, default: 0 },
     graceDays: { type: Number, default: 3 },
     storageWarnPercent: { type: Number, default: 80 },
@@ -128,6 +142,8 @@ const SubscriptionSchema: Schema = new Schema(
     isTrial: { type: Boolean, default: false },
     lastStorageWarnNotificationAt: { type: Date },
     lastExpireWarnNotificationAt: { type: Date },
+    addonLiveExhaustedNotified: { type: Boolean, default: false },
+    planLiveMinutesUsed: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

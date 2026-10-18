@@ -2,6 +2,7 @@ import { LiveUsage } from '../models/LiveUsage';
 import { Subscription } from '../models/Subscription';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { ConfigService } from './ConfigService';
+import { sendLocalizedFcmTopicNotification } from './fcm.service';
 
 export interface ActiveLiveSession {
   sessionId: string;
@@ -38,7 +39,7 @@ export class LiveUsageService {
   }
 
   /**
-   * Check remaining live minutes (daily plan limit + add-on booster pool)
+   * Check remaining live minutes (daily plan limit + overall plan limit + add-on booster pool)
    */
   public static async getRemainingLiveMinutes(parentUserId: string): Promise<{
     hasSubscription: boolean;
@@ -46,6 +47,10 @@ export class LiveUsageService {
     dailyLimit: number;
     dailyUsed: number;
     dailyRemaining: number;
+    planTotalLimit: number;
+    planTotalUsed: number;
+    planTotalRemaining: number;
+    basePlanRemainingToday: number;
     addonPoolRemaining: number;
     totalRemaining: number;
     sub: any;
@@ -62,6 +67,10 @@ export class LiveUsageService {
         dailyLimit: 0,
         dailyUsed: 0,
         dailyRemaining: 0,
+        planTotalLimit: 0,
+        planTotalUsed: 0,
+        planTotalRemaining: 0,
+        basePlanRemainingToday: 0,
         addonPoolRemaining: 0,
         totalRemaining: 0,
         sub,
@@ -70,20 +79,48 @@ export class LiveUsageService {
 
     const now = new Date();
     const dayKey = this.getDayKey(now);
-    const dailyLimit = sub.planSnapshot?.liveLimitPerDay || 15;
-    const addonPoolRemaining = Math.max(0, sub.addonLiveMinutesPool || 0);
+
+    // 1. Overall Plan Cumulative Live Limit
+    const planTotalLimit = Number(sub.planSnapshot?.liveLimitTotalInMinute ?? sub.planSnapshot?.liveMinutesTotal ?? 0);
+    const planTotalUsed = Number(sub.planLiveMinutesUsed ?? 0);
+    const hasTotalLimit = planTotalLimit > 0;
+    const planTotalRemaining = hasTotalLimit ? Math.max(0, planTotalLimit - planTotalUsed) : Infinity;
+
+    // 2. Daily Plan Limit
+    const rawDailyLimit = Number(sub.planSnapshot?.liveLimitPerDayInMinutes ?? sub.planSnapshot?.liveLimitPerDay ?? 0);
+    const hasDailyLimit = rawDailyLimit > 0;
 
     const liveUsage = await LiveUsage.findOne({ parentUserId, dayKey });
     const dailyUsed = liveUsage ? (liveUsage.dailyMinutesUsed || 0) : 0;
-    const dailyRemaining = Math.max(0, dailyLimit - dailyUsed);
-    const totalRemaining = dailyRemaining + addonPoolRemaining;
+    const dailyRemaining = hasDailyLimit ? Math.max(0, rawDailyLimit - dailyUsed) : Infinity;
+
+    // 3. Base plan minutes remaining today:
+    // If daily limit exists, today cannot exceed today's remaining daily limit.
+    // Also, today cannot exceed what remains in the entire base plan!
+    let basePlanRemainingToday = 0;
+    if (hasDailyLimit && hasTotalLimit) {
+      basePlanRemainingToday = Math.min(dailyRemaining, planTotalRemaining);
+    } else if (hasDailyLimit) {
+      basePlanRemainingToday = dailyRemaining;
+    } else if (hasTotalLimit) {
+      basePlanRemainingToday = planTotalRemaining;
+    } else {
+      basePlanRemainingToday = 999999;
+    }
+
+    const addonPoolRemaining = Math.max(0, sub.addonLiveMinutesPool || 0);
+    const totalRemaining = (basePlanRemainingToday === Infinity ? 999999 : basePlanRemainingToday) + addonPoolRemaining;
 
     return {
       hasSubscription: true,
       isExpired: false,
-      dailyLimit,
+      dailyLimit: hasDailyLimit ? rawDailyLimit : (hasTotalLimit ? planTotalLimit : 0),
       dailyUsed,
-      dailyRemaining,
+      dailyRemaining: basePlanRemainingToday === Infinity ? 999999 : basePlanRemainingToday,
+      planTotalLimit,
+      planTotalUsed,
+      planTotalRemaining: hasTotalLimit ? planTotalRemaining : 999999,
+      basePlanRemainingToday: basePlanRemainingToday === Infinity ? 999999 : basePlanRemainingToday,
       addonPoolRemaining,
       totalRemaining,
       sub,
@@ -133,16 +170,25 @@ export class LiveUsageService {
 
     // Per-session limit cap strictly from ConfigService based on session/feature type
     const options = await ConfigService.getMergedOptions();
-    let perSessionCap = 5;
+    // Default per-session limit from config table (options.liveSessionMaxMin), fallback to 5
+    const defaultSessionCap = Number(options.liveSessionMaxMin) > 0 ? Number(options.liveSessionMaxMin) : 5;
+
+    let perSessionCap = defaultSessionCap;
 
     const sessionType = (type || '').toLowerCase();
     if (sessionType.includes('audio') || sessionType.includes('mic')) {
-      perSessionCap = Number(options.liveAudioPerSessionLimitMin) || 5;
+      perSessionCap = Number(options.liveAudioPerSessionLimitMin) > 0
+        ? Number(options.liveAudioPerSessionLimitMin)
+        : defaultSessionCap;
     } else if (sessionType.includes('screen') || sessionType.includes('mirror')) {
-      perSessionCap = Number(options.liveScreenMirrorPerSessionLimitMin) || 5;
+      perSessionCap = Number(options.liveScreenMirrorPerSessionLimitMin) > 0
+        ? Number(options.liveScreenMirrorPerSessionLimitMin)
+        : defaultSessionCap;
     } else {
       // video, camera, or default
-      perSessionCap = Number(options.liveVideoPerSessionLimitMin) || Number(options.liveSessionMaxMin) || 5;
+      perSessionCap = Number(options.liveVideoPerSessionLimitMin) > 0
+        ? Number(options.liveVideoPerSessionLimitMin)
+        : defaultSessionCap;
     }
 
     const sessionAllowedMinutes = perSessionCap > 0
@@ -260,19 +306,20 @@ export class LiveUsageService {
     // Also send FCM push notification to parent topic so notification shows when app is closed / in background
     try {
       if (session.parentUserId) {
-        const { sendFcmTopicNotification } = require('./fcm.service');
-        const sessionTitle = isSessionCap ? 'Live Stream Limit Reached' : 'Daily Live Minutes Exhausted';
-        sendFcmTopicNotification(
-          `parent_${session.parentUserId}`,
-          sessionTitle,
-          message,
-          {
-            type: reason,
-            sessionId: session.sessionId,
-            deviceId: session.deviceId,
-            streamType: session.type || 'camera',
-          }
-        ).catch((err: any) => console.warn('[FCM-CUTOFF-WARN]', err?.message));
+          const { sendLocalizedFcmTopicNotification } = require('./fcm.service');
+          const templateKey = isSessionCap ? 'LIVE_TOTAL_LIMIT_REACHED' : 'LIVE_DAILY_LIMIT_REACHED';
+          await sendLocalizedFcmTopicNotification(
+            `parent_${session.parentUserId}`,
+            templateKey,
+            {}, // no params
+            undefined, // resolve language from topic
+            {
+              type: reason,
+              sessionId: session.sessionId,
+              deviceId: session.deviceId,
+              streamType: session.type || 'camera',
+            }
+          ).catch((err: any) => console.warn('[FCM-CUTOFF-WARN]', err?.message));
       }
     } catch (pushErr: any) {
       console.warn('[LIVE-USAGE-CUTOFF-FCM-ERR]', pushErr?.message);
@@ -323,27 +370,48 @@ export class LiveUsageService {
     console.log(`[LIVE-USAGE-END] Session ${session.sessionId} ended (${reason}). Elapsed: ${elapsedSeconds}s. Charging: ${minutesToCharge} minute(s).`);
 
     // Atomic consumption:
-    // 1. Fetch current daily usage to compute available daily bucket
+    // 1. Fetch current subscription and daily usage to compute available capacities
     const now = new Date();
     const dayKey = session.dayKey || this.getDayKey(now);
     const monthKey = this.getMonthKey(now);
 
+    const sub = await Subscription.findOne({ parentUserId: session.parentUserId });
+    const planTotalLimit = Number(sub?.planSnapshot?.liveLimitTotalInMinute ?? sub?.planSnapshot?.liveMinutesTotal ?? 0);
+    const currentPlanTotalUsed = Number(sub?.planLiveMinutesUsed ?? 0);
+    const hasTotalLimit = planTotalLimit > 0;
+    const planCapacity = hasTotalLimit ? Math.max(0, planTotalLimit - currentPlanTotalUsed) : Infinity;
+
+    const rawDailyLimit = Number(sub?.planSnapshot?.liveLimitPerDayInMinutes ?? sub?.planSnapshot?.liveLimitPerDay ?? session.dailyPlanLimit ?? 0);
+    const hasDailyLimit = rawDailyLimit > 0;
+
     let liveUsage = await LiveUsage.findOne({ parentUserId: session.parentUserId, dayKey });
     const currentDailyUsed = liveUsage ? (liveUsage.dailyMinutesUsed || 0) : 0;
-    const dailyCapacity = Math.max(0, session.dailyPlanLimit - currentDailyUsed);
+    const dailyCapacity = hasDailyLimit ? Math.max(0, rawDailyLimit - currentDailyUsed) : Infinity;
 
-    const toDaily = Math.min(minutesToCharge, dailyCapacity);
-    const toAddon = minutesToCharge - toDaily;
+    // Available capacity from base plan today:
+    let availableBaseCapacity = 0;
+    if (hasDailyLimit && hasTotalLimit) {
+      availableBaseCapacity = Math.min(dailyCapacity, planCapacity);
+    } else if (hasDailyLimit) {
+      availableBaseCapacity = dailyCapacity;
+    } else if (hasTotalLimit) {
+      availableBaseCapacity = planCapacity;
+    } else {
+      availableBaseCapacity = minutesToCharge;
+    }
 
-    console.log(`[LIVE-USAGE-SPLIT] Session ${session.sessionId}: Total=${minutesToCharge} min -> Daily=${toDaily} min, AddonPool=${toAddon} min`);
+    const toBase = Math.min(minutesToCharge, Math.max(0, availableBaseCapacity));
+    const toAddon = minutesToCharge - toBase;
 
-    // 2. Atomic $inc on LiveUsage
+    console.log(`[LIVE-USAGE-SPLIT] Session ${session.sessionId}: Total=${minutesToCharge} min -> BasePlan=${toBase} min, AddonPool=${toAddon} min`);
+
+    // 2. Atomic $inc on LiveUsage for today
     const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
     await LiveUsage.findOneAndUpdate(
       { parentUserId: session.parentUserId, dayKey },
       {
         $inc: {
-          dailyMinutesUsed: toDaily,
+          dailyMinutesUsed: toBase,
           addonMinutesUsed: toAddon,
           minutesUsed: minutesToCharge,
         },
@@ -355,19 +423,85 @@ export class LiveUsageService {
       { upsert: true, new: true }
     );
 
-    // 3. Atomic deduction from Subscription.addonLiveMinutesPool if overflow consumed from addon pool
+    // 3. Atomic $inc on Subscription.planLiveMinutesUsed and decrement addon pool if toAddon > 0
+    const subUpdates: any = {};
+    if (toBase > 0) {
+      subUpdates.$inc = subUpdates.$inc || {};
+      subUpdates.$inc.planLiveMinutesUsed = toBase;
+    }
     if (toAddon > 0) {
+      subUpdates.$inc = subUpdates.$inc || {};
+      subUpdates.$inc.addonLiveMinutesPool = -toAddon;
+    }
+
+    if (Object.keys(subUpdates).length > 0) {
       await Subscription.updateOne(
         { parentUserId: session.parentUserId },
-        {
-          $inc: { addonLiveMinutesPool: -toAddon },
+        subUpdates
+      );
+      if (toAddon > 0) {
+        // Clamp pool to zero if it ever became negative
+        await Subscription.updateOne(
+          { parentUserId: session.parentUserId, addonLiveMinutesPool: { $lt: 0 } },
+          { $set: { addonLiveMinutesPool: 0 } }
+        );
+      }
+    }
+
+    // 4. Live Limit Exhaustion Notifications (Active Real Plan only, single-time)
+    try {
+      const isTrial = sub?.status === 'trial' || sub?.isTrial === true || sub?.planSnapshot?.type === 'trial';
+      const isRealActivePlan = sub && sub.status === 'active' && !isTrial;
+
+      if (isRealActivePlan) {
+        const prevDailyUsed = currentDailyUsed;
+        const newDailyUsed = currentDailyUsed + toBase;
+        const prevPlanTotalUsed = currentPlanTotalUsed;
+        const newPlanTotalUsed = currentPlanTotalUsed + toBase;
+        const prevAddonPool = (sub.addonLiveMinutesPool || 0) + toAddon;
+        const newAddonPool = Math.max(0, (sub.addonLiveMinutesPool || 0) - toAddon);
+
+        // Case 1: Daily or Total plan limit reached and no add-on live minutes available
+        const dailyExhaustedNow = hasDailyLimit && prevDailyUsed < rawDailyLimit && newDailyUsed >= rawDailyLimit;
+        const totalPlanExhaustedNow = hasTotalLimit && prevPlanTotalUsed < planTotalLimit && newPlanTotalUsed >= planTotalLimit;
+
+        if ((dailyExhaustedNow || totalPlanExhaustedNow) && newAddonPool <= 0) {
+          const freshUsage = await LiveUsage.findOne({ parentUserId: session.parentUserId, dayKey });
+          if (!freshUsage?.dailyLimitNotified) {
+            await LiveUsage.updateOne(
+              { parentUserId: session.parentUserId, dayKey },
+              { $set: { dailyLimitNotified: true } }
+            );
+            const templateKey = totalPlanExhaustedNow ? 'LIVE_TOTAL_LIMIT_REACHED' : 'LIVE_DAILY_LIMIT_REACHED';
+            await sendLocalizedFcmTopicNotification(
+              `parent_${session.parentUserId}`,
+              templateKey,
+              {},
+              undefined,
+              { type: totalPlanExhaustedNow ? 'live_total_limit_reached' : 'live_daily_limit_reached' }
+            );
+            console.log(`[LIVE-NOTIF] Sent single-time Live Limit notification (${templateKey}) to parent_${session.parentUserId}`);
+          }
         }
-      );
-      // Clamp pool to zero if it ever became negative
-      await Subscription.updateOne(
-        { parentUserId: session.parentUserId, addonLiveMinutesPool: { $lt: 0 } },
-        { $set: { addonLiveMinutesPool: 0 } }
-      );
+
+        // Case 2: Live minutes ADD-ON booster plan minutes exhausted
+        if (prevAddonPool > 0 && newAddonPool <= 0) {
+          if (!sub.addonLiveExhaustedNotified) {
+            sub.addonLiveExhaustedNotified = true;
+            await sub.save();
+            await sendLocalizedFcmTopicNotification(
+              `parent_${session.parentUserId}`,
+              'LIVE_ADDON_EXHAUSTED',
+              {},
+              undefined,
+              { type: 'live_addon_exhausted' }
+            );
+            console.log(`[LIVE-NOTIF] Sent single-time Live Minutes Booster Exhausted notification to parent_${session.parentUserId}`);
+          }
+        }
+      }
+    } catch (notifErr: any) {
+      console.error(`[LIVE-NOTIF-ERROR] ${notifErr?.message}`);
     }
 
     return minutesToCharge;

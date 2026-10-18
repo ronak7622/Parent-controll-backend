@@ -82,6 +82,25 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       }
 
       if (!auth) {
+        // Fallback for child device socket: if role === 'child' and the device exists & is paired in MongoDB, allow room join!
+        if (role === 'child' && rawDeviceId) {
+          const isObjId = mongoose.isValidObjectId(rawDeviceId);
+          const dev = await Device.findOne({
+            $or: [
+              { deviceId: rawDeviceId },
+              ...(isObjId ? [{ _id: rawDeviceId }] : [])
+            ],
+            isPaired: true
+          });
+          if (dev) {
+            auth = { kind: 'device', deviceId: dev.deviceId };
+            socket.data.auth = auth;
+            console.log(`[WEBRTC-ROOM] Authenticated child device via DB fallback: ${dev.deviceId} for socket ${socket.id}`);
+          }
+        }
+      }
+
+      if (!auth) {
         console.warn(`[WEBRTC-ROOM] Unauthenticated join attempt for socket ${socket.id}`);
         socket.emit('error', { message: 'Unauthorized room join: Missing token' });
         return;
@@ -133,6 +152,10 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       if (rawDeviceId !== targetDeviceId) {
         socket.join(rawDeviceId);
       }
+      if (auth.userId) {
+        socket.join(`user_${auth.userId}`);
+        socket.join(`parent_${auth.userId}`);
+      }
 
       console.log(`[WEBRTC-ROOM] Socket ${socket.id} (${role}) joined room: ${targetDeviceId} (raw: ${rawDeviceId})`);
       socket.to(targetDeviceId).emit('peer-joined', { socketId: socket.id, role });
@@ -142,6 +165,8 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
 
       if (role === 'child') {
         try {
+          await Device.updateOne({ deviceId: targetDeviceId }, { $set: { isOnline: true, lastSeenAt: new Date() } });
+          socket.to(targetDeviceId).emit('device-status-changed', { deviceId: targetDeviceId, isOnline: true });
           const dev = await Device.findOne({ deviceId: targetDeviceId });
           if (dev) {
             if (dev.blockedPhoneNumbers && dev.blockedPhoneNumbers.length > 0) {
@@ -539,6 +564,41 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       console.log(`[WEBRTC-CAMERA-STATUS] Relaying status for room: ${deviceId}, status: ${data?.status}`);
       if (deviceId) {
         socket.to(deviceId).emit('camera-status', data);
+      }
+    });
+
+    // Real-time Permission Status Updates (Child -> Parent during Pairing & Setup)
+    socket.on('permission-status-update', async (data: any) => {
+      const deviceId = data?.deviceId || socket.data.deviceId;
+      console.log(`[PERMISSION-STATUS] Relaying live permission status update for device: ${deviceId}`);
+      if (deviceId) {
+        if (data?.permissions && typeof data.permissions === 'object') {
+          try {
+            await Device.updateOne(
+              { deviceId },
+              { $set: { grantedPermissions: data.permissions } }
+            );
+          } catch (e: any) {
+            console.warn(`[PERMISSION-STATUS-DB-WARN] Could not persist permissions: ${e.message}`);
+          }
+        }
+
+        socket.to(deviceId).emit('permission-status-update', data);
+        if (socket.data.deviceId && socket.data.deviceId !== deviceId) {
+          socket.to(socket.data.deviceId).emit('permission-status-update', data);
+        }
+      }
+    });
+
+    // Request Live Permission Status (Parent -> Child)
+    socket.on('request-permission-status', (data: any) => {
+      const deviceId = data?.deviceId || socket.data.deviceId;
+      console.log(`[REQUEST-PERMISSION-STATUS] Relaying request for device: ${deviceId}`);
+      if (deviceId) {
+        socket.to(deviceId).emit('request-permission-status', data);
+        if (socket.data.deviceId && socket.data.deviceId !== deviceId) {
+          socket.to(socket.data.deviceId).emit('request-permission-status', data);
+        }
       }
     });
 

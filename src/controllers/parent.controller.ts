@@ -26,6 +26,7 @@ import { sendFcmDataCommand } from '../services/fcm.service';
 import { getReadQuery, buildShardFilter, clampPaginationLimit } from '../dal/db.dal';
 import { cacheService } from '../services/cache.service';
 import { StorageAccountingService } from '../services/StorageAccountingService';
+import { checkQuotaBlocked } from './ingest.controller';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC+5:30
 
@@ -2331,6 +2332,17 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
       if (dev && dev.deviceId) {
         targetDeviceId = dev.deviceId;
       }
+    }
+
+    // Check if cloud storage is full
+    const isBlocked = await checkQuotaBlocked(targetDeviceId);
+    if (isBlocked) {
+      return res.status(403).json({
+        success: false,
+        online: false,
+        storageFull: true,
+        message: 'Cloud storage is 100% full. Sync is disabled until storage is cleaned or upgraded.',
+      });
     }
 
     await Device.updateOne(

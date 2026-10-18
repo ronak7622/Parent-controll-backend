@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import mongoose from 'mongoose';
 import { Recording } from '../models/Recording';
 import { Device } from '../models/Device';
-import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
+import { sendFcmDataCommand, sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
@@ -123,6 +123,16 @@ export const startRecording = async (req: Request, res: Response) => {
     const deviceId = await resolveCanonicalDeviceId(inputDeviceId);
     if (!deviceId) {
       return res.status(404).json({ success: false, message: 'Device not found' });
+    }
+
+    // Storage full check: reject new recording if quota is 100% full
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'STORAGE_FULL',
+        storageFull: true,
+        message: 'Cloud storage is 100% full. New recordings cannot be started until storage is cleaned or upgraded.',
+      });
     }
 
     // 1. Mutual Exclusivity Lock Check (Part 3 & Part 10)
@@ -724,16 +734,24 @@ export const completeRecording = async (req: Request, res: Response) => {
 
       const childName = device.deviceName || 'Child Device';
       const durationStr = formatDuration(recording.durationSeconds);
-      const title = `${typeLabel} Saved`;
-      const body = `${childName} completed ${typeLabel.toLowerCase()} (${durationStr})`;
 
-      sendFcmTopicNotification(`parent_${device.parentUserId}`, title, body, {
-        type: 'RECORDING_COMPLETED',
-        deviceId,
-        recordingType: recording.recordingType,
-        sessionId: recording.sessionId,
-        durationSeconds: String(recording.durationSeconds),
-      }).catch((err) => console.warn('[FCM] Recording completion push error:', err?.message));
+      sendLocalizedFcmTopicNotification(
+        `parent_${device.parentUserId}`,
+        'RECORDING_COMPLETED',
+        {
+          typeLabel,
+          childName,
+          durationStr,
+        },
+        undefined,
+        {
+          type: 'RECORDING_COMPLETED',
+          deviceId,
+          recordingType: recording.recordingType,
+          sessionId: recording.sessionId,
+          durationSeconds: String(recording.durationSeconds),
+        }
+      ).catch((err) => console.warn('[FCM] Recording completion push error:', err?.message));
     }
 
     return res.json({

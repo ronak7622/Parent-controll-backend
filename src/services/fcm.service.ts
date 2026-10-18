@@ -1,5 +1,7 @@
 import admin from 'firebase-admin';
 import { config } from '../config/env';
+import { getLocalizedNotification } from '../config/notificationTemplates';
+import { User } from '../models/User';
 
 let isFirebaseInitialized = false;
 
@@ -99,4 +101,33 @@ export const sendFcmTopicNotification = async (
     console.error(`[FCM-ERROR] Failed to send notification to topic '${topic}':`, error);
     return false;
   }
+};
+
+export const sendLocalizedFcmTopicNotification = async (
+  topic: string,
+  templateKey: string,
+  params: Record<string, string | number> = {},
+  languageCode?: string,
+  extraData: Record<string, string> = {}
+): Promise<boolean> => {
+  let lang = languageCode;
+  if (!lang || lang === 'en') {
+    if (topic.startsWith('parent_')) {
+      const parentUserId = topic.replace('parent_', '');
+      try {
+        const u = await User.findById(parentUserId).select('languageCode').lean();
+        if (u?.languageCode) {
+          lang = u.languageCode;
+        }
+      } catch {
+        // Fallback to en
+      }
+    }
+  }
+
+  const { title, body } = getLocalizedNotification(templateKey, lang || 'en', params);
+  return sendFcmTopicNotification(topic, title, body, {
+    templateKey,
+    ...extraData,
+  });
 };

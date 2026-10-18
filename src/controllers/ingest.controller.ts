@@ -21,10 +21,11 @@ import { Device } from '../models/Device';
 import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl } from '../services/r2.service';
 import { config } from '../config/env';
 import { enqueueIngestJob } from '../queues/ingest.queue';
-import { sendFcmTopicNotification } from '../services/fcm.service';
+import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
 import { isIgnoredSystemPackage, getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { Subscription } from '../models/Subscription';
+import { ConfigService } from '../services/ConfigService';
 
 export const checkQuotaBlocked = async (deviceId: string): Promise<boolean> => {
   try {
@@ -58,7 +59,7 @@ export const getLocalDateString = getISTDateString;
  */
 export const updateHeartbeat = async (req: Request, res: Response) => {
   try {
-    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled } = req.body;
+    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled, appVersionCode, appVersionName } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     const mongoSet: any = {
@@ -72,6 +73,13 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       const locVal = typeof isLocationEnabled !== 'undefined' ? isLocationEnabled : locationEnabled;
       mongoSet.isLocationEnabled = locVal;
       mongoSet.locationEnabled = locVal;
+    }
+
+    if (typeof appVersionCode !== 'undefined') {
+      mongoSet.appVersionCode = Number(appVersionCode) || 0;
+    }
+    if (typeof appVersionName !== 'undefined') {
+      mongoSet.appVersionName = String(appVersionName).trim();
     }
 
     const isObjId = mongoose.isValidObjectId(deviceId);
@@ -132,6 +140,8 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       }
     }
 
+    const options = await ConfigService.getMergedOptions();
+
     return res.json({
       success: true,
       isPaired: true,
@@ -144,6 +154,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       expiryAt: expiryAtStr,
       graceEndsAt: graceEndsAtStr,
       hasQueuedPlan,
+      allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
       restrictions: {
         youtubeBlocked: device.youtubeBlocked ?? false,
         youtubeShortsBlocked: device.youtubeShortsBlocked ?? false,
@@ -164,6 +175,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         blockedApps: device.blockedApps || [],
         blockedPhoneNumbers: device.blockedPhoneNumbers || [],
         blockedOutgoingPhoneNumbers: device.blockedOutgoingPhoneNumbers || [],
+        allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
         subState,
         uploadBlocked,
         isExpired,
@@ -310,14 +322,21 @@ async function sendBlockedUrlPush(deviceId: string, doc: any) {
     ? 'today' 
     : `${String(eventTime.getDate()).padStart(2, '0')}/${String(eventTime.getMonth() + 1).padStart(2, '0')}/${eventTime.getFullYear()}`;
 
-  const title = 'Blocked URL Access';
-  const body = `${childName} attempted to access "${target}" in ${reason} at ${dateFormatted} ${timeFormatted}`;
-
-  await sendFcmTopicNotification(`parent_${device.parentUserId}`, title, body, {
-    type: 'BLOCKED_URL_ACCESS',
-    deviceId,
-    url: target,
-  });
+  await sendLocalizedFcmTopicNotification(
+    `parent_${device.parentUserId}`,
+    'BLOCKED_URL_ATTEMPT',
+    {
+      childName,
+      url: target,
+      reason,
+    },
+    undefined,
+    {
+      type: 'BLOCKED_URL_ACCESS',
+      deviceId,
+      url: target,
+    }
+  );
 }
 
 /**
@@ -420,17 +439,23 @@ async function sendYoutubeBlockedPush(
   }
 
   const childName = device.deviceName || 'Child Device';
-  const title = isShorts ? 'Blocked Shorts Access' : 'Blocked YouTube Access';
   const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-  const body = isShorts
-    ? `${childName} attempted to access YouTube Shorts at ${timeStr} while blocked`
-    : `${childName} attempted to open YouTube App at ${timeStr} while blocked`;
+  const templateKey = isShorts ? 'YOUTUBE_SHORTS_BLOCKED' : 'YOUTUBE_APP_BLOCKED';
 
-  await sendFcmTopicNotification(`parent_${device.parentUserId}`, title, body, {
-    type: isShorts ? 'YOUTUBE_SHORTS_BLOCKED' : 'YOUTUBE_APP_BLOCKED',
-    deviceId,
-    reason: blockReason || '',
-  });
+  await sendLocalizedFcmTopicNotification(
+    `parent_${device.parentUserId}`,
+    templateKey,
+    {
+      childName,
+      timeStr,
+    },
+    undefined,
+    {
+      type: templateKey,
+      deviceId,
+      reason: blockReason || '',
+    }
+  );
 }
 
 /**

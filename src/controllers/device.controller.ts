@@ -22,7 +22,8 @@ import { KeyboardLog } from '../models/KeyboardLog';
 import { WifiLog } from '../models/wifi-log.model';
 import { InternetLog } from '../models/internet-log.model';
 import { ScheduleConfig } from '../models/ScheduleConfig';
-import { sendFcmDataCommand, sendFcmTopicNotification } from '../services/fcm.service';
+import { sendFcmDataCommand, sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
+import { ConfigService } from '../services/ConfigService';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { cacheService, getRedisClient } from '../services/cache.service';
 
@@ -134,7 +135,7 @@ export const checkPairingStatus = async (req: any, res: Response) => {
  */
 export const completeChildSetup = async (req: any, res: Response) => {
   try {
-    const { deviceId, code } = req.body;
+    const { deviceId, code, secretCode, secureOurChildApp, isAppHidden, deviceName, appVersionCode, appVersionName, languageCode } = req.body;
     const targetId = deviceId || code;
 
     if (!targetId) {
@@ -153,9 +154,18 @@ export const completeChildSetup = async (req: any, res: Response) => {
     if (initialDevice.pairingCode) queryFilters.push({ pairingCode: initialDevice.pairingCode });
     if (initialDevice.deviceId) queryFilters.push({ deviceId: initialDevice.deviceId });
 
+    const updateFields: any = { isSetupComplete: true, isPaired: true };
+    if (secretCode) updateFields.secretCode = String(secretCode).trim();
+    if (typeof secureOurChildApp !== 'undefined') updateFields.secureOurChildApp = Boolean(secureOurChildApp);
+    if (typeof isAppHidden !== 'undefined') updateFields.isAppHidden = Boolean(isAppHidden);
+    if (deviceName && String(deviceName).trim().length > 0) updateFields.deviceName = String(deviceName).trim();
+    if (typeof appVersionCode !== 'undefined') updateFields.appVersionCode = Number(appVersionCode) || 0;
+    if (typeof appVersionName !== 'undefined') updateFields.appVersionName = String(appVersionName).trim();
+    if (languageCode) updateFields.languageCode = String(languageCode).trim().toLowerCase();
+
     await Device.updateMany(
       { $or: queryFilters },
-      { $set: { isSetupComplete: true, isPaired: true } }
+      { $set: updateFields }
     );
 
     const updatedDevice = await Device.findOne({ deviceId: targetId }) || initialDevice;
@@ -168,6 +178,8 @@ export const completeChildSetup = async (req: any, res: Response) => {
       { expiresIn: '3650d' }
     );
 
+    const options = await ConfigService.getMergedOptions();
+
     return res.json({
       success: true,
       message: 'Setup completed successfully',
@@ -175,6 +187,8 @@ export const completeChildSetup = async (req: any, res: Response) => {
       deviceId: updatedDevice.deviceId,
       deviceToken,
       device: updatedDevice,
+      allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
+      allowDeveloperMode: Boolean(options.allowDeveloperModeOnChildApp),
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -215,6 +229,12 @@ export const checkSetupStatus = async (req: any, res: Response) => {
         deviceName: targetDevice.deviceName,
         deviceBrand: targetDevice.deviceBrand,
         deviceModel: targetDevice.deviceModel,
+        secretCode: targetDevice.secretCode || '',
+        secureOurChildApp: targetDevice.secureOurChildApp ?? true,
+        isAppHidden: targetDevice.isAppHidden ?? false,
+        grantedPermissions: targetDevice.grantedPermissions || {},
+        appVersionCode: targetDevice.appVersionCode || 0,
+        appVersionName: targetDevice.appVersionName || '',
       });
     }
 
@@ -293,7 +313,7 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
  */
 export const pairChildDevice = async (req: any, res: Response) => {
   try {
-    const { deviceId, code, pairingCode, deviceName, deviceModel, deviceBrand, osType, fcmToken, parentUserId } = req.body;
+    const { deviceId, code, pairingCode, deviceName, deviceModel, deviceBrand, osType, fcmToken, parentUserId, appVersionCode, appVersionName, languageCode } = req.body;
     if (!deviceId) {
       return res.status(400).json({ success: false, message: 'deviceId is required.' });
     }
@@ -316,6 +336,9 @@ export const pairChildDevice = async (req: any, res: Response) => {
         if (deviceBrand) codeRecord.deviceBrand = deviceBrand;
         if (deviceModel) codeRecord.deviceModel = deviceModel;
         codeRecord.deviceName = finalDevName;
+        if (typeof appVersionCode !== 'undefined') codeRecord.appVersionCode = Number(appVersionCode) || 0;
+        if (typeof appVersionName !== 'undefined') codeRecord.appVersionName = String(appVersionName).trim();
+        if (languageCode) codeRecord.languageCode = String(languageCode).trim().toLowerCase();
         await codeRecord.save();
       } else {
         // If child specified a code that does not exist in backend, return 400
@@ -336,6 +359,9 @@ export const pairChildDevice = async (req: any, res: Response) => {
         isPaired: true,
         isSetupComplete: false,
         fcmToken: fcmToken || '',
+        appVersionCode: typeof appVersionCode !== 'undefined' ? Number(appVersionCode) || 0 : 0,
+        appVersionName: typeof appVersionName !== 'undefined' ? String(appVersionName).trim() : '',
+        languageCode: languageCode ? String(languageCode).trim().toLowerCase() : 'en',
       });
     } else {
       if (targetParentUserId) device.parentUserId = targetParentUserId;
@@ -348,6 +374,9 @@ export const pairChildDevice = async (req: any, res: Response) => {
       device.isSetupComplete = false;
       device.isOnline = true;
       device.lastSeenAt = new Date();
+      if (typeof appVersionCode !== 'undefined') device.appVersionCode = Number(appVersionCode) || 0;
+      if (typeof appVersionName !== 'undefined') device.appVersionName = String(appVersionName).trim();
+      if (languageCode) device.languageCode = String(languageCode).trim().toLowerCase();
     }
 
     await device.save();
@@ -362,6 +391,8 @@ export const pairChildDevice = async (req: any, res: Response) => {
     const deviceData = device.toObject();
     delete deviceData.installedApps;
 
+    const options = await ConfigService.getMergedOptions();
+
     return res.json({
       success: true,
       message: 'Child device paired successfully.',
@@ -369,6 +400,8 @@ export const pairChildDevice = async (req: any, res: Response) => {
       deviceToken,
       device: deviceData,
       parentUid: device.parentUserId ? device.parentUserId.toString() : 'parent',
+      allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
+      allowDeveloperMode: Boolean(options.allowDeveloperModeOnChildApp),
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -530,6 +563,10 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       blockedApps: device.blockedApps || [],
       locationIntervalSeconds: device.locationIntervalSeconds ?? 1800,
       locationInterval: device.locationInterval ?? '30m',
+      secretCode: device.secretCode || '',
+      secureOurChildApp: device.secureOurChildApp ?? true,
+      isAppHidden: device.isAppHidden ?? false,
+      hideApp: device.isAppHidden ?? false,
     };
 
     if (device.fcmToken) {
@@ -607,14 +644,36 @@ export const disconnectDevice = async (req: any, res: Response) => {
 
     const targetId = device?.deviceId || deviceId;
 
-    if (device) {
-      // Signal child to stop monitoring + unpair (socket + FCM)
-      getSignalingIo()?.to(targetId).emit('remote-command', { command: 'UNPAIR', deviceId: targetId });
-      if (device.fcmToken) {
-        try {
-          await sendFcmDataCommand(device.fcmToken, 'UNPAIR', { action: 'UNPAIR' });
-        } catch (_) {}
+    const isParentCall = Boolean(req.user?.userId);
+    const { secretCode } = req.body;
+    if (isParentCall && device && device.secretCode && device.secretCode.trim().length > 0) {
+      if (!secretCode || secretCode.trim() !== device.secretCode.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Incorrect 6-digit Secret Protection Code. Device disconnect cancelled.',
+        });
       }
+    }
+
+    const parentUserId = (device?.parentUserId || (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id)?.toString();
+    const io = getSignalingIo();
+
+    if (io) {
+      // Signal child to stop monitoring + unpair via socket
+      io.to(targetId).emit('remote-command', { command: 'UNPAIR', deviceId: targetId });
+      io.to(targetId).emit('device-unpaired', { deviceId: targetId });
+
+      // Signal parent socket rooms so parent app immediately reacts in real-time
+      if (parentUserId) {
+        io.to(`user_${parentUserId}`).emit('device-unpaired', { deviceId: targetId });
+        io.to(`parent_${parentUserId}`).emit('device-unpaired', { deviceId: targetId });
+      }
+    }
+
+    if (device && device.fcmToken) {
+      try {
+        await sendFcmDataCommand(device.fcmToken, 'UNPAIR', { action: 'UNPAIR', command: 'UNPAIR', deviceId: targetId });
+      } catch (_) {}
     }
 
     // ✅ STEP 1: Erase ALL media (R2) + text logs + recalc parent storage accounting.
@@ -792,12 +851,21 @@ export const reportLimitReached = async (req: any, res: Response) => {
     // Send single push to parent user topic
     if (device?.parentUserId) {
       const parentTopic = `parent_${device.parentUserId}`;
-      await sendFcmTopicNotification(parentTopic, title, body, {
-        type: 'APP_LIMIT_REACHED',
-        deviceId,
-        packageName,
-        appName: name,
-      });
+      await sendLocalizedFcmTopicNotification(
+        parentTopic,
+        'LIMIT_REACHED',
+        {
+          appName: name,
+          childName,
+        },
+        undefined,
+        {
+          type: 'APP_LIMIT_REACHED',
+          deviceId,
+          packageName,
+          appName: name,
+        }
+      );
     }
 
     return res.json({ success: true, message: 'Limit reached reported successfully.' });
@@ -858,12 +926,21 @@ export const reportBlockedAppAttempt = async (req: any, res: Response) => {
 
     if (device?.parentUserId) {
       const parentTopic = `parent_${device.parentUserId}`;
-      await sendFcmTopicNotification(parentTopic, title, body, {
-        type: 'APP_BLOCK_ATTEMPT',
-        deviceId,
-        packageName,
-        appName: name,
-      });
+      await sendLocalizedFcmTopicNotification(
+        parentTopic,
+        'BLOCKED_APP_ATTEMPT',
+        {
+          appName: name,
+          childName,
+        },
+        undefined,
+        {
+          type: 'APP_BLOCK_ATTEMPT',
+          deviceId,
+          packageName,
+          appName: name,
+        }
+      );
     }
 
     return res.json({ success: true, message: 'Blocked attempt reported successfully.' });
@@ -956,4 +1033,136 @@ export const clearTextCategoryData = async (req: AuthRequest, res: Response) => 
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Update Secret Code and Anti-Tamper Protection Setting
+ */
+export const updateDeviceProtection = async (req: AuthRequest, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const { secretCode, secureOurChildApp, isAppHidden } = req.body;
+    if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    const device = await Device.findOne({ deviceId });
+    if (!device) return res.status(404).json({ success: false, message: 'Device not found' });
+
+    if (secretCode) {
+      device.secretCode = String(secretCode).trim();
+    }
+    if (typeof secureOurChildApp !== 'undefined') {
+      device.secureOurChildApp = Boolean(secureOurChildApp);
+    }
+    if (typeof isAppHidden !== 'undefined') {
+      device.isAppHidden = Boolean(isAppHidden);
+    }
+    device.failedSecretCodeAttempts = 0;
+    device.secretCodeBlockedUntil = null as any;
+    await device.save();
+
+    // Signal child device to update protection immediately
+    const restrictions = {
+      secretCode: device.secretCode,
+      secureOurChildApp: device.secureOurChildApp,
+      isAppHidden: device.isAppHidden,
+      hideApp: device.isAppHidden,
+    };
+    if (device.fcmToken) {
+      sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+        restrictions: JSON.stringify(restrictions),
+      }).catch(() => {});
+    }
+    getSignalingIo()?.to(device.deviceId).emit('remote-command', {
+      command: 'UPDATE_RULES',
+      deviceId: device.deviceId,
+      restrictions,
+    });
+
+    return res.json({
+      success: true,
+      message: 'Protection settings updated successfully',
+      secretCode: device.secretCode,
+      secureOurChildApp: device.secureOurChildApp,
+      isAppHidden: device.isAppHidden,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Child verifies Secret Protection Code before uninstalling or clearing data
+ */
+export const verifyChildSecretCode = async (req: any, res: Response) => {
+  try {
+    const { deviceId, secretCode } = req.body;
+    if (!deviceId || !secretCode) {
+      return res.status(400).json({ success: false, message: 'deviceId and secretCode are required' });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    if (!device) return res.status(404).json({ success: false, message: 'Device not found' });
+
+    const now = new Date();
+    // Check 24-hr lockout
+    if (device.secretCodeBlockedUntil && device.secretCodeBlockedUntil > now) {
+      const remainingMs = device.secretCodeBlockedUntil.getTime() - now.getTime();
+      const remainingHours = Math.ceil(remainingMs / (1000 * 60 * 60));
+      return res.json({
+        success: false,
+        allowed: false,
+        isBlocked: true,
+        blockedUntil: device.secretCodeBlockedUntil,
+        message: `Maximum attempts limit reached. You are blocked for ${remainingHours} hour(s). Try again later.`,
+      });
+    }
+
+    const options = await ConfigService.getMergedOptions();
+    const maxAttempts = Number(options.childDeviceSecretCodeMaxAttempt) > 0 ? Number(options.childDeviceSecretCodeMaxAttempt) : 5;
+
+    const trimmedInput = String(secretCode).trim();
+    const expectedCode = String(device.secretCode || '').trim();
+
+    if (expectedCode.length > 0 && trimmedInput === expectedCode) {
+      // Success! Reset attempts
+      device.failedSecretCodeAttempts = 0;
+      device.secretCodeBlockedUntil = null as any;
+      await device.save();
+      return res.json({
+        success: true,
+        allowed: true,
+        message: 'Secret Code verified successfully.',
+      });
+    } else {
+      // Failed attempt
+      const newAttempts = (device.failedSecretCodeAttempts || 0) + 1;
+      device.failedSecretCodeAttempts = newAttempts;
+
+      if (newAttempts >= maxAttempts) {
+        // Block for 24 hours
+        device.secretCodeBlockedUntil = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        await device.save();
+        return res.json({
+          success: false,
+          allowed: false,
+          isBlocked: true,
+          blockedUntil: device.secretCodeBlockedUntil,
+          message: 'Maximum attempts limit reached. You are blocked for 24 hours.',
+        });
+      } else {
+        await device.save();
+        const remaining = maxAttempts - newAttempts;
+        return res.json({
+          success: false,
+          allowed: false,
+          isBlocked: false,
+          remainingAttempts: remaining,
+          message: `Incorrect Secret Code. ${remaining} attempt(s) remaining before 24-hour lockout.`,
+        });
+      }
+    }
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 

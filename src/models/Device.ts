@@ -10,11 +10,15 @@ export interface IDevice extends Document {
   pairingCode?: string;
   isPaired: boolean;
   isSetupComplete: boolean;
+  grantedPermissions?: Record<string, boolean>;
   batteryLevel: number;
   isCharging: boolean;
   isOnline: boolean;
   lastSeenAt: Date;
   fcmToken?: string;
+  appVersionCode?: number;
+  appVersionName?: string;
+  languageCode?: string;
 
   // Settings & Restrictions
   youtubeBlocked: boolean;
@@ -30,6 +34,12 @@ export interface IDevice extends Document {
   isLocationEnabled?: boolean;
   locationEnabled?: boolean;
   notifyOnBlockedUrlAttempt: boolean;
+
+  secretCode?: string;
+  secureOurChildApp?: boolean;
+  isAppHidden?: boolean;
+  failedSecretCodeAttempts?: number;
+  secretCodeBlockedUntil?: Date;
 
   browserRestrictionMode: 'unrestricted' | 'blacklist' | 'whitelist';
   browserRestrictionsMode?: 'unrestricted' | 'blacklist' | 'whitelist';
@@ -137,6 +147,7 @@ const DeviceSchema = new Schema<IDevice>(
     pairingCode: { type: String },
     isPaired: { type: Boolean, default: false },
     isSetupComplete: { type: Boolean, default: false },
+    grantedPermissions: { type: Schema.Types.Mixed, default: {} },
     batteryLevel: { type: Number, default: 100 },
     isCharging: { type: Boolean, default: false },
     isOnline: { type: Boolean, default: false },
@@ -156,6 +167,16 @@ const DeviceSchema = new Schema<IDevice>(
     isLocationEnabled: { type: Boolean, default: true },
     locationEnabled: { type: Boolean, default: true },
     notifyOnBlockedUrlAttempt: { type: Boolean, default: true },
+
+    secretCode: { type: String, default: '' },
+    secureOurChildApp: { type: Boolean, default: true },
+    isAppHidden: { type: Boolean, default: false },
+    failedSecretCodeAttempts: { type: Number, default: 0 },
+    secretCodeBlockedUntil: { type: Date, default: null },
+
+    appVersionCode: { type: Number, default: 0 },
+    appVersionName: { type: String, default: '' },
+    languageCode: { type: String, default: 'en' },
 
     browserRestrictionMode: { type: String, enum: ['unrestricted', 'blacklist', 'whitelist'], default: 'unrestricted' },
     browserRestrictionsMode: { type: String, enum: ['unrestricted', 'blacklist', 'whitelist'], default: 'unrestricted' },

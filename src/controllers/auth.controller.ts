@@ -114,6 +114,11 @@ export const verifyOtp = async (req: Request, res: Response) => {
     user.otp = undefined;
     user.otpExpiresAt = undefined;
     user.otpAttemptsCount = 0;
+
+    const userLanguageCode = req.body.languageCode || (req.headers['accept-language'] as string)?.split(',')[0]?.split('-')[0]?.trim();
+    if (userLanguageCode && typeof userLanguageCode === 'string') {
+      user.languageCode = userLanguageCode.toLowerCase();
+    }
     await user.save();
 
     const token = jwt.sign(
@@ -129,6 +134,7 @@ export const verifyOtp = async (req: Request, res: Response) => {
         id: user._id.toString(),
         phoneNumber: user.phoneNumber,
         name: user.name || 'Parent User',
+        languageCode: user.languageCode || 'en',
       },
     });
   } catch (error: any) {
@@ -136,3 +142,25 @@ export const verifyOtp = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
 };
+
+/**
+ * Update Language Code for Logged-in Parent User
+ */
+export const updateUserLanguage = async (req: any, res: Response) => {
+  try {
+    const parentUserId = req.user?.userId;
+    if (!parentUserId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    const rawLang = req.body.languageCode || req.body.lang;
+    if (!rawLang) {
+      return res.status(400).json({ success: false, message: 'languageCode is required.' });
+    }
+    const cleanLang = String(rawLang).trim().toLowerCase();
+    await User.findByIdAndUpdate(parentUserId, { languageCode: cleanLang });
+    return res.json({ success: true, languageCode: cleanLang });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+};
+

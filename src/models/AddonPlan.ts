@@ -3,6 +3,8 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IAddonPlan extends Document {
   addonId: string;
   name: string;
+  /** Per-language addon name stored in DB */
+  nameI18n?: { en?: string; hi?: string; gu?: string; es?: string; fr?: string };
   type: 'storage' | 'live_minutes';
   priceByRegion: {
     IN_INR: number;
@@ -18,6 +20,13 @@ const AddonPlanSchema: Schema = new Schema(
   {
     addonId: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
+    nameI18n: {
+      en: { type: String },
+      hi: { type: String },
+      gu: { type: String },
+      es: { type: String },
+      fr: { type: String },
+    },
     type: { type: String, enum: ['storage', 'live_minutes'], default: 'storage' },
     priceByRegion: {
       IN_INR: { type: Number, required: true, default: 99 },
