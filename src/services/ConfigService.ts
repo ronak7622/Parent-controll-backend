@@ -161,34 +161,69 @@ export const DEFAULT_OPTIONS = {
 
 
   locTrackerIntervalOptions: [
-    { seconds: 300, label: '5 min', label_i18n: { hi: '5 मिनट', gu: '5 મિનિટ', es: '5 min', fr: '5 min' } },
-    { seconds: 600, label: '10 min', label_i18n: { hi: '10 मिनट', gu: '10 મિનિટ', es: '10 min', fr: '10 min' } },
-    { seconds: 900, label: '15 min', label_i18n: { hi: '15 मिनट', gu: '15 મિનિટ', es: '15 min', fr: '15 min' } },
-    { seconds: 1800, label: '30 min', label_i18n: { hi: '30 मिनट', gu: '30 મિનિટ', es: '30 min', fr: '30 min' } },
-    { seconds: 3600, label: '1 hour', label_i18n: { hi: '1 घंटा', gu: '1 કલાક', es: '1 hora', fr: '1 heure' } },
+    { seconds: 300, label: '5 min', label_i18n: { en: '5 min', hi: '5 मिनट', gu: '5 મિનિટ', es: '5 min', fr: '5 min' } },
+    { seconds: 600, label: '10 min', label_i18n: { en: '10 min', hi: '10 मिनट', gu: '10 મિનિટ', es: '10 min', fr: '10 min' } },
+    { seconds: 900, label: '15 min', label_i18n: { en: '15 min', hi: '15 मिनट', gu: '15 મિનિટ', es: '15 min', fr: '15 min' } },
+    { seconds: 1800, label: '30 min', label_i18n: { en: '30 min', hi: '30 मिनट', gu: '30 મિનિટ', es: '30 min', fr: '30 min' } },
+    { seconds: 3600, label: '1 hour', label_i18n: { en: '1 hour', hi: '1 घंटा', gu: '1 કલાક', es: '1 hora', fr: '1 heure' } },
   ],
   locTrackerDefaultInterval: 1800,
 
   autoDeleteDayOptions: [
     {
+      minutes: 2,
+      label: '2 Minutes (2 min)',
+      label_i18n: { en: '2 Minutes (2 min)', hi: '2 मिनट (2 min)', gu: '2 મિનિટ (2 min)', es: '2 minutos (2 min)', fr: '2 minutes (2 min)' },
+    },
+    {
+      minutes: 5,
+      label: '5 Minutes (5 min)',
+      label_i18n: { en: '5 Minutes (5 min)', hi: '5 मिनट (5 min)', gu: '5 મિનિટ (5 min)', es: '5 minutes (5 min)', fr: '5 minutes (5 min)' },
+    },
+    {
+      minutes: 15,
+      label: '15 Minutes (15 min)',
+      label_i18n: { en: '15 Minutes (15 min)', hi: '15 मिनट (15 min)', gu: '15 મિનિટ (15 min)', es: '15 minutos (15 min)', fr: '15 minutes (15 min)' },
+    },
+    {
+      minutes: 30,
+      label: '30 Minutes (30 min)',
+      label_i18n: { en: '30 Minutes (30 min)', hi: '30 मिनट (30 min)', gu: '30 મિનિટ (30 min)', es: '30 minutos (30 min)', fr: '30 minutes (30 min)' },
+    },
+    {
+      minutes: 60,
+      label: '1 Hour (60 min)',
+      label_i18n: { en: '1 Hour (60 min)', hi: '1 घंटा (60 मिनट)', gu: '1 કલાક (60 મિનિટ)', es: '1 hora (60 min)', fr: '1 heure (60 min)' },
+    },
+    {
+      minutes: 180,
+      label: '3 Hours (180 min)',
+      label_i18n: { en: '3 Hours (180 min)', hi: '3 घंटे (180 मिनट)', gu: '3 કલાક (180 મિનિટ)', es: '3 horas (180 min)', fr: '3 heures (180 min)' },
+    },
+    {
+      minutes: 720,
+      label: '12 Hours (720 min)',
+      label_i18n: { en: '12 Hours (720 min)', hi: '12 घंटे (720 मिनट)', gu: '12 કલાક (720 મિનિટ)', es: '12 horas (720 min)', fr: '12 heures (720 min)' },
+    },
+    {
       minutes: 1440,
       label: '24 Hours (1 Day)',
-      label_i18n: { hi: '24 घंटे (1 दिन)', gu: '24 કલાક (1 દિવસ)', es: '24 horas (1 día)', fr: '24 heures (1 jour)' },
+      label_i18n: { en: '24 Hours (1 Day)', hi: '24 घंटे (1 दिन)', gu: '24 કલાક (1 દિવસ)', es: '24 horas (1 día)', fr: '24 heures (1 jour)' },
     },
     {
       minutes: 4320,
       label: '3 Days (4320 min)',
-      label_i18n: { hi: '3 दिन (4320 मिनट)', gu: '3 દિવસ (4320 મિનિટ)', es: '3 días (4320 min)', fr: '3 jours (4320 min)' },
+      label_i18n: { en: '3 Days (4320 min)', hi: '3 दिन (4320 मिनट)', gu: '3 દિવસ (4320 મિનિટ)', es: '3 días (4320 min)', fr: '3 jours (4320 min)' },
     },
     {
       minutes: 10080,
       label: '7 Days (10080 min)',
-      label_i18n: { hi: '7 दिन (10080 मिनट)', gu: '7 દિવસ (10080 મિનિટ)', es: '7 días (10080 min)', fr: '7 jours (10080 min)' },
+      label_i18n: { en: '7 Days (10080 min)', hi: '7 दिन (10080 मिनट)', gu: '7 દિવસ (10080 મિનિટ)', es: '7 días (10080 min)', fr: '7 jours (10080 min)' },
     },
     {
       minutes: 43200,
       label: '30 Days (43200 min)',
-      label_i18n: { hi: '30 दिन (43200 मिनट)', gu: '30 દિવસ (43200 મિનિટ)', es: '30 días (43200 min)', fr: '30 jours (43200 min)' },
+      label_i18n: { en: '30 Days (43200 min)', hi: '30 दिन (43200 मिनट)', gu: '30 દિવસ (43200 મિનિટ)', es: '30 días (43200 min)', fr: '30 jours (43200 min)' },
     },
   ],
   defaultAutoDeleteMinutes: 10080,
@@ -197,32 +232,32 @@ export const DEFAULT_OPTIONS = {
     {
       key: 'all',
       label: 'All Media & Logs',
-      label_i18n: { hi: 'सभी मीडिया और लॉग', gu: 'બધા મીડિયા અને લૉગ્સ', es: 'Todos los medios y registros', fr: 'Tous les médias et journaux' },
+      label_i18n: { en: 'All Media & Logs', hi: 'सभी मीडिया और लॉग', gu: 'બધા મીડિયા અને લૉગ્સ', es: 'Todos los medios y registros', fr: 'Tous les médias et journaux' },
     },
     {
       key: 'photos',
       label: 'Photos & Screenshots',
-      label_i18n: { hi: 'तस्वीरें और स्क्रीनशॉट', gu: 'ફોટા અને સ્ક્રીનશૉટ્સ', es: 'Fotos y capturas de pantalla', fr: 'Photos et captures d\'écran' },
+      label_i18n: { en: 'Photos & Screenshots', hi: 'तस्वीरें और स्क्रीनशॉट', gu: 'ફોટા અને સ્ક્રીનશૉટ્સ', es: 'Fotos y capturas de pantalla', fr: 'Photos et captures d\'écran' },
     },
     {
       key: 'videos',
       label: 'Videos & Screen Captures',
-      label_i18n: { hi: 'वीडियो और स्क्रीन रिकॉर्डिंग', gu: 'વિડિઓ અને સ્ક્રીન કૅપ્ચર', es: 'Videos y grabaciones de pantalla', fr: 'Vidéos et captures d\'écran' },
+      label_i18n: { en: 'Videos & Screen Captures', hi: 'वीडियो और स्क्रीन रिकॉर्डिंग', gu: 'વિડિઓ અને સ્ક્રીન કૅપ્ચર', es: 'Videos y grabaciones de pantalla', fr: 'Vidéos et captures d\'écran' },
     },
     {
       key: 'audio',
       label: 'Call & Mic Audio',
-      label_i18n: { hi: 'कॉल और माइक ऑडियो', gu: 'કૉલ અને માઇક ઑડિઓ', es: 'Audio de llamada y micrófono', fr: 'Audio d\'appel et microphone' },
+      label_i18n: { en: 'Call & Mic Audio', hi: 'कॉल और माइक ऑडियो', gu: 'કૉલ અને માઇક ઑડિઓ', es: 'Audio de llamada y micrófono', fr: 'Audio d\'appel et microphone' },
     },
     {
       key: 'text',
       label: 'Text & Database Logs',
-      label_i18n: { hi: 'टेक्स्ट और डेटाबेस लॉग', gu: 'ટેક્સ્ટ અને ડેટાબેઝ લૉગ્સ', es: 'Registros de texto y base de datos', fr: 'Journaux texte et base de données' },
+      label_i18n: { en: 'Text & Database Logs', hi: 'टेक्स्ट और डेटाबेस लॉग', gu: 'ટેક્સ્ટ અને ડેટાબેઝ લૉગ્સ', es: 'Registros de texto y base de datos', fr: 'Journaux texte et base de données' },
     },
     {
       key: 'chat',
       label: 'Chat History',
-      label_i18n: { hi: 'चैट इतिहास', gu: 'ચેટ ઇતિહાસ', es: 'Historial de chat', fr: 'Historique des discussions' },
+      label_i18n: { en: 'Chat History', hi: 'चैट इतिहास', gu: 'ચેટ ઇતિહાસ', es: 'Historial de chat', fr: 'Historique des discussions' },
     },
   ],
   defaultAutoDeleteCategory: 'all',
@@ -265,6 +300,9 @@ export const DEFAULT_OPTIONS = {
   showLiveLimitAddonPlanForFirst: true,
   showStorageAddonPlanForRenew: true,
   showLiveLimitAddonPlanForRenew: true,
+  // Second+ purchase (user has bought a plan before) but did NOT previously buy this add-on.
+  showStorageAddonPlanForRenewButNotPreviouslyAdd: true,
+  showLiveLimitAddonPlanForRenewButNotPreviouslyAdd: true,
 
   regionTierMap: {
     IN: 'IN_INR',
@@ -282,6 +320,7 @@ export const DEFAULT_OPTIONS = {
   },
 
   // Dynamic Profile & App Configs
+  onlineThresholdSeconds: 150,
   childAppName: 'Child Companion',
   childAppUrl: 'https://parentprotect.app/download-child.apk',
   childDeviceSecretCodeMaxAttempt: 5,
@@ -363,9 +402,6 @@ export class ConfigService {
             'planValidityExpireNotificationIntervalMin',
             'testPlanPhones',
             'testPlanEmails',
-            'liveScreenMirrorPerSessionLimitMin',
-            'liveAudioPerSessionLimitMin',
-            'liveVideoPerSessionLimitMin',
             'expringSoonWarNotificationBeforeDay',
             'expringSoonWarNotificationInterval',
             'expringSoonWarDialogBeforeDay',
@@ -489,6 +525,29 @@ export class ConfigService {
         console.warn('[ConfigService] i18n persist skipped:', i18nPersistErr?.message);
       }
 
+      // Dedupe known array options so a messy DB (duplicate entries from testing) can't
+      // produce repeated rows / double-selection in the UI. Keep first occurrence.
+      const dedupeBy = (arr: any, idOf: (x: any) => any): any => {
+        if (!Array.isArray(arr)) return arr;
+        const seen = new Set<any>();
+        const out: any[] = [];
+        for (const it of arr) {
+          const id = idOf(it);
+          if (id === undefined || id === null) { out.push(it); continue; }
+          if (seen.has(id)) continue;
+          seen.add(id);
+          out.push(it);
+        }
+        return out;
+      };
+      if (Array.isArray(dbMap.autoDeleteDayOptions)) {
+        dbMap.autoDeleteDayOptions = dedupeBy(dbMap.autoDeleteDayOptions, (d: any) =>
+          d?.minutes ?? (d?.days !== undefined ? d.days * 1440 : undefined));
+      }
+      if (Array.isArray(dbMap.autoDeleteCategories)) {
+        dbMap.autoDeleteCategories = dedupeBy(dbMap.autoDeleteCategories, (d: any) => d?.key);
+      }
+
       this.cachedConfig = { ...DEFAULT_OPTIONS, ...dbMap };
       this.lastFetch = now;
       return this.cachedConfig;
@@ -542,21 +601,21 @@ export class ConfigService {
       }
 
       // If object has label_i18n, apply it to label and remove the dictionary
-      if (res.label_i18n && typeof res.label_i18n === 'object') {
-        if (res.label_i18n[lang]) {
-          res.label = res.label_i18n[lang];
-        } else if (res.label_i18n['en']) {
-          res.label = res.label_i18n['en'];
+      if (res.label_i18n !== undefined) {
+        if (typeof res.label_i18n === 'string' && res.label_i18n.trim().length > 0) {
+          res.label = res.label_i18n;
+        } else if (typeof res.label_i18n === 'object' && res.label_i18n !== null) {
+          res.label = res.label_i18n[lang] || res.label_i18n['en'] || res.label;
         }
         delete res.label_i18n;
       }
 
       // If object has qualityLabel_i18n, apply it to qualityLabel and remove the dictionary
-      if (res.qualityLabel_i18n && typeof res.qualityLabel_i18n === 'object') {
-        if (res.qualityLabel_i18n[lang]) {
-          res.qualityLabel = res.qualityLabel_i18n[lang];
-        } else if (res.qualityLabel_i18n['en']) {
-          res.qualityLabel = res.qualityLabel_i18n['en'];
+      if (res.qualityLabel_i18n !== undefined) {
+        if (typeof res.qualityLabel_i18n === 'string' && res.qualityLabel_i18n.trim().length > 0) {
+          res.qualityLabel = res.qualityLabel_i18n;
+        } else if (typeof res.qualityLabel_i18n === 'object' && res.qualityLabel_i18n !== null) {
+          res.qualityLabel = res.qualityLabel_i18n[lang] || res.qualityLabel_i18n['en'] || res.qualityLabel;
         }
         delete res.qualityLabel_i18n;
       }

@@ -486,7 +486,7 @@ export const subscribe = async (req: Request, res: Response) => {
     const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const { planId, idempotencyKey, txnId, region, selectedStorageAddonId, selectedLiveAddonId } = req.body;
+    const { planId, idempotencyKey, txnId, region, selectedStorageAddonId, selectedLiveAddonId, allowStorageTrim } = req.body;
     if (!planId) return res.status(400).json({ success: false, message: 'planId is required' });
 
     // Check idempotency
@@ -551,6 +551,24 @@ export const subscribe = async (req: Request, res: Response) => {
       liveAddonDoc = await AddonPlan.findOne({ addonId: selectedLiveAddonId, isActive: true });
     }
 
+    // ════════════════════════════════════════════════════════════
+    // STORAGE DOWNGRADE VALIDATION (PART 3)
+    // ════════════════════════════════════════════════════════════
+    const newAllowedStorage = (plan.storageBytes || 10737418240) + (storageAddonDoc?.storageBytes || 0);
+    const currentUsageDoc = await StorageAccountingService.getStorageUsage(parentUserId);
+    const currentUsedBytes = currentUsageDoc?.totalBytes || 0;
+
+    if (newAllowedStorage < currentUsedBytes && allowStorageTrim !== true) {
+      return res.status(400).json({
+        success: false,
+        code: 'STORAGE_DOWNGRADE_NEEDS_CONFIRM',
+        message: 'Plan storage limit is smaller than current data usage. Confirmation required to trim oldest excess data.',
+        usedBytes: currentUsedBytes,
+        allowedBytes: newAllowedStorage,
+        excessBytes: currentUsedBytes - newAllowedStorage,
+      });
+    }
+
     // Check current subscription for active status & advance queueing (§5 Jio-style)
     // Only queue if user is on an ACTIVE PAID plan. If currently on Trial, activate immediately!
     const currentSub = await Subscription.findOne({ parentUserId });
@@ -571,6 +589,7 @@ export const subscribe = async (req: Request, res: Response) => {
         txnId: generatedTxnId,
         region: resolvedRegion,
         purchasedAt: now,
+        allowStorageTrim: Boolean(allowStorageTrim),
       };
 
       if (storageAddonDoc) {
@@ -678,6 +697,7 @@ export const subscribe = async (req: Request, res: Response) => {
         status: 'active',
         planSnapshot,
         planLiveMinutesUsed: 0,
+        liveTotalLimitNotified: false,
         addonStorageBytes: initialAddonStorage,
         addonLiveMinutesPool: initialAddonLivePool,
         ...(storageAddonDoc ? { lastPurchasedStorageAddonId: storageAddonDoc.addonId } : {}),
@@ -693,6 +713,11 @@ export const subscribe = async (req: Request, res: Response) => {
       },
       { upsert: true, new: true }
     );
+
+    // If storage downgrade was confirmed, trim oldest excess data immediately
+    if (allowStorageTrim && newAllowedStorage < currentUsedBytes) {
+      await StorageDeleteService.trimOldestExcessStorage(parentUserId, newAllowedStorage);
+    }
 
     // Record in Orders Collection
     await Order.create({
@@ -896,6 +921,7 @@ export const activateTrial = async (req: Request, res: Response) => {
         status: 'trial',
         planSnapshot,
         planLiveMinutesUsed: 0,
+        liveTotalLimitNotified: false,
         addonStorageBytes: 0,
         addonLiveMinutesPool: 0,
         queuedPlan: undefined,
@@ -1007,6 +1033,9 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
     const options = await ConfigService.getMergedOptions();
     let subscription = await Subscription.findOne({ parentUserId });
 
+    // Has the user EVER purchased a paid plan (past or present)? Drives first-vs-returning add-on rules.
+    const hasEverPurchasedPlan = await Order.exists({ parentUserId, type: 'plan', status: 'completed' }).then(d => !!d).catch(() => false);
+
     const backupHours = options.storageBackupAfterExpirPlan || (options.graceDays ? options.graceDays * 24 : 72);
 
     // If no subscription exists, return subscription: null so app routes to purchase screen or trial can be explicitly activated
@@ -1016,6 +1045,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
         success: true,
         subscription: null,
         hasSubscription: false,
+        hasEverPurchasedPlan,
         hasQueuedPlan: false,
         queuedPlan: null,
         lastPurchasedStorageAddonId: null,
@@ -1089,12 +1119,12 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
     const expireAtTime = new Date(subscription.expireAt).getTime();
     const graceEndsAtTime = new Date(subscription.graceEndsAt).getTime();
 
-    const isPlanExpired = now.getTime() > expireAtTime;
-    const isGracePeriodActive = isPlanExpired && now.getTime() <= graceEndsAtTime;
-    const isGraceExpired = isPlanExpired && now.getTime() > graceEndsAtTime;
+    let isPlanExpired = now.getTime() > expireAtTime;
+    let isGracePeriodActive = isPlanExpired && now.getTime() <= graceEndsAtTime;
+    let isGraceExpired = isPlanExpired && now.getTime() > graceEndsAtTime;
 
     // If an advance plan is queued (§5), suppress expiring-soon / expired warnings
-    const hasQueuedPlan = Boolean(subscription.queuedPlan && subscription.queuedPlan.planSnapshot);
+    let hasQueuedPlan = Boolean(subscription.queuedPlan && subscription.queuedPlan.planSnapshot);
 
     // Update status in Mongo if expired/grace
     if (isPlanExpired) {
@@ -1115,6 +1145,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
         subscription.txnId = q.txnId;
         subscription.isTrial = false;
         subscription.planLiveMinutesUsed = 0;
+        subscription.liveTotalLimitNotified = false;
         if (q.storageAddon) {
           subscription.addonStorageBytes = (subscription.addonStorageBytes || 0) + (q.storageAddon.storageBytes || 0);
           subscription.lastPurchasedStorageAddonId = q.storageAddon.addonId;
@@ -1123,24 +1154,73 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
           subscription.addonLiveMinutesPool = (subscription.addonLiveMinutesPool || 0) + (q.liveAddon.liveMinutes || 0);
           subscription.lastPurchasedLiveAddonId = q.liveAddon.addonId;
         }
+
+        // Check Part 3 downgrade handling if queued plan has allowStorageTrim: true!
+        if (q.allowStorageTrim) {
+          const newAllowedBytes = (q.planSnapshot?.storageBytes || 10737418240) + (subscription.addonStorageBytes || 0);
+          const currentUsage = await StorageAccountingService.getStorageUsage(parentUserId);
+          if (currentUsage && currentUsage.totalBytes > newAllowedBytes) {
+            await StorageDeleteService.trimOldestExcessStorage(parentUserId, newAllowedBytes);
+          }
+        }
+
         subscription.queuedPlan = undefined;
         await subscription.save();
+
+        if (q.txnId) {
+          await Order.updateMany(
+            { $or: [{ txnId: q.txnId }, { 'metadata.parentTxnId': q.txnId }] },
+            { $set: { status: 'completed' } }
+          ).catch(() => {});
+        }
+
+        // Signal child devices to resume/ensure active
+        const devs = await Device.find({ parentUserId });
+        for (const d of devs) {
+          if (d.fcmToken) {
+            await sendFcmDataCommand(d.fcmToken, 'SUBSCRIPTION_RESUME', {
+              status: 'active',
+              expireAt: newExpireAt.toISOString(),
+              graceEndsAt: newGraceEndsAt.toISOString(),
+            }).catch(() => {});
+          }
+        }
+
+        // Since queued plan is now activated, reset expired / grace flags
+        isPlanExpired = false;
+        isGracePeriodActive = false;
+        isGraceExpired = false;
+        hasQueuedPlan = false;
       } else {
         const targetStatus = isGraceExpired ? 'expired' : 'grace';
         if (subscription.status !== targetStatus) {
           subscription.status = targetStatus;
         }
       }
+    } else if (hasQueuedPlan) {
+      // Current plan is active with an advance plan queued: never report grace/expired
+      isPlanExpired = false;
+      isGracePeriodActive = false;
+      isGraceExpired = false;
     }
 
-    const expireNotifyIntervalMin = options.expringSoonWarNotificationIntervalInMinute || options.expringSoonWarNotificationInterval || 120;
+    const isTrial = subscription.isTrial || subscription.planSnapshot?.type === 'trial';
+    const expireNotifyIntervalMin = isTrial
+      ? (options.trialExpiredWarNotificationIntervalInMinute || 120)
+      : (options.expiredWarNotificationIntervalInMinute || 1440);
+    const expireNotifyAfterMin = isTrial
+      ? (options.trialExpiredWarNotificationAfterTimeInMinute || 60)
+      : (options.expiredWarNotificationAfterTimeInMinute || 4320);
     let shouldSendExpireWarnNotify = false;
 
     if (isPlanExpired && !hasQueuedPlan) {
-      const lastExpireNotifyTime = subscription.lastExpireWarnNotificationAt ? new Date(subscription.lastExpireWarnNotificationAt).getTime() : 0;
-      if (now.getTime() - lastExpireNotifyTime >= expireNotifyIntervalMin * 60 * 1000) {
-        shouldSendExpireWarnNotify = true;
-        subscription.lastExpireWarnNotificationAt = now;
+      const minutesSinceExpiry = Math.floor((now.getTime() - (subscription.expireAt ? subscription.expireAt.getTime() : now.getTime())) / (60 * 1000));
+      if (minutesSinceExpiry >= 0 && minutesSinceExpiry <= expireNotifyAfterMin) {
+        const lastExpireNotifyTime = subscription.lastExpireWarnNotificationAt ? new Date(subscription.lastExpireWarnNotificationAt).getTime() : 0;
+        if (now.getTime() - lastExpireNotifyTime >= expireNotifyIntervalMin * 60 * 1000) {
+          shouldSendExpireWarnNotify = true;
+          subscription.lastExpireWarnNotificationAt = now;
+        }
       }
     }
 
@@ -1150,9 +1230,29 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
 
     const liveRemaining = await LiveUsageService.getRemainingLiveMinutes(parentUserId);
 
+    let totalLiveAddonMinutesPurchased = 0;
+    try {
+      const liveAddonOrders = await Order.find({
+        parentUserId,
+        type: 'live_addon',
+        status: 'completed',
+        createdAt: { $gte: subscription.startAt }
+      });
+      totalLiveAddonMinutesPurchased = liveAddonOrders.reduce((sum, o) => {
+        const mins = ((o.metadata as any)?.liveMinutes as number) || (o.planLabel ? parseInt(o.planLabel.match(/\d+/)?.[0] || '0') : 0);
+        return sum + mins;
+      }, 0);
+      if ((subscription as any).liveAddon?.liveMinutes) {
+        totalLiveAddonMinutesPurchased = Math.max(totalLiveAddonMinutesPurchased, (subscription as any).liveAddon.liveMinutes);
+      }
+    } catch (_) {}
+    totalLiveAddonMinutesPurchased = Math.max(totalLiveAddonMinutesPurchased, liveRemaining.addonPoolRemaining);
+    const totalLiveAddonMinutesUsed = Math.max(0, totalLiveAddonMinutesPurchased - liveRemaining.addonPoolRemaining);
+
     return res.json({
       success: true,
       subscription,
+      hasEverPurchasedPlan,
       hasQueuedPlan,
       queuedPlan: subscription.queuedPlan,
       lastPurchasedStorageAddonId: subscription.lastPurchasedStorageAddonId,
@@ -1172,6 +1272,8 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
         addonMinutesUsed,
         remainingAddonPool: liveRemaining.addonPoolRemaining,
         totalRemainingLiveMinutes: liveRemaining.totalRemaining,
+        totalAddonMinutesPurchased: totalLiveAddonMinutesPurchased,
+        totalAddonMinutesUsed: totalLiveAddonMinutesUsed,
         liveSessionMaxMin: options.liveSessionMaxMin || 5,
       },
       alerts: {
@@ -1233,6 +1335,15 @@ export const getPurchaseHistory = async (req: Request, res: Response) => {
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const rawOrders = await Order.find({ parentUserId }).sort({ createdAt: -1 }).lean();
+    const now = new Date();
+
+    // Auto-reconcile queued orders: if validityStart has arrived or passed, update status to completed
+    for (const o of rawOrders) {
+      if (o.status === 'queued' && o.validityStart && new Date(o.validityStart) <= now) {
+        o.status = 'completed';
+        await Order.updateOne({ _id: o._id }, { $set: { status: 'completed' } }).catch(() => {});
+      }
+    }
 
     // Group addons under their respective parent plan
     const planOrders: any[] = [];
@@ -1394,6 +1505,9 @@ export const getAutoDeleteConfig = async (req: Request, res: Response) => {
       user = await User.findOne({ _id: parentUserId });
     }
 
+    const configOpts = await ConfigService.getMergedOptions();
+    const defaultMins = configOpts?.defaultAutoDeleteMinutes || 10080;
+
     const devices = await Device.find({ parentUserId: user?._id || parentUserId });
     const perDevice: Record<string, any> = {};
     for (const dev of devices) {
@@ -1401,8 +1515,8 @@ export const getAutoDeleteConfig = async (req: Request, res: Response) => {
         deviceId: dev.deviceId,
         deviceName: dev.deviceName || dev.deviceModel || 'Child Device',
         isEnabled: dev.autoDeleteIsEnabled ?? user?.autoDeleteIsEnabled ?? false,
-        minutesOption: dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? 10080,
-        daysOption: dev.autoDeleteDays ?? Math.ceil((dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? 10080) / 1440),
+        minutesOption: dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? defaultMins,
+        daysOption: dev.autoDeleteDays ?? Math.ceil((dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? defaultMins) / 1440),
         categoriesSelected: (dev.autoDeleteCategories && dev.autoDeleteCategories.length > 0)
           ? dev.autoDeleteCategories
           : (user?.autoDeleteCategories ?? ['all']),
@@ -1412,8 +1526,8 @@ export const getAutoDeleteConfig = async (req: Request, res: Response) => {
     const autoDelete = {
       parentUserId,
       isEnabled: user?.autoDeleteIsEnabled ?? false,
-      minutesOption: user?.autoDeleteMinutes ?? 10080,
-      daysOption: Math.ceil((user?.autoDeleteMinutes ?? 10080) / 1440),
+      minutesOption: user?.autoDeleteMinutes ?? defaultMins,
+      daysOption: Math.ceil((user?.autoDeleteMinutes ?? defaultMins) / 1440),
       categoriesSelected: user?.autoDeleteCategories ?? ['all'],
       deviceIdsSelected: user?.autoDeleteDeviceIds ?? [],
       perDevice,
@@ -1430,7 +1544,9 @@ export const updateAutoDeleteConfig = async (req: Request, res: Response) => {
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const { deviceId, isEnabled, minutesOption, daysOption, categoriesSelected, deviceIdsSelected, selectedDeviceIds } = req.body;
-    const mins = minutesOption || (daysOption ? daysOption * 1440 : 10080);
+    const configOpts = await ConfigService.getMergedOptions();
+    const defaultMins = configOpts?.defaultAutoDeleteMinutes || 10080;
+    const mins = minutesOption || (daysOption ? daysOption * 1440 : defaultMins);
     const targetDeviceIds = deviceIdsSelected || selectedDeviceIds;
 
     let user = await User.findById(parentUserId);
@@ -1488,6 +1604,8 @@ export const updateAutoDeleteConfig = async (req: Request, res: Response) => {
       await StorageDeleteService.executeParentAutoDeletePurge(parentUserId, deviceId);
     }
 
+
+
     const devices = await Device.find({ parentUserId: user?._id || parentUserId });
     const perDevice: Record<string, any> = {};
     for (const dev of devices) {
@@ -1495,8 +1613,8 @@ export const updateAutoDeleteConfig = async (req: Request, res: Response) => {
         deviceId: dev.deviceId,
         deviceName: dev.deviceName || dev.deviceModel || 'Child Device',
         isEnabled: dev.autoDeleteIsEnabled ?? user?.autoDeleteIsEnabled ?? false,
-        minutesOption: dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? 10080,
-        daysOption: dev.autoDeleteDays ?? Math.ceil((dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? 10080) / 1440),
+        minutesOption: dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? defaultMins,
+        daysOption: dev.autoDeleteDays ?? Math.ceil((dev.autoDeleteMinutes ?? user?.autoDeleteMinutes ?? defaultMins) / 1440),
         categoriesSelected: (dev.autoDeleteCategories && dev.autoDeleteCategories.length > 0)
           ? dev.autoDeleteCategories
           : (user?.autoDeleteCategories ?? ['all']),
@@ -1506,8 +1624,8 @@ export const updateAutoDeleteConfig = async (req: Request, res: Response) => {
     const autoDelete = {
       parentUserId,
       isEnabled: user?.autoDeleteIsEnabled ?? false,
-      minutesOption: user?.autoDeleteMinutes ?? 10080,
-      daysOption: Math.ceil((user?.autoDeleteMinutes ?? 10080) / 1440),
+      minutesOption: user?.autoDeleteMinutes ?? defaultMins,
+      daysOption: Math.ceil((user?.autoDeleteMinutes ?? defaultMins) / 1440),
       categoriesSelected: user?.autoDeleteCategories ?? ['all'],
       deviceIdsSelected: user?.autoDeleteDeviceIds ?? [],
       perDevice,

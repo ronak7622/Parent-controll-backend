@@ -119,6 +119,9 @@ export const verifyOtp = async (req: Request, res: Response) => {
     if (userLanguageCode && typeof userLanguageCode === 'string') {
       user.languageCode = userLanguageCode.toLowerCase();
     }
+    if (req.body.fcmToken && typeof req.body.fcmToken === 'string') {
+      user.fcmToken = req.body.fcmToken.trim();
+    }
     await user.save();
 
     const token = jwt.sign(
@@ -159,6 +162,28 @@ export const updateUserLanguage = async (req: any, res: Response) => {
     const cleanLang = String(rawLang).trim().toLowerCase();
     await User.findByIdAndUpdate(parentUserId, { languageCode: cleanLang });
     return res.json({ success: true, languageCode: cleanLang });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+};
+
+/**
+ * Update FCM Token for Logged-in Parent User
+ */
+export const updateParentFcmToken = async (req: any, res: Response) => {
+  try {
+    const parentUserId = req.user?.userId;
+    if (!parentUserId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    const { fcmToken } = req.body;
+    if (!fcmToken || typeof fcmToken !== 'string') {
+      return res.status(400).json({ success: false, message: 'fcmToken is required.' });
+    }
+    const cleanToken = fcmToken.trim();
+    await User.findByIdAndUpdate(parentUserId, { fcmToken: cleanToken });
+    console.log(`[FCM-TOKEN] Updated FCM token for parent ${parentUserId}: ${cleanToken.substring(0, 15)}...`);
+    return res.json({ success: true, message: 'FCM token updated successfully' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message || 'Server error' });
   }

@@ -544,6 +544,63 @@ export class StorageAccountingService {
   }
 
   /**
+   * Invalidate in-memory and Redis storage cache for parent
+   */
+  static async invalidateCache(parentUserId: string): Promise<void> {
+    if (!parentUserId) return;
+    try {
+      this.inMemoryCache.delete(parentUserId);
+      await cacheService.del(`${this.CACHE_PREFIX}${parentUserId}`);
+    } catch (_) {}
+  }
+
+  /**
+   * Reset storage usage accounting to 0 and broadcast realtime update
+   */
+  static async zeroStorage(parentUserId: string): Promise<void> {
+    if (!parentUserId) return;
+    try {
+      await this.invalidateCache(parentUserId);
+      const usageDoc = await StorageUsage.findOneAndUpdate(
+        { parentUserId },
+        {
+          $set: {
+            parentUserId,
+            totalBytes: 0,
+            videoBytes: 0,
+            audioBytes: 0,
+            photoBytes: 0,
+            chatBytes: 0,
+            textBytes: 0,
+            perDevice: [],
+          },
+        },
+        { upsert: true, new: true }
+      ).lean();
+
+      try {
+        const { getSignalingIo } = require('../signaling/webrtc.signaling');
+        const io = getSignalingIo();
+        if (io) {
+          const payload = {
+            storageUsage: {
+              ...usageDoc,
+              isFull: false,
+            },
+            isFull: false,
+            timestamp: Date.now(),
+          };
+          io.to(`user_${parentUserId}`).emit('storage-updated', payload);
+        }
+      } catch (e: any) {
+        console.warn('[STORAGE-ZERO-BROADCAST-WARN]', e?.message);
+      }
+    } catch (err: any) {
+      console.error(`[STORAGE-ZERO-ERROR] Failed to zero storage for ${parentUserId}: ${err?.message}`);
+    }
+  }
+
+  /**
    * Update storage and invalidate cache
    */
   static async updateStorage(

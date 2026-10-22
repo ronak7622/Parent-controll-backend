@@ -18,6 +18,7 @@ export interface ActiveLiveSession {
   dailyPlanLimit: number;
   dayKey: string;
   limitedBySessionCap: boolean;
+  willExhaustPlanTotal?: boolean;
   cutoffTimer?: NodeJS.Timeout;
   isEnded?: boolean;
 }
@@ -158,7 +159,19 @@ export class LiveUsageService {
       };
     }
 
+    const hasTotalLimit = remaining.planTotalLimit > 0;
+    const isPlanTotalExhausted = hasTotalLimit && remaining.planTotalRemaining <= 0 && remaining.addonPoolRemaining <= 0;
+
     if (remaining.totalRemaining <= 0) {
+      if (isPlanTotalExhausted) {
+        return {
+          allowed: false,
+          allowedMinutes: 0,
+          reason: 'PLAN_TOTAL_LIVE_MINUTES_EXCEEDED',
+          message: 'Plan total live minutes exhausted. Buy a live booster to continue live streaming.',
+          canRetry: false,
+        };
+      }
       return {
         allowed: false,
         allowedMinutes: 0,
@@ -168,28 +181,9 @@ export class LiveUsageService {
       };
     }
 
-    // Per-session limit cap strictly from ConfigService based on session/feature type
+    // Per-session limit cap strictly uses liveSessionMaxMin from ConfigService for all live features
     const options = await ConfigService.getMergedOptions();
-    // Default per-session limit from config table (options.liveSessionMaxMin), fallback to 5
-    const defaultSessionCap = Number(options.liveSessionMaxMin) > 0 ? Number(options.liveSessionMaxMin) : 5;
-
-    let perSessionCap = defaultSessionCap;
-
-    const sessionType = (type || '').toLowerCase();
-    if (sessionType.includes('audio') || sessionType.includes('mic')) {
-      perSessionCap = Number(options.liveAudioPerSessionLimitMin) > 0
-        ? Number(options.liveAudioPerSessionLimitMin)
-        : defaultSessionCap;
-    } else if (sessionType.includes('screen') || sessionType.includes('mirror')) {
-      perSessionCap = Number(options.liveScreenMirrorPerSessionLimitMin) > 0
-        ? Number(options.liveScreenMirrorPerSessionLimitMin)
-        : defaultSessionCap;
-    } else {
-      // video, camera, or default
-      perSessionCap = Number(options.liveVideoPerSessionLimitMin) > 0
-        ? Number(options.liveVideoPerSessionLimitMin)
-        : defaultSessionCap;
-    }
+    const perSessionCap = Number(options.liveSessionMaxMin) > 0 ? Number(options.liveSessionMaxMin) : 5;
 
     const sessionAllowedMinutes = perSessionCap > 0
       ? Math.min(remaining.totalRemaining, perSessionCap)
@@ -197,6 +191,15 @@ export class LiveUsageService {
     const limitedBySessionCap = perSessionCap > 0 && perSessionCap < remaining.totalRemaining;
 
     if (sessionAllowedMinutes <= 0) {
+      if (isPlanTotalExhausted) {
+        return {
+          allowed: false,
+          allowedMinutes: 0,
+          reason: 'PLAN_TOTAL_LIVE_MINUTES_EXCEEDED',
+          message: 'Plan total live minutes exhausted. Buy a live booster to continue live streaming.',
+          canRetry: false,
+        };
+      }
       return {
         allowed: false,
         allowedMinutes: 0,
@@ -212,6 +215,10 @@ export class LiveUsageService {
       await this.endSession(existingSessionId, 'NEW_SESSION_OVERRIDE');
     }
 
+    const willExhaustPlanTotal = hasTotalLimit &&
+      remaining.addonPoolRemaining <= 0 &&
+      (remaining.planTotalRemaining <= sessionAllowedMinutes);
+
     const session: ActiveLiveSession = {
       sessionId,
       parentUserId,
@@ -224,6 +231,7 @@ export class LiveUsageService {
       dailyPlanLimit: remaining.dailyLimit,
       dayKey: this.getDayKey(),
       limitedBySessionCap,
+      willExhaustPlanTotal,
       isEnded: false,
     };
 
@@ -272,11 +280,16 @@ export class LiveUsageService {
     if (!session || session.isEnded) return;
 
     const isSessionCap = session.limitedBySessionCap === true;
-    const reason = isSessionCap ? 'SESSION_LIMIT_REACHED' : 'LIVE_MINUTES_EXCEEDED';
-    const message = isSessionCap
+    let reason = isSessionCap ? 'SESSION_LIMIT_REACHED' : 'LIVE_MINUTES_EXCEEDED';
+    let message = isSessionCap
       ? 'Per-session live limit reached. Tap Try Again to start a new session.'
       : 'Daily live limit & booster minutes exhausted. Buy a booster or try again tomorrow.';
     const canRetry = isSessionCap;
+
+    if (!isSessionCap && session.willExhaustPlanTotal) {
+      reason = 'PLAN_TOTAL_LIVE_MINUTES_EXCEEDED';
+      message = 'Plan total live minutes exhausted. Buy a live booster to continue live streaming.';
+    }
 
     // Send stop-stream & stream-failed events to rooms via signaling IO
     try {
@@ -298,32 +311,17 @@ export class LiveUsageService {
           io.to(session.rawDeviceId).emit('stop-stream', { deviceId: session.rawDeviceId, sessionId: session.sessionId });
           io.to(session.rawDeviceId).emit('stream-failed', payload);
         }
+
+        if (session.parentSocketId) {
+          io.to(session.parentSocketId).emit('stop-stream', { deviceId: session.deviceId, sessionId: session.sessionId });
+          io.to(session.parentSocketId).emit('stream-failed', payload);
+        }
       }
     } catch (e: any) {
       console.error(`[LIVE-USAGE-CUTOFF-EMIT-ERR] ${e?.message}`);
     }
 
-    // Also send FCM push notification to parent topic so notification shows when app is closed / in background
-    try {
-      if (session.parentUserId) {
-          const { sendLocalizedFcmTopicNotification } = require('./fcm.service');
-          const templateKey = isSessionCap ? 'LIVE_TOTAL_LIMIT_REACHED' : 'LIVE_DAILY_LIMIT_REACHED';
-          await sendLocalizedFcmTopicNotification(
-            `parent_${session.parentUserId}`,
-            templateKey,
-            {}, // no params
-            undefined, // resolve language from topic
-            {
-              type: reason,
-              sessionId: session.sessionId,
-              deviceId: session.deviceId,
-              streamType: session.type || 'camera',
-            }
-          ).catch((err: any) => console.warn('[FCM-CUTOFF-WARN]', err?.message));
-      }
-    } catch (pushErr: any) {
-      console.warn('[LIVE-USAGE-CUTOFF-FCM-ERR]', pushErr?.message);
-    }
+    // Per-session cutoff: no push notification sent (notifications only sent for daily limit, total limit, or booster exhausted).
 
     await this.endSession(sessionId, 'CUTOFF_TIMEOUT');
   }
@@ -350,8 +348,16 @@ export class LiveUsageService {
 
     this.cleanupSessionReferences(session);
 
-    // Compute elapsed duration
-    const startTime = session.mediaStartedAt || session.startedAt;
+    // Only ACTUAL streamed media is billable. If media never connected (user clicked Live but it
+    // stayed on "connecting" and then failed/was cancelled), mediaStartedAt is never set — charge 0.
+    // The connecting phase must never consume the parent's live minutes.
+    if (!session.mediaStartedAt) {
+      console.log(`[LIVE-USAGE-END] Session ${session.sessionId} ended (${reason}) before media ever connected. No minutes charged.`);
+      return 0;
+    }
+
+    // Compute elapsed duration from the moment media actually started (not from the request/connecting time)
+    const startTime = session.mediaStartedAt;
     const elapsedMs = Math.max(0, Date.now() - startTime.getTime());
     const elapsedSeconds = Math.floor(elapsedMs / 1000);
 
@@ -461,34 +467,54 @@ export class LiveUsageService {
         const prevAddonPool = (sub.addonLiveMinutesPool || 0) + toAddon;
         const newAddonPool = Math.max(0, (sub.addonLiveMinutesPool || 0) - toAddon);
 
-        // Case 1: Daily or Total plan limit reached and no add-on live minutes available
+        // Case 1: Daily plan limit reached and no add-on live minutes available (Single-time per day)
         const dailyExhaustedNow = hasDailyLimit && prevDailyUsed < rawDailyLimit && newDailyUsed >= rawDailyLimit;
-        const totalPlanExhaustedNow = hasTotalLimit && prevPlanTotalUsed < planTotalLimit && newPlanTotalUsed >= planTotalLimit;
-
-        if ((dailyExhaustedNow || totalPlanExhaustedNow) && newAddonPool <= 0) {
+        if (dailyExhaustedNow && newAddonPool <= 0) {
           const freshUsage = await LiveUsage.findOne({ parentUserId: session.parentUserId, dayKey });
           if (!freshUsage?.dailyLimitNotified) {
             await LiveUsage.updateOne(
               { parentUserId: session.parentUserId, dayKey },
               { $set: { dailyLimitNotified: true } }
             );
-            const templateKey = totalPlanExhaustedNow ? 'LIVE_TOTAL_LIMIT_REACHED' : 'LIVE_DAILY_LIMIT_REACHED';
             await sendLocalizedFcmTopicNotification(
               `parent_${session.parentUserId}`,
-              templateKey,
+              'LIVE_DAILY_LIMIT_REACHED',
               {},
               undefined,
-              { type: totalPlanExhaustedNow ? 'live_total_limit_reached' : 'live_daily_limit_reached' }
+              { type: 'live_daily_limit_reached' }
             );
-            console.log(`[LIVE-NOTIF] Sent single-time Live Limit notification (${templateKey}) to parent_${session.parentUserId}`);
+            console.log(`[LIVE-NOTIF] Sent single-time LIVE_DAILY_LIMIT_REACHED notification to parent_${session.parentUserId}`);
           }
         }
 
-        // Case 2: Live minutes ADD-ON booster plan minutes exhausted
+        // Case 2: Total plan limit reached and no add-on live minutes available (Single-time per plan subscription)
+        const totalPlanExhaustedNow = hasTotalLimit && prevPlanTotalUsed < planTotalLimit && newPlanTotalUsed >= planTotalLimit;
+        if (totalPlanExhaustedNow && newAddonPool <= 0) {
+          const freshSub = await Subscription.findOne({ parentUserId: session.parentUserId });
+          if (freshSub && !freshSub.liveTotalLimitNotified) {
+            await Subscription.updateOne(
+              { parentUserId: session.parentUserId },
+              { $set: { liveTotalLimitNotified: true } }
+            );
+            await sendLocalizedFcmTopicNotification(
+              `parent_${session.parentUserId}`,
+              'LIVE_TOTAL_LIMIT_REACHED',
+              {},
+              undefined,
+              { type: 'live_total_limit_reached' }
+            );
+            console.log(`[LIVE-NOTIF] Sent single-time LIVE_TOTAL_LIMIT_REACHED notification to parent_${session.parentUserId}`);
+          }
+        }
+
+        // Case 3: Live minutes ADD-ON booster plan minutes exhausted (Single-time per booster pool)
         if (prevAddonPool > 0 && newAddonPool <= 0) {
-          if (!sub.addonLiveExhaustedNotified) {
-            sub.addonLiveExhaustedNotified = true;
-            await sub.save();
+          const freshSub = await Subscription.findOne({ parentUserId: session.parentUserId });
+          if (freshSub && !freshSub.addonLiveExhaustedNotified) {
+            await Subscription.updateOne(
+              { parentUserId: session.parentUserId },
+              { $set: { addonLiveExhaustedNotified: true } }
+            );
             await sendLocalizedFcmTopicNotification(
               `parent_${session.parentUserId}`,
               'LIVE_ADDON_EXHAUSTED',
@@ -496,7 +522,7 @@ export class LiveUsageService {
               undefined,
               { type: 'live_addon_exhausted' }
             );
-            console.log(`[LIVE-NOTIF] Sent single-time Live Minutes Booster Exhausted notification to parent_${session.parentUserId}`);
+            console.log(`[LIVE-NOTIF] Sent single-time LIVE_ADDON_EXHAUSTED notification to parent_${session.parentUserId}`);
           }
         }
       }

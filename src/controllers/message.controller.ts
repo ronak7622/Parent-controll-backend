@@ -3,6 +3,7 @@ import { AuthRequest } from '../middleware/auth';
 import { ChildMessage, MessageCategory, MessageDirection } from '../models/ChildMessage';
 import { Device } from '../models/Device';
 import { getReadQuery } from '../dal/db.dal';
+import { checkQuotaBlocked } from './ingest.controller';
 
 function getLocalDateString(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
@@ -47,6 +48,15 @@ export const ingestMessages = async (req: Request, res: Response) => {
     const { deviceId, messages } = req.body;
     if (!deviceId || !Array.isArray(messages)) {
       return res.status(400).json({ success: false, message: 'deviceId and messages[] are required' });
+    }
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        uploadBlocked: true,
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
 
     const ops = messages

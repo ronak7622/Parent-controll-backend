@@ -34,13 +34,18 @@ const processSubscriptionJobs = async () => {
   // Ensures notifications arrive even when parent app is killed / closed!
   // -----------------------------------------------------------------
   try {
-    const activeSubs = await Subscription.find({ status: { $in: ['active', 'trial'] } });
+    const activeSubs = await Subscription.find({ status: { $in: ['active', 'trial', 'grace', 'expired'] } });
 
     for (const sub of activeSubs) {
+     try {
       const parentUserId = sub.parentUserId;
 
-      // ─── A. EXPIRING SOON FCM NOTIFICATION (Minutes & Interval from Remote Config) ───
-      if (sub.expireAt && sub.expireAt.getTime() > now.getTime()) {
+      // If an advance plan is queued (§5), suppress ONLY the expiring-soon / expired warnings (A1/A2).
+      // Storage warnings (B) must STILL fire — storage filling up is independent of plan expiry.
+      const hasQueuedPlan = Boolean(sub.queuedPlan && sub.queuedPlan.planSnapshot);
+
+      // ─── A1. EXPIRING SOON FCM NOTIFICATION (Minutes & Interval from Remote Config) ───
+      if (!hasQueuedPlan && sub.expireAt && sub.expireAt.getTime() > now.getTime()) {
         const isTrial = sub.isTrial || sub.planSnapshot?.type === 'trial';
         const remainingMinutes = Math.round((sub.expireAt.getTime() - now.getTime()) / (60 * 1000));
 
@@ -66,8 +71,8 @@ const processSubscriptionJobs = async () => {
 
             const templateKey = isTrial ? 'TRIAL_EXPIRING_SOON' : 'PLAN_EXPIRING_SOON';
             const templateParams: Record<string, string | number> = isTrial
-              ? { hours: Math.max(1, Math.ceil(remainingMinutes / 60)) }
-              : { days: Math.max(1, Math.ceil(remainingMinutes / 1440)), deviceName: 'your devices' };
+              ? { hours: Math.max(1, Math.ceil(remainingMinutes / 60)), time: timeText }
+              : { time: timeText, days: Math.max(1, Math.ceil(remainingMinutes / 1440)) };
 
             await sendLocalizedFcmTopicNotification(
               `parent_${parentUserId}`,
@@ -81,15 +86,76 @@ const processSubscriptionJobs = async () => {
               }
             );
 
-            sub.lastExpireWarnNotificationAt = now;
-            await sub.save();
+            await Subscription.updateOne({ _id: sub._id }, { $set: { lastExpireWarnNotificationAt: now } });
             console.log(`[SUBSCRIPTION-QUEUE-NOTIF] Sent Expiring Soon FCM to parent_${parentUserId} (${timeText} left)`);
           }
         }
       }
 
+      // ─── A2. PLAN EXPIRED / GRACE PERIOD FCM NOTIFICATION (Interval & Window from Remote Config) ───
+      if (!hasQueuedPlan && sub.expireAt && sub.expireAt.getTime() <= now.getTime()) {
+        const isTrial = sub.isTrial || sub.planSnapshot?.type === 'trial';
+        const minutesSinceExpiry = Math.floor((now.getTime() - sub.expireAt.getTime()) / (60 * 1000));
+
+        const afterMinutes = isTrial
+          ? (options.trialExpiredWarNotificationAfterTimeInMinute || 60)
+          : (options.expiredWarNotificationAfterTimeInMinute || 4320);
+
+        const intervalMinutes = isTrial
+          ? (options.trialExpiredWarNotificationIntervalInMinute || 120)
+          : (options.expiredWarNotificationIntervalInMinute || 1440);
+
+        // Window check: only send while within [0, afterMinutes] after expiry
+        if (minutesSinceExpiry >= 0 && minutesSinceExpiry <= afterMinutes) {
+          const lastExpireNotif = sub.lastExpireWarnNotificationAt ? new Date(sub.lastExpireWarnNotificationAt).getTime() : 0;
+          if (now.getTime() - lastExpireNotif >= intervalMinutes * 60 * 1000) {
+            const isPastGrace = sub.graceEndsAt ? now.getTime() >= new Date(sub.graceEndsAt).getTime() : (sub.status === 'expired');
+            const remainingGraceMin = sub.graceEndsAt ? Math.max(0, Math.round((new Date(sub.graceEndsAt).getTime() - now.getTime()) / (60 * 1000))) : 0;
+
+            const days = Math.floor(remainingGraceMin / 1440);
+            const hours = Math.floor((remainingGraceMin % 1440) / 60);
+            const mins = remainingGraceMin % 60;
+            const graceText = days > 0
+              ? `${days} Day${days > 1 ? 's' : ''}${hours > 0 ? ` ${hours} Hr${hours > 1 ? 's' : ''}` : ''}`
+              : hours > 0
+                ? `${hours} Hr${hours > 1 ? 's' : ''}${mins > 0 ? ` ${mins} Min${mins > 1 ? 's' : ''}` : ''}`
+                : `${mins} Min${mins > 1 ? 's' : ''}`;
+
+            const templateKey = isPastGrace
+              ? (isTrial ? 'TRIAL_EXPIRED_STOPPED' : 'PLAN_EXPIRED_STOPPED')
+              : (isTrial ? 'TRIAL_EXPIRED_GRACE' : 'PLAN_EXPIRED_GRACE');
+
+            await sendLocalizedFcmTopicNotification(
+              `parent_${parentUserId}`,
+              templateKey,
+              { graceText },
+              undefined,
+              {
+                type: 'plan_expired',
+                isTrial: String(isTrial),
+                isPastGrace: String(isPastGrace),
+                minutesSinceExpiry: String(minutesSinceExpiry),
+              }
+            );
+
+            await Subscription.updateOne({ _id: sub._id }, { $set: { lastExpireWarnNotificationAt: now } });
+            console.log(`[SUBSCRIPTION-QUEUE-NOTIF] Sent Plan Expired FCM (${templateKey}) to parent_${parentUserId} (sinceExpiry: ${minutesSinceExpiry}m)`);
+          }
+        }
+      }
+
       // ─── B. STORAGE USAGE FCM NOTIFICATION (Warn % & 100% Full with Interval) ───
-      const allowedBytes = sub.planSnapshot?.storageBytes || 10737418240;
+      // Suppress storage warning and 100% full notifications completely if plan has expired, is in grace or cancelled
+      const isPlanExpiredOrGrace = (sub.expireAt && sub.expireAt.getTime() <= now.getTime()) ||
+        (sub.status as string) === 'expired' ||
+        (sub.status as string) === 'grace' ||
+        (sub.status as string) === 'cancelled';
+
+      if (isPlanExpiredOrGrace) {
+        continue;
+      }
+
+      const allowedBytes = (sub.planSnapshot?.storageBytes || 10737418240) + (sub.addonStorageBytes || 0);
       const warnPercent = options.storageWarnNotificationPercent || options.storageWarnPercent || sub.planSnapshot?.storageWarnPercent || 80;
       const storageIntervalMin = options.storageWarnNotificationIntervalInMinute || options.storageWarnNotificationIntervalMin || 120;
 
@@ -109,8 +175,7 @@ const processSubscriptionJobs = async () => {
             undefined,
             { type: 'storage_full', percent: percent.toFixed(1) }
           );
-          sub.lastStorageWarnNotificationAt = now;
-          await sub.save();
+          await Subscription.updateOne({ _id: sub._id }, { $set: { lastStorageWarnNotificationAt: now } });
           console.log(`[SUBSCRIPTION-QUEUE-NOTIF] Sent Storage 100% Full FCM to parent_${parentUserId}`);
         } else if (percent >= warnPercent) {
           await sendLocalizedFcmTopicNotification(
@@ -120,11 +185,19 @@ const processSubscriptionJobs = async () => {
             undefined,
             { type: 'storage_warning', percent: percent.toFixed(1) }
           );
-          sub.lastStorageWarnNotificationAt = now;
-          await sub.save();
+          await Subscription.updateOne({ _id: sub._id }, { $set: { lastStorageWarnNotificationAt: now } });
           console.log(`[SUBSCRIPTION-QUEUE-NOTIF] Sent Storage Warning (${percent.toFixed(1)}%) FCM to parent_${parentUserId}`);
         }
       }
+
+      // If storage usage is below the warning threshold (e.g. after purchasing an add-on or deleting files),
+      // reset lastStorageWarnNotificationAt so future real warnings fire promptly.
+      if (percent < warnPercent && sub.lastStorageWarnNotificationAt) {
+        await Subscription.updateOne({ _id: sub._id }, { $unset: { lastStorageWarnNotificationAt: 1 } });
+      }
+     } catch (subErr: any) {
+       console.error(`[SUBSCRIPTION-NOTIF-SUB-ERROR] parent ${sub.parentUserId}: ${subErr?.message}`);
+     }
     }
   } catch (err: any) {
     console.error(`[SUBSCRIPTION-NOTIF-SCAN-ERROR] ${err?.message}`);

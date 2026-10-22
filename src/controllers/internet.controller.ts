@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { InternetLog } from '../models/internet-log.model';
 import { getReadQuery } from '../dal/db.dal';
 import { Device } from '../models/Device';
+import { checkQuotaBlocked } from './ingest.controller';
 
 // Helper function to format bytes to human readable string (KB, MB, GB)
 const formatBytes = (bytes: number): string => {
@@ -38,6 +39,15 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
 
     if (!deviceId || !eventType) {
       return res.status(400).json({ success: false, message: 'deviceId and eventType are required' });
+    }
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        uploadBlocked: true,
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
 
     const eventDate = timestamp ? new Date(timestamp) : new Date();
@@ -374,6 +384,15 @@ export const ingestInternetLogsBatch = async (req: Request, res: Response) => {
     const { deviceId, events } = req.body;
     if (!deviceId || !Array.isArray(events)) {
       return res.status(400).json({ success: false, message: 'deviceId and events[] are required' });
+    }
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        uploadBlocked: true,
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
     const sorted = [...events].sort((a: any, b: any) => ((a?.timestamp || 0) - (b?.timestamp || 0)));
     let processed = 0;

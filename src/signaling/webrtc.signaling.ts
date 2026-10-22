@@ -146,6 +146,32 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
         return;
       }
 
+      // ── ONE CHILD = ONE SOCKET ──────────────────────────────────────────────
+      // Before this child joins, evict any STALE/ghost child socket already in this
+      // device room. Ghost sockets (left over from reconnects / renew / network churn
+      // where the old connection was not cleaned up) cause live stream requests and
+      // WebRTC signalling (offer/answer/ICE) to be duplicated or routed to a dead peer
+      // — which makes Live get stuck on "connecting" and then fail. Keeping exactly one
+      // live child socket per device fixes that and also lowers memory/connection cost.
+      if (role === 'child') {
+        try {
+          const roomSet = signalingNamespace.adapter.rooms.get(targetDeviceId);
+          if (roomSet) {
+            for (const sid of roomSet) {
+              if (sid === socket.id) continue;
+              const other = signalingNamespace.sockets.get(sid);
+              if (other && other.data?.role === 'child') {
+                console.log(`[WEBRTC-ROOM] Evicting stale child socket ${sid} for device ${targetDeviceId} (replaced by ${socket.id})`);
+                try { other.leave(targetDeviceId); } catch (_) {}
+                try { other.disconnect(true); } catch (_) {}
+              }
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[WEBRTC-ROOM] Stale child-socket eviction skipped: ${e?.message}`);
+        }
+      }
+
       socket.data.role = role;
       socket.data.deviceId = targetDeviceId;
       socket.join(targetDeviceId);
@@ -165,8 +191,13 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
 
       if (role === 'child') {
         try {
-          await Device.updateOne({ deviceId: targetDeviceId }, { $set: { isOnline: true, lastSeenAt: new Date() } });
-          socket.to(targetDeviceId).emit('device-status-changed', { deviceId: targetDeviceId, isOnline: true });
+          const now = new Date();
+          await Device.updateOne({ deviceId: targetDeviceId }, { $set: { isOnline: true, lastSeenAt: now } });
+          socket.to(targetDeviceId).emit('device-status-changed', {
+            deviceId: targetDeviceId,
+            isOnline: true,
+            lastSeenAt: now.toISOString(),
+          });
           const dev = await Device.findOne({ deviceId: targetDeviceId });
           if (dev) {
             if (dev.blockedPhoneNumbers && dev.blockedPhoneNumbers.length > 0) {
@@ -547,6 +578,15 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       const deviceId = typeof data === 'string' ? data : data?.deviceId;
       const sessId = typeof data === 'object' ? data?.sessionId : undefined;
       console.log(`[WEBRTC-STOP] Stop stream requested for room: ${deviceId}, sessionId: ${sessId}`);
+
+      const session = LiveUsageService.findSession(sessId, deviceId, socket.id);
+      if (session) {
+        // If an untargeted stop-stream (without sessionId) arrives from child while session is newly connecting (< 4s), ignore it
+        if (!sessId && socket.data.role === 'child' && Date.now() - session.startedAt.getTime() < 4000) {
+          console.warn(`[WEBRTC-STOP-IGNORED] Ignoring untargeted child stop-stream for newly connecting session ${session.sessionId}`);
+          return;
+        }
+      }
 
       await LiveUsageService.endSession(sessId || deviceId || socket.id, 'STOP_STREAM');
 

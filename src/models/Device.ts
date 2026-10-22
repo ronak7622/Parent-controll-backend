@@ -270,3 +270,37 @@ const DeviceSchema = new Schema<IDevice>(
 );
 
 export const Device = mongoose.model<IDevice>('Device', DeviceSchema);
+
+/**
+ * Returns true if the device's lastSeenAt is within the specified threshold (default 150 seconds).
+ * Online/Offline status is derived dynamically with zero background cron costs.
+ */
+export function isDeviceFresh(
+  dev: { lastSeenAt?: Date | string | null; lastSeen?: Date | string | null } | null | undefined,
+  thresholdSeconds: number = 150
+): boolean {
+  if (!dev) return false;
+  const rawDate = dev.lastSeenAt || dev.lastSeen;
+  if (!rawDate) return false;
+  const time = new Date(rawDate).getTime();
+  if (isNaN(time)) return false;
+  return (Date.now() - time) < (thresholdSeconds * 1000);
+}
+
+/**
+ * Enriches a device object with dynamic derived isOnline and normalized lastSeen fields.
+ */
+export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
+  dev: T,
+  thresholdSeconds: number = 150
+): T & { isOnline: boolean; lastSeen?: any; lastSeenAt?: any } {
+  const isOnline = isDeviceFresh(dev, thresholdSeconds);
+  const rawDate = dev.lastSeenAt || dev.lastSeen;
+  return {
+    ...dev,
+    isOnline,
+    lastSeen: rawDate,
+    lastSeenAt: rawDate,
+  };
+}
+

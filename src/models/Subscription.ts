@@ -43,6 +43,7 @@ export interface IQueuedPlan {
     liveMinutes: number;
     price: number;
   };
+  allowStorageTrim?: boolean;
 }
 
 export interface ISubscription extends Document {
@@ -64,6 +65,7 @@ export interface ISubscription extends Document {
   lastStorageWarnNotificationAt?: Date;
   lastExpireWarnNotificationAt?: Date;
   addonLiveExhaustedNotified?: boolean;
+  liveTotalLimitNotified?: boolean;
   planLiveMinutesUsed?: number; // cumulative live minutes used from base plan
 }
 
@@ -114,6 +116,7 @@ const QueuedPlanSchema: Schema = new Schema(
       liveMinutes: Number,
       price: Number,
     },
+    allowStorageTrim: { type: Boolean, default: false },
   },
   { _id: false }
 );
@@ -143,6 +146,7 @@ const SubscriptionSchema: Schema = new Schema(
     lastStorageWarnNotificationAt: { type: Date },
     lastExpireWarnNotificationAt: { type: Date },
     addonLiveExhaustedNotified: { type: Boolean, default: false },
+    liveTotalLimitNotified: { type: Boolean, default: false },
     planLiveMinutesUsed: { type: Number, default: 0 },
   },
   { timestamps: true }

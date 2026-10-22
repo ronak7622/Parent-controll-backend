@@ -34,6 +34,14 @@ export const checkQuotaBlocked = async (deviceId: string): Promise<boolean> => {
     const sub = await Subscription.findOne({ parentUserId });
     // Block uploads if no subscription, expired, or in grace period (grace is local only)
     if (!sub || (sub.status !== 'active' && sub.status !== 'trial')) return true;
+    const now = new Date();
+    if (sub.expireAt && sub.expireAt.getTime() <= now.getTime()) {
+      if (sub.queuedPlan && sub.queuedPlan.planSnapshot) {
+        // Queued advance plan will be activated
+      } else {
+        return true;
+      }
+    }
     const allowedBytes = (sub.planSnapshot?.storageBytes || 10737418240) + (sub.addonStorageBytes || 0);
     const usage = await StorageAccountingService.getStorageUsage(parentUserId);
     return (usage?.totalBytes || 0) >= allowedBytes;
@@ -198,6 +206,14 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid payload format' });
     }
 
+    const targetDeviceId = topDeviceId || (Array.isArray(rawLogs) && rawLogs.length > 0 ? rawLogs[0]?.deviceId : null);
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    if (await checkQuotaBlocked(targetDeviceId)) {
+      return res.status(403).json({ success: false, code: 'SUBSCRIPTION_INACTIVE', message: 'Subscription inactive or storage full. Upload rejected.' });
+    }
+
     const device = topDeviceId ? await Device.findOne({ deviceId: topDeviceId }) : null;
     const lastClearedTime = device?.lastBrowserClearedAt ? new Date(device.lastBrowserClearedAt).getTime() : 0;
     const clearedDatesSet = new Set(device?.clearedBrowserDates || []);
@@ -350,6 +366,14 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid payload format' });
     }
 
+    const targetDeviceId = topDeviceId || (Array.isArray(rawLogs) && rawLogs.length > 0 ? rawLogs[0]?.deviceId : null);
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    if (await checkQuotaBlocked(targetDeviceId)) {
+      return res.status(403).json({ success: false, code: 'SUBSCRIPTION_INACTIVE', message: 'Subscription inactive or storage full. Upload rejected.' });
+    }
+
     const device = topDeviceId ? await Device.findOne({ deviceId: topDeviceId }) : null;
     const lastClearedTime = device?.lastYoutubeClearedAt ? new Date(device.lastYoutubeClearedAt).getTime() : 0;
     const clearedDatesSet = new Set(device?.clearedYoutubeDates || []);
@@ -469,6 +493,14 @@ export const ingestYouTubeSession = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid payload format' });
     }
 
+    const targetDeviceId = topDeviceId || (Array.isArray(rawSessions) && rawSessions.length > 0 ? rawSessions[0]?.deviceId : null);
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    if (await checkQuotaBlocked(targetDeviceId)) {
+      return res.status(403).json({ success: false, code: 'SUBSCRIPTION_INACTIVE', message: 'Subscription inactive or storage full. Upload rejected.' });
+    }
+
     const docs = rawSessions.map((item: any) => {
       const start = item.startTime ? new Date(item.startTime) : new Date();
       const end = item.endTime ? new Date(item.endTime) : new Date();
@@ -542,8 +574,9 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
     if (await checkQuotaBlocked(deviceId)) {
       return res.status(403).json({
         success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
         uploadBlocked: true,
-        message: 'Storage quota exceeded for your subscription plan. Upgrade your plan to upload new media.',
+        message: 'Subscription inactive or storage full. Upload rejected.',
       });
     }
 
@@ -601,8 +634,9 @@ export const uploadBatchCapturedMedia = async (req: Request, res: Response) => {
     if (await checkQuotaBlocked(deviceId)) {
       return res.status(403).json({
         success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
         uploadBlocked: true,
-        message: 'Storage quota exceeded for your subscription plan. Batch upload paused.',
+        message: 'Subscription inactive or storage full. Upload rejected.',
       });
     }
 
@@ -668,8 +702,9 @@ export const getPresignedUploadUrl = async (req: Request, res: Response) => {
     if (await checkQuotaBlocked(deviceId)) {
       return res.status(403).json({
         success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
         uploadBlocked: true,
-        message: 'Storage quota exceeded for your subscription plan. Presigned upload URL generation blocked.',
+        message: 'Subscription inactive or storage full. Upload rejected.',
       });
     }
 
@@ -710,6 +745,15 @@ export const registerMediaMetadata = async (req: Request, res: Response) => {
 
     if (!deviceId || (!objectKey && !mediaUrl)) {
       return res.status(400).json({ success: false, message: 'deviceId and objectKey/mediaUrl are required' });
+    }
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        uploadBlocked: true,
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
 
     const finalMediaUrl = mediaUrl || (config.cdnPublicDomain ? `${config.cdnPublicDomain}/${objectKey}` : objectKey);
@@ -753,6 +797,14 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
       pastUsageSynced,
     } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
+    }
 
     // 1. Always update lastUsageSyncTime & 30-day sync status on Device
     const updateData: any = { lastUsageSyncTime: new Date() };
@@ -910,10 +962,21 @@ export const ingestCallLogs = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid or empty call logs payload' });
     }
 
+    const targetDeviceId = topDeviceId || rawLogs[0]?.deviceId;
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    if (await checkQuotaBlocked(targetDeviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
+    }
+
     const insertedOrUpdated: any[] = [];
 
     // Check device's current blocked phone numbers
-    const targetDeviceId = topDeviceId || rawLogs[0]?.deviceId;
     const device = await Device.findOne({ deviceId: targetDeviceId });
     const blockedNumbersSet = new Set((device?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
     const lastClearedTime = device?.lastCallHistoryClearedAt ? new Date(device.lastCallHistoryClearedAt).getTime() : 0;
@@ -1003,6 +1066,14 @@ export const ingestContacts = async (req: Request, res: Response) => {
     const targetDeviceId = topDeviceId || rawContacts[0]?.deviceId;
     if (!targetDeviceId) {
       return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+
+    if (await checkQuotaBlocked(targetDeviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
 
     // If full sync and contacts array is empty, all contacts were deleted on device
@@ -1105,8 +1176,9 @@ export const ingestCallRecording = async (req: Request, res: Response) => {
     if (await checkQuotaBlocked(deviceId)) {
       return res.status(403).json({
         success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
         uploadBlocked: true,
-        message: 'Storage quota exceeded or subscription not active. Call recording upload blocked.',
+        message: 'Subscription inactive or storage full. Upload rejected.',
       });
     }
 
@@ -1179,8 +1251,9 @@ export const ingestCallRecordingStream = async (req: Request, res: Response) => 
     if (await checkQuotaBlocked(deviceId)) {
       return res.status(403).json({
         success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
         uploadBlocked: true,
-        message: 'Storage quota exceeded or subscription not active. Call recording stream blocked.',
+        message: 'Subscription inactive or storage full. Upload rejected.',
       });
     }
 
@@ -1282,6 +1355,14 @@ export const ingestNotifications = async (req: Request, res: Response) => {
     const { deviceId, notifications } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
+    }
+
     // Marks that a sync actually happened, for the parent's "Last Synced" label - even calls with
     // nothing new still confirm the child is reachable and up to date.
     await Device.findOneAndUpdate({ deviceId }, { $set: { lastNotificationSyncTime: new Date() } });
@@ -1358,6 +1439,14 @@ export const ingestAppSessions = async (req: Request, res: Response) => {
     const { deviceId, appSessions, replaceDate } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
+    }
+
     if (Array.isArray(appSessions) && appSessions.length > 0) {
       const sessionOps = appSessions
         .filter((s: any) => s && s.packageName && s.startTime && s.endTime && !isIgnoredSystemPackage(String(s.packageName)))
@@ -1412,6 +1501,14 @@ export const updateDeviceSyncStatus = async (req: Request, res: Response) => {
     const { deviceId, isSyncingPastUsage, pastUsageSynced } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
+    }
+
     const updateData: any = { lastUsageSyncTime: new Date() };
     if (isSyncingPastUsage !== undefined) updateData.isSyncingPastUsage = Boolean(isSyncingPastUsage);
     if (pastUsageSynced !== undefined) updateData.pastUsageSynced = Boolean(pastUsageSynced);
@@ -1430,6 +1527,14 @@ export const ingestInstalledApps = async (req: Request, res: Response) => {
   try {
     const { deviceId, installedApps } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
+    }
 
     if (Array.isArray(installedApps)) {
       const cleanApps = installedApps
@@ -1476,6 +1581,18 @@ export const ingestLocationHistory = async (req: Request, res: Response) => {
 
     if (!Array.isArray(rawItems) || rawItems.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty location payload' });
+    }
+
+    const targetDeviceId = topDeviceId || (Array.isArray(rawItems) && rawItems.length > 0 ? rawItems[0]?.deviceId : null);
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    if (await checkQuotaBlocked(targetDeviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
 
     const docsToInsert: any[] = [];
@@ -1547,10 +1664,10 @@ export const ingestLocationHistory = async (req: Request, res: Response) => {
       await LocationLog.bulkWrite(ops, { ordered: false });
     }
 
-    const targetDeviceId = topDeviceId || (docsToInsert[0]?.deviceId);
-    if (targetDeviceId && latestLoc) {
+    const locSyncDeviceId = topDeviceId || (docsToInsert[0]?.deviceId) || targetDeviceId;
+    if (locSyncDeviceId && latestLoc) {
       await Device.findOneAndUpdate(
-        { deviceId: targetDeviceId },
+        { deviceId: locSyncDeviceId },
         {
           $set: {
             lastLocationSyncTime: new Date(),
@@ -1590,6 +1707,14 @@ export const ingestLiveLocation = async (req: Request, res: Response) => {
 
     if (!deviceId || typeof latitude !== 'number' || typeof longitude !== 'number') {
       return res.status(400).json({ success: false, message: 'deviceId, latitude, and longitude are required' });
+    }
+
+    if (await checkQuotaBlocked(deviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
 
     const ts = timestamp ? new Date(timestamp) : new Date();
@@ -1657,6 +1782,18 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
     const topDeviceId = req.body.deviceId;
     if (!Array.isArray(rawTrips) || rawTrips.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty driving trips payload' });
+    }
+
+    const targetDeviceId = topDeviceId || (Array.isArray(rawTrips) && rawTrips.length > 0 ? rawTrips[0]?.deviceId : null);
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    if (await checkQuotaBlocked(targetDeviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
 
     const insertedOrUpdated: any[] = [];
@@ -1758,6 +1895,18 @@ export const ingestKeyboardLogs = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid or empty keyboard logs payload' });
     }
 
+    const targetDeviceId = topDeviceId || (Array.isArray(rawLogs) && rawLogs.length > 0 ? rawLogs[0]?.deviceId : null);
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+    if (await checkQuotaBlocked(targetDeviceId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
+    }
+
     const docsToInsert: any[] = [];
     for (const item of rawLogs) {
       const deviceId = item.deviceId || topDeviceId;
@@ -1839,7 +1988,12 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
     }
 
     if (await checkQuotaBlocked(topDeviceId)) {
-      return res.status(403).json({ success: false, message: 'STORAGE_QUOTA_EXCEEDED' });
+      return res.status(403).json({
+        success: false,
+        code: 'SUBSCRIPTION_INACTIVE',
+        uploadBlocked: true,
+        message: 'Subscription inactive or storage full. Upload rejected.',
+      });
     }
 
     const items = Array.isArray(rawEvents) ? rawEvents : [rawEvents];

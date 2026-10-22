@@ -22,6 +22,8 @@ import { ScheduleConfig } from '../models/ScheduleConfig';
 import { DeletedRecording } from '../models/DeletedRecording';
 import { User } from '../models/User';
 import { Device } from '../models/Device';
+import { LiveUsage } from '../models/LiveUsage';
+import { StorageUsage } from '../models/StorageUsage';
 import { deleteMediaFromR2, bulkDeleteMediaFromR2 } from './r2.service';
 import { StorageAccountingService } from './StorageAccountingService';
 
@@ -336,10 +338,10 @@ export class StorageDeleteService {
    * Decrements/zeros device storage and recalculates parent account storage.
    * DOES NOT unpair or disconnect the device.
    */
-  static async eraseAllDeviceData(deviceId: string, parentUserId?: string): Promise<{ freedBytes: number; deletedCount: number }> {
+  static async eraseAllDeviceData(deviceId: string, parentUserId?: string, wipeParentScoped: boolean = false): Promise<{ freedBytes: number; deletedCount: number }> {
     try {
       if (!parentUserId) {
-        parentUserId = await StorageAccountingService.resolveParentUserId(deviceId) || undefined;
+        parentUserId = (await StorageAccountingService.resolveParentUserId(deviceId)) || undefined;
       }
 
       const mediaUrlsToDelete: string[] = [];
@@ -347,81 +349,121 @@ export class StorageDeleteService {
       let totalDeletedCount = 0;
 
       // 1. MediaCapture (Photos, Screenshots, Videos, Audio)
-      const mediaDocs = await MediaCapture.find({ deviceId }).select('_id mediaUrl cdnUrl thumbnailUrl fileSizeBytes type');
-      for (const doc of mediaDocs) {
-        if (doc.mediaUrl) mediaUrlsToDelete.push(doc.mediaUrl);
-        if ((doc as any).cdnUrl) mediaUrlsToDelete.push((doc as any).cdnUrl);
-        if (doc.thumbnailUrl) mediaUrlsToDelete.push(doc.thumbnailUrl);
-        totalBytesFreed += (doc.fileSizeBytes || 50000);
-      }
-      if (mediaDocs.length > 0) {
-        await MediaCapture.deleteMany({ deviceId });
-        totalDeletedCount += mediaDocs.length;
+      try {
+        const mediaDocs = await MediaCapture.find({ deviceId }).select('_id mediaUrl cdnUrl thumbnailUrl fileSizeBytes type');
+        for (const doc of mediaDocs) {
+          if (doc.mediaUrl) mediaUrlsToDelete.push(doc.mediaUrl);
+          if ((doc as any).cdnUrl) mediaUrlsToDelete.push((doc as any).cdnUrl);
+          if (doc.thumbnailUrl) mediaUrlsToDelete.push(doc.thumbnailUrl);
+          totalBytesFreed += doc.fileSizeBytes || 50000;
+        }
+        if (mediaDocs.length > 0) {
+          await MediaCapture.deleteMany({ deviceId });
+          totalDeletedCount += mediaDocs.length;
+        }
+      } catch (err: any) {
+        console.warn(`[ERASE-ALL-DEVICE-DATA] Error querying/deleting MediaCapture for ${deviceId}:`, err?.message);
       }
 
       // 2. Recording (Videos, Screen recordings, Audio)
-      const recordingDocs = await Recording.find({ deviceId }).select('_id mediaUrl thumbnailUrl fileSizeBytes');
-      for (const rec of recordingDocs) {
-        if (rec.mediaUrl) mediaUrlsToDelete.push(rec.mediaUrl);
-        if (rec.thumbnailUrl) mediaUrlsToDelete.push(rec.thumbnailUrl);
-        totalBytesFreed += ((rec as any).fileSizeBytes || 150000);
-      }
-      if (recordingDocs.length > 0) {
-        await Recording.deleteMany({ deviceId });
-        totalDeletedCount += recordingDocs.length;
+      try {
+        const recordingDocs = await Recording.find({ deviceId }).select('_id mediaUrl thumbnailUrl fileSizeBytes');
+        for (const rec of recordingDocs) {
+          if (rec.mediaUrl) mediaUrlsToDelete.push(rec.mediaUrl);
+          if (rec.thumbnailUrl) mediaUrlsToDelete.push(rec.thumbnailUrl);
+          totalBytesFreed += (rec as any).fileSizeBytes || 150000;
+        }
+        if (recordingDocs.length > 0) {
+          await Recording.deleteMany({ deviceId });
+          totalDeletedCount += recordingDocs.length;
+        }
+      } catch (err: any) {
+        console.warn(`[ERASE-ALL-DEVICE-DATA] Error querying/deleting Recording for ${deviceId}:`, err?.message);
       }
 
       // 3. CallRecording (Call Audio)
-      const callRecDocs = await CallRecording.find({ deviceId }).select('_id audioUrl mediaUrl fileSizeBytes');
-      for (const rec of callRecDocs) {
-        if (rec.audioUrl) mediaUrlsToDelete.push(rec.audioUrl);
-        if ((rec as any).mediaUrl) mediaUrlsToDelete.push((rec as any).mediaUrl);
-        totalBytesFreed += ((rec as any).fileSizeBytes || 100000);
-      }
-      if (callRecDocs.length > 0) {
-        await CallRecording.deleteMany({ deviceId });
-        totalDeletedCount += callRecDocs.length;
+      try {
+        const callRecDocs = await CallRecording.find({ deviceId }).select('_id audioUrl mediaUrl fileSizeBytes');
+        for (const rec of callRecDocs) {
+          if (rec.audioUrl) mediaUrlsToDelete.push(rec.audioUrl);
+          if ((rec as any).mediaUrl) mediaUrlsToDelete.push((rec as any).mediaUrl);
+          totalBytesFreed += (rec as any).fileSizeBytes || 100000;
+        }
+        if (callRecDocs.length > 0) {
+          await CallRecording.deleteMany({ deviceId });
+          totalDeletedCount += callRecDocs.length;
+        }
+      } catch (err: any) {
+        console.warn(`[ERASE-ALL-DEVICE-DATA] Error querying/deleting CallRecording for ${deviceId}:`, err?.message);
       }
 
       // 4. Bulk Delete all R2 & local files
       if (mediaUrlsToDelete.length > 0) {
-        const uniqueUrls = Array.from(new Set(mediaUrlsToDelete));
-        await bulkDeleteMediaFromR2(uniqueUrls);
+        try {
+          const uniqueUrls = Array.from(new Set(mediaUrlsToDelete));
+          await bulkDeleteMediaFromR2(uniqueUrls);
+        } catch (err: any) {
+          console.warn(`[ERASE-ALL-DEVICE-DATA] Error deleting R2 files for ${deviceId}:`, err?.message);
+        }
       }
 
-      // 5. Delete all Text / Database Logs (13 Collections)
-      const textCollections = [
-        CallLog.deleteMany({ deviceId }),
-        LocationLog.deleteMany({ deviceId }),
-        ChildMessage.deleteMany({ deviceId }),
-        ChildNotification.deleteMany({ deviceId }),
-        BrowserHistory.deleteMany({ deviceId }),
-        YouTubeHistory.deleteMany({ deviceId }),
-        YouTubeSession.deleteMany({ deviceId }),
-        AppSession.deleteMany({ deviceId }),
-        AppUsage.deleteMany({ deviceId }),
-        DrivingTrip.deleteMany({ deviceId }),
-        KeyboardLog.deleteMany({ deviceId }),
-        WifiLog.deleteMany({ deviceId }),
-        InternetLog.deleteMany({ deviceId }),
-        ChatMessage.deleteMany({ deviceId }),
-        Contact.deleteMany({ deviceId }),
-        AppBlockRule.deleteMany({ deviceId }),
-        AppLimit.deleteMany({ deviceId }),
-        ScheduleConfig.deleteMany({ deviceId }),
-        DeletedRecording.deleteMany({ deviceId }),
+      // 5. Delete all Text / Database Logs (19 Collections) - wrapped safe
+      const textCollections: Array<{ name: string; promise: Promise<any> }> = [
+        { name: 'CallLog', promise: CallLog.deleteMany({ deviceId }) },
+        { name: 'LocationLog', promise: LocationLog.deleteMany({ deviceId }) },
+        { name: 'ChildMessage', promise: ChildMessage.deleteMany({ deviceId }) },
+        { name: 'ChildNotification', promise: ChildNotification.deleteMany({ deviceId }) },
+        { name: 'BrowserHistory', promise: BrowserHistory.deleteMany({ deviceId }) },
+        { name: 'YouTubeHistory', promise: YouTubeHistory.deleteMany({ deviceId }) },
+        { name: 'YouTubeSession', promise: YouTubeSession.deleteMany({ deviceId }) },
+        { name: 'AppSession', promise: AppSession.deleteMany({ deviceId }) },
+        { name: 'AppUsage', promise: AppUsage.deleteMany({ deviceId }) },
+        { name: 'DrivingTrip', promise: DrivingTrip.deleteMany({ deviceId }) },
+        { name: 'KeyboardLog', promise: KeyboardLog.deleteMany({ deviceId }) },
+        { name: 'WifiLog', promise: WifiLog.deleteMany({ deviceId }) },
+        { name: 'InternetLog', promise: InternetLog.deleteMany({ deviceId }) },
+        { name: 'ChatMessage', promise: ChatMessage.deleteMany({ deviceId }) },
+        { name: 'Contact', promise: Contact.deleteMany({ deviceId }) },
+        { name: 'AppBlockRule', promise: AppBlockRule.deleteMany({ deviceId }) },
+        { name: 'AppLimit', promise: AppLimit.deleteMany({ deviceId }) },
+        { name: 'ScheduleConfig', promise: ScheduleConfig.deleteMany({ deviceId }) },
+        { name: 'DeletedRecording', promise: DeletedRecording.deleteMany({ deviceId }) },
       ];
 
-      const deleteResults = await Promise.all(textCollections);
-      for (const res of deleteResults) {
-        const deleted = (res as any)?.deletedCount || 0;
-        totalDeletedCount += deleted;
-        totalBytesFreed += deleted * 500; // estimated 500 bytes per text log
-      }
+      const settled = await Promise.allSettled(textCollections.map((c) => c.promise));
+      settled.forEach((res, idx) => {
+        if (res.status === 'fulfilled') {
+          const deleted = (res.value as any)?.deletedCount || 0;
+          totalDeletedCount += deleted;
+          totalBytesFreed += deleted * 500; // estimated 500 bytes per text log
+        } else {
+          console.warn(`[ERASE-ALL-DEVICE-DATA] Error deleting ${textCollections[idx].name} for ${deviceId}:`, res.reason?.message);
+        }
+      });
 
-      // 6. Recalculate Parent Account Storage
+      // 6. Recalculate or Wipe Parent Account Storage / LiveUsage
       if (parentUserId) {
-        await StorageAccountingService.recalculateStorage(parentUserId);
+        let shouldWipeParent = wipeParentScoped;
+        if (!shouldWipeParent) {
+          const otherDevices = await Device.countDocuments({ parentUserId, deviceId: { $ne: deviceId } }).catch(() => 0);
+          if (otherDevices === 0) shouldWipeParent = true;
+        }
+
+        if (shouldWipeParent) {
+          try {
+            await LiveUsage.deleteMany({ parentUserId });
+          } catch (e: any) {
+            console.warn(`[ERASE-ALL-DEVICE-DATA] Error wiping LiveUsage for parent ${parentUserId}:`, e?.message);
+          }
+          try {
+            await StorageUsage.deleteMany({ parentUserId });
+          } catch (e: any) {
+            console.warn(`[ERASE-ALL-DEVICE-DATA] Error wiping StorageUsage for parent ${parentUserId}:`, e?.message);
+          }
+          await StorageAccountingService.invalidateCache(parentUserId);
+        } else {
+          await StorageAccountingService.recalculateStorage(parentUserId);
+        }
       }
 
       console.log(`[ERASE-ALL-DEVICE-DATA] Device ${deviceId}: ${totalDeletedCount} records deleted, ${totalBytesFreed} bytes freed. Device remains active.`);
@@ -429,6 +471,174 @@ export class StorageDeleteService {
     } catch (err: any) {
       console.error(`[ERASE-ALL-DEVICE-DATA-ERROR] ${err?.message}`);
       throw err;
+    }
+  }
+
+  /**
+   * Trims the oldest excess data across all child devices belonging to parentUserId
+   * until the total stored bytes is <= targetBytes.
+   * Cleans R2 files and recalculates storage via StorageAccountingService.
+   * Preserves all Device, Order, and config records.
+   */
+  static async trimOldestExcessStorage(parentUserId: string, targetBytes: number): Promise<{ freedBytes: number; deletedCount: number }> {
+    try {
+      const usage = await StorageAccountingService.getStorageUsage(parentUserId);
+      const currentBytes = usage?.totalBytes || 0;
+      if (currentBytes <= targetBytes) {
+        console.log(`[STORAGE-TRIM] Current bytes (${currentBytes}) is already within target (${targetBytes}) for parent ${parentUserId}`);
+        return { freedBytes: 0, deletedCount: 0 };
+      }
+
+      const bytesToFree = currentBytes - targetBytes;
+      console.log(`[STORAGE-TRIM] Starting excess data trim for parent ${parentUserId}. Need to free ~${(bytesToFree / (1024 * 1024)).toFixed(2)} MB to reach ${(targetBytes / (1024 * 1024)).toFixed(2)} MB target`);
+
+      const devices = await Device.find({ parentUserId }).select('deviceId');
+      const deviceIds = devices.map((d) => d.deviceId);
+      if (deviceIds.length === 0) {
+        return { freedBytes: 0, deletedCount: 0 };
+      }
+
+      let totalFreed = 0;
+      let totalDeleted = 0;
+      const mediaUrlsToDelete: string[] = [];
+
+      // 1. Fetch oldest MediaCaptures
+      const mediaCaptures = await MediaCapture.find({ deviceId: { $in: deviceIds } })
+        .sort({ createdAt: 1 })
+        .select('_id deviceId fileSizeBytes mediaUrl cdnUrl thumbnailUrl createdAt')
+        .limit(2000);
+
+      // 2. Fetch oldest Recordings
+      const recordings = await Recording.find({ deviceId: { $in: deviceIds } })
+        .sort({ createdAt: 1 })
+        .select('_id deviceId fileSizeBytes mediaUrl thumbnailUrl createdAt')
+        .limit(2000);
+
+      // 3. Fetch oldest CallRecordings
+      const callRecordings = await CallRecording.find({ deviceId: { $in: deviceIds } })
+        .sort({ createdAt: 1 })
+        .select('_id deviceId fileSizeBytes audioUrl mediaUrl createdAt')
+        .limit(2000);
+
+      // Combine and sort by createdAt ASC so truly oldest records are deleted first
+      type MediaItem = {
+        model: 'MediaCapture' | 'Recording' | 'CallRecording';
+        id: any;
+        bytes: number;
+        urls: string[];
+        createdAt: Date;
+      };
+
+      const allMedia: MediaItem[] = [];
+
+      for (const m of mediaCaptures) {
+        const urls: string[] = [];
+        if (m.mediaUrl) urls.push(m.mediaUrl);
+        if ((m as any).cdnUrl) urls.push((m as any).cdnUrl);
+        if (m.thumbnailUrl) urls.push(m.thumbnailUrl);
+        allMedia.push({
+          model: 'MediaCapture',
+          id: m._id,
+          bytes: m.fileSizeBytes || 50000,
+          urls,
+          createdAt: (m as any).createdAt || (m as any).timestamp || new Date(0),
+        });
+      }
+
+      for (const r of recordings) {
+        const urls: string[] = [];
+        if (r.mediaUrl) urls.push(r.mediaUrl);
+        if (r.thumbnailUrl) urls.push(r.thumbnailUrl);
+        allMedia.push({
+          model: 'Recording',
+          id: r._id,
+          bytes: (r as any).fileSizeBytes || 150000,
+          urls,
+          createdAt: (r as any).createdAt || new Date(0),
+        });
+      }
+
+      for (const c of callRecordings) {
+        const urls: string[] = [];
+        if (c.audioUrl) urls.push(c.audioUrl);
+        if ((c as any).mediaUrl) urls.push((c as any).mediaUrl);
+        allMedia.push({
+          model: 'CallRecording',
+          id: c._id,
+          bytes: (c as any).fileSizeBytes || 100000,
+          urls,
+          createdAt: (c as any).createdAt || new Date(0),
+        });
+      }
+
+      allMedia.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      const mediaCapIdsToDelete: any[] = [];
+      const recIdsToDelete: any[] = [];
+      const callRecIdsToDelete: any[] = [];
+
+      for (const item of allMedia) {
+        if (totalFreed >= bytesToFree) break;
+
+        if (item.model === 'MediaCapture') mediaCapIdsToDelete.push(item.id);
+        else if (item.model === 'Recording') recIdsToDelete.push(item.id);
+        else if (item.model === 'CallRecording') callRecIdsToDelete.push(item.id);
+
+        mediaUrlsToDelete.push(...item.urls);
+        totalFreed += item.bytes;
+        totalDeleted += 1;
+      }
+
+      // Execute bulk deletes for media
+      if (mediaCapIdsToDelete.length > 0) {
+        await MediaCapture.deleteMany({ _id: { $in: mediaCapIdsToDelete } });
+      }
+      if (recIdsToDelete.length > 0) {
+        await Recording.deleteMany({ _id: { $in: recIdsToDelete } });
+      }
+      if (callRecIdsToDelete.length > 0) {
+        await CallRecording.deleteMany({ _id: { $in: callRecIdsToDelete } });
+      }
+
+      if (mediaUrlsToDelete.length > 0) {
+        const uniqueUrls = Array.from(new Set(mediaUrlsToDelete));
+        await bulkDeleteMediaFromR2(uniqueUrls);
+      }
+
+      // If still need to free bytes, trim oldest text logs
+      if (totalFreed < bytesToFree) {
+        const logCollections = [
+          LocationLog,
+          ChildNotification,
+          BrowserHistory,
+          ChatMessage,
+          CallLog,
+          YouTubeHistory,
+        ];
+
+        for (const col of logCollections) {
+          if (totalFreed >= bytesToFree) break;
+          const oldestDocs = await (col as any).find({ deviceId: { $in: deviceIds } })
+            .sort({ createdAt: 1, timestamp: 1 })
+            .limit(500)
+            .select('_id');
+          if (oldestDocs.length > 0) {
+            await (col as any).deleteMany({ _id: { $in: oldestDocs.map((d: any) => d._id) } });
+            const freed = oldestDocs.length * 500;
+            totalFreed += freed;
+            totalDeleted += oldestDocs.length;
+          }
+        }
+      }
+
+      // Recalculate storage for parent user
+      await StorageAccountingService.recalculateStorage(parentUserId);
+
+      console.log(`[STORAGE-TRIM-SUCCESS] Trimmed ${totalDeleted} oldest records, freed ~${(totalFreed / (1024 * 1024)).toFixed(2)} MB for parent ${parentUserId}`);
+      return { freedBytes: totalFreed, deletedCount: totalDeleted };
+    } catch (err: any) {
+      console.error(`[STORAGE-TRIM-ERROR] ${err?.message}`);
+      return { freedBytes: 0, deletedCount: 0 };
     }
   }
 }

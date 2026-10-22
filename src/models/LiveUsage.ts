@@ -9,6 +9,7 @@ export interface ILiveUsage extends Document {
   minutesUsed: number; // legacy / cumulative
   resetAt: Date;
   dailyLimitNotified?: boolean;
+  sessionCutoffNotified?: boolean;
 }
 
 const LiveUsageSchema: Schema = new Schema(
@@ -21,6 +22,7 @@ const LiveUsageSchema: Schema = new Schema(
     minutesUsed: { type: Number, default: 0 },
     resetAt: { type: Date, required: true },
     dailyLimitNotified: { type: Boolean, default: false },
+    sessionCutoffNotified: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

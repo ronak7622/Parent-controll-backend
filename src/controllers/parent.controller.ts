@@ -20,7 +20,7 @@ import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
 import { KeyboardLog } from '../models/KeyboardLog';
 import { ChatMessage } from '../models/ChatMessage';
-import { Device } from '../models/Device';
+import { Device, isDeviceFresh } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
 import { getReadQuery, buildShardFilter, clampPaginationLimit } from '../dal/db.dal';
@@ -2769,7 +2769,7 @@ export const getLocationHistory = async (req: AuthRequest, res: Response) => {
       .sort({ timestamp: -1 })
       .limit(Number(limit));
 
-    const dev = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] }).select('lastLocationSyncTime lastLocation isOnline batteryLevel');
+    const dev = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] }).select('lastLocationSyncTime lastLocation isOnline batteryLevel lastSeenAt');
 
     let movingCount = 0;
     for (let i = 0; i < logs.length; i++) {
@@ -2783,7 +2783,7 @@ export const getLocationHistory = async (req: AuthRequest, res: Response) => {
       totalCount: logs.length,
       lastSyncTime: dev?.lastLocationSyncTime,
       lastLocation: dev?.lastLocation,
-      isOnline: dev?.isOnline || false,
+      isOnline: isDeviceFresh(dev), lastSeen: dev?.lastSeenAt,
       batteryLevel: dev?.batteryLevel || 100,
       summary: {
         movingCount,
@@ -2802,7 +2802,7 @@ export const getLiveLocation = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
 
-    const dev = await Device.findOne({ deviceId }).select('lastLocation lastLocationSyncTime isOnline batteryLevel deviceName');
+    const dev = await Device.findOne({ deviceId }).select('lastLocation lastLocationSyncTime isOnline batteryLevel deviceName lastSeenAt');
     const latestLog = await LocationLog.findOne({ deviceId }).sort({ timestamp: -1 });
 
     const liveData = dev?.lastLocation || (latestLog ? {
@@ -2821,7 +2821,7 @@ export const getLiveLocation = async (req: AuthRequest, res: Response) => {
     return res.json({
       success: true,
       liveLocation: liveData,
-      isOnline: dev?.isOnline || false,
+      isOnline: isDeviceFresh(dev), lastSeen: dev?.lastSeenAt,
       batteryLevel: dev?.batteryLevel || 100,
       lastSyncTime: dev?.lastLocationSyncTime,
       deviceName: dev?.deviceName || 'Child Device',
@@ -2912,7 +2912,7 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
       query.date = date as string;
     }
 
-    const dev = await Device.findOne({ deviceId }).select('lastLocationSyncTime isOnline batteryLevel');
+    const dev = await Device.findOne({ deviceId }).select('lastLocationSyncTime isOnline batteryLevel lastSeenAt');
     const dbTrips = await DrivingTrip.find(query).sort({ startTime: -1 }).lean();
 
     const filteredTrips = (dbTrips || []).filter((dt) => (dt.distanceKm >= 0.05 || dt.durationSeconds >= 30));
@@ -3128,7 +3128,7 @@ export const getKeyboardHistory = async (req: AuthRequest, res: Response) => {
     const [logs, total, dev] = await Promise.all([
       KeyboardLog.find(query).sort({ timestamp: -1 }).skip(skip).limit(limitNum),
       KeyboardLog.countDocuments(query),
-      Device.findOne({ deviceId }).select('lastKeyboardSyncTime isOnline batteryLevel'),
+      Device.findOne({ deviceId }).select('lastKeyboardSyncTime isOnline batteryLevel lastSeenAt'),
     ]);
 
     return res.json({
@@ -3138,7 +3138,7 @@ export const getKeyboardHistory = async (req: AuthRequest, res: Response) => {
       items: logs,
       total,
       lastSyncTime: dev?.lastKeyboardSyncTime,
-      isOnline: dev?.isOnline ?? false,
+      isOnline: isDeviceFresh(dev), lastSeen: dev?.lastSeenAt,
       batteryLevel: dev?.batteryLevel ?? 100,
     });
   } catch (error: any) {

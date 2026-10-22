@@ -21,6 +21,7 @@ export interface IUser extends Document {
   autoDeleteCategories?: string[];
   autoDeleteDeviceIds?: string[];
   languageCode?: string;
+  fcmToken?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -47,6 +48,7 @@ const UserSchema = new Schema<IUser>(
     autoDeleteCategories: [{ type: String, default: ['all'] }],
     autoDeleteDeviceIds: [{ type: String }],
     languageCode: { type: String, default: 'en' },
+    fcmToken: { type: String },
   },
   { timestamps: true }
 );

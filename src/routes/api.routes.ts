@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requestOtp, verifyOtp, updateUserLanguage } from '../controllers/auth.controller';
+import { requestOtp, verifyOtp, updateUserLanguage, updateParentFcmToken } from '../controllers/auth.controller';
 import {
   getOptionsConfig,
   getPlans,
@@ -206,6 +206,8 @@ router.post('/auth/request-otp', requestOtp);
 router.post('/auth/verify-otp', verifyOtp);
 router.post('/user/language', authenticateJwt, updateUserLanguage);
 router.put('/user/language', authenticateJwt, updateUserLanguage);
+router.post('/user/fcm-token', authenticateJwt, updateParentFcmToken);
+router.put('/user/fcm-token', authenticateJwt, updateParentFcmToken);
 
 // ===================================
 // 2. Device Pairing & Management Routes

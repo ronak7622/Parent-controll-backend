@@ -54,6 +54,59 @@ export const sendFcmDataCommand = async (
   }
 };
 
+export const sendFcmDirectNotification = async (
+  fcmToken: string,
+  title: string,
+  body: string,
+  data: Record<string, string> = {}
+): Promise<boolean> => {
+  if (!isFirebaseInitialized || !fcmToken) {
+    console.log(`[FCM-MOCK] Direct notification to token ${fcmToken?.substring(0, 10)}...: "${title}" - "${body}"`);
+    return false;
+  }
+  if (!title?.trim() || !body?.trim()) {
+    console.warn(`[FCM-SKIP] Refusing to send direct notification with empty title or body: title="${title}", body="${body}"`);
+    return false;
+  }
+  try {
+    const message: admin.messaging.Message = {
+      token: fcmToken,
+      notification: { title, body },
+      data: {
+        title,
+        body,
+        timestamp: Date.now().toString(),
+        ...data,
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'high_importance_channel',
+          priority: 'max',
+          defaultSound: true,
+          defaultVibrateTimings: true,
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+            contentAvailable: true,
+          },
+        },
+      },
+    };
+    await admin.messaging().send(message);
+    console.log(`[FCM-SENT] Direct notification sent to token ${fcmToken.substring(0, 10)}...: ${title}`);
+    return true;
+  } catch (error) {
+    console.error(`[FCM-ERROR] Failed to send direct notification to token:`, error);
+    return false;
+  }
+};
+
 export const sendFcmTopicNotification = async (
   topic: string,
   title: string,
@@ -62,6 +115,10 @@ export const sendFcmTopicNotification = async (
 ): Promise<boolean> => {
   if (!isFirebaseInitialized) {
     console.log(`[FCM-MOCK] Topic '${topic}' notification: "${title}" - "${body}"`);
+    return false;
+  }
+  if (!title?.trim() || !body?.trim()) {
+    console.warn(`[FCM-SKIP] Refusing to send topic notification with empty title or body: title="${title}", body="${body}"`);
     return false;
   }
   try {
@@ -110,12 +167,16 @@ export const sendLocalizedFcmTopicNotification = async (
   languageCode?: string,
   extraData: Record<string, string> = {}
 ): Promise<boolean> => {
+  // Suppress per-session limit notification (only daily limit, total plan limit, and booster exhausted notifications are allowed)
+  if (templateKey === 'LIVE_SESSION_CUTOFF') {
+    return false;
+  }
   let lang = languageCode;
   if (!lang || lang === 'en') {
     if (topic.startsWith('parent_')) {
       const parentUserId = topic.replace('parent_', '');
       try {
-        const u = await User.findById(parentUserId).select('languageCode').lean();
+        const u = await User.findById(parentUserId).select('languageCode fcmToken').lean();
         if (u?.languageCode) {
           lang = u.languageCode;
         }

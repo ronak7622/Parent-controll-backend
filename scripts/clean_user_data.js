@@ -7,7 +7,9 @@ const path = require('path');
 const PRESERVED_COLLECTIONS = new Set([
   'plans',
   'addonplans',
-  'configs'
+  'configs',
+  'remoteconfigs',
+  'system.indexes'
 ]);
 
 async function cleanUserData() {

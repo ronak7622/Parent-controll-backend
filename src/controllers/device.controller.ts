@@ -3,7 +3,7 @@ import { Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
 import { AuthRequest } from '../middleware/auth';
-import { Device } from '../models/Device';
+import { Device, enrichDeviceWithOnlineStatus, isDeviceFresh } from '../models/Device';
 import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
 import { BrowserHistory } from '../models/BrowserHistory';
@@ -414,6 +414,8 @@ export const pairChildDevice = async (req: any, res: Response) => {
 export const getParentDevices = async (req: AuthRequest, res: Response) => {
   try {
     const parentUserId = req.user?.userId;
+    const options = await ConfigService.getMergedOptions();
+    const thresholdSec = Number(options?.onlineThresholdSeconds) || 150;
 
     if (!parentUserId) {
       const allDevices = await Device.find({
@@ -422,9 +424,15 @@ export const getParentDevices = async (req: AuthRequest, res: Response) => {
       })
       .select('-installedApps')
       .sort({ updatedAt: -1 });
+
+      const enriched = allDevices.map((d: any) => {
+        const devObj = typeof d.toObject === 'function' ? d.toObject() : { ...d };
+        return enrichDeviceWithOnlineStatus(devObj, thresholdSec);
+      });
+
       return res.json({
         success: true,
-        devices: allDevices,
+        devices: enriched,
       });
     }
 
@@ -446,9 +454,14 @@ export const getParentDevices = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    const enriched = realDevices.map((d: any) => {
+      const devObj = typeof d.toObject === 'function' ? d.toObject() : { ...d };
+      return enrichDeviceWithOnlineStatus(devObj, thresholdSec);
+    });
+
     return res.json({
       success: true,
-      devices: realDevices,
+      devices: enriched,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -722,7 +735,10 @@ export const getDeviceDetails = async (req: any, res: Response) => {
     if (!device) {
       return res.status(404).json({ success: false, message: 'Device not found' });
     }
-    return res.json(device);
+    const options = await ConfigService.getMergedOptions();
+    const thresholdSec = Number(options?.onlineThresholdSeconds) || 150;
+    const enriched = enrichDeviceWithOnlineStatus(device, thresholdSec);
+    return res.json(enriched);
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
