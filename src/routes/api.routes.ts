@@ -33,6 +33,7 @@ import {
   reportLimitReached,
   getChildAppBlocks,
   reportBlockedAppAttempt,
+  reportAppRemoved,
 } from '../controllers/device.controller';
 import {
   updateHeartbeat,
@@ -236,6 +237,8 @@ router.post('/parent/device/:deviceId/clear-all-data', authenticateJwt, verifyDe
 router.delete('/parent/device/:deviceId/clear-all-data', authenticateJwt, verifyDeviceOwnership, clearAllDeviceData);
 router.get('/parent/device/:deviceId/text-storage-breakdown', authenticateJwt, verifyDeviceOwnership, getTextStorageBreakdown);
 router.post('/parent/device/:deviceId/clear-text-category', authenticateJwt, verifyDeviceOwnership, clearTextCategoryData);
+router.post('/device/:deviceId/report-removed', reportAppRemoved);
+router.post('/device/report-removed', reportAppRemoved);
 router.post('/device/unpair', authenticateDevice, disconnectDevice);
 router.delete('/device/:deviceId', authenticateJwt, verifyDeviceOwnership, disconnectDevice);
 router.get('/parent/device/:deviceId/schedule-config', authenticateJwt, verifyDeviceOwnership, getScheduleConfig);

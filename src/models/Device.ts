@@ -40,6 +40,9 @@ export interface IDevice extends Document {
   isAppHidden?: boolean;
   failedSecretCodeAttempts?: number;
   secretCodeBlockedUntil?: Date;
+  appRemoved?: boolean;
+  appRemovedAt?: Date | null;
+  appRemovedNotifiedAt?: Date | null;
 
   browserRestrictionMode: 'unrestricted' | 'blacklist' | 'whitelist';
   browserRestrictionsMode?: 'unrestricted' | 'blacklist' | 'whitelist';
@@ -167,10 +170,13 @@ const DeviceSchema = new Schema<IDevice>(
     isLocationEnabled: { type: Boolean, default: true },
     locationEnabled: { type: Boolean, default: true },
     notifyOnBlockedUrlAttempt: { type: Boolean, default: true },
+    appRemoved: { type: Boolean, default: false },
+    appRemovedAt: { type: Date, default: null },
+    appRemovedNotifiedAt: { type: Date, default: null },
 
     secretCode: { type: String, default: '' },
     secureOurChildApp: { type: Boolean, default: true },
-    isAppHidden: { type: Boolean, default: false },
+    isAppHidden: { type: Boolean, default: true },
     failedSecretCodeAttempts: { type: Number, default: 0 },
     secretCodeBlockedUntil: { type: Date, default: null },
 
@@ -276,10 +282,11 @@ export const Device = mongoose.model<IDevice>('Device', DeviceSchema);
  * Online/Offline status is derived dynamically with zero background cron costs.
  */
 export function isDeviceFresh(
-  dev: { lastSeenAt?: Date | string | null; lastSeen?: Date | string | null } | null | undefined,
+  dev: { lastSeenAt?: Date | string | null; lastSeen?: Date | string | null; appRemoved?: boolean } | null | undefined,
   thresholdSeconds: number = 150
 ): boolean {
   if (!dev) return false;
+  if (dev.appRemoved === true) return false;
   const rawDate = dev.lastSeenAt || dev.lastSeen;
   if (!rawDate) return false;
   const time = new Date(rawDate).getTime();
@@ -293,12 +300,15 @@ export function isDeviceFresh(
 export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
   dev: T,
   thresholdSeconds: number = 150
-): T & { isOnline: boolean; lastSeen?: any; lastSeenAt?: any } {
+): T & { isOnline: boolean; appRemoved: boolean; lastSeen?: any; lastSeenAt?: any } {
   const isOnline = isDeviceFresh(dev, thresholdSeconds);
   const rawDate = dev.lastSeenAt || dev.lastSeen;
+  const isRemoved = dev.appRemoved === true;
   return {
     ...dev,
-    isOnline,
+    isOnline: isRemoved ? false : isOnline,
+    appRemoved: isRemoved,
+    appRemovedAt: dev.appRemovedAt || null,
     lastSeen: rawDate,
     lastSeenAt: rawDate,
   };

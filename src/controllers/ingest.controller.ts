@@ -91,6 +91,21 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     }
 
     const isObjId = mongoose.isValidObjectId(deviceId);
+    const existing = await Device.findOne(
+      { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
+      { appRemoved: 1, isPaired: 1 }
+    );
+
+    if (existing && existing.appRemoved === true) {
+      console.log(`[HEARTBEAT-IGNORED] Device ${deviceId} is marked appRemoved. Ignoring heartbeat online update.`);
+      return res.json({
+        success: true,
+        appRemoved: true,
+        isOnline: false,
+        message: 'Device app is removed. Reconnect required.',
+      });
+    }
+
     const device = await Device.findOneAndUpdate(
       { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
       { $set: mongoSet },
@@ -100,6 +115,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     if (!device) {
       return res.status(404).json({ success: false, isPaired: false, unpaired: true, command: 'UNPAIR', message: 'Device not found' });
     }
+
     if (device.isPaired === false) {
       return res.json({ success: false, isPaired: false, unpaired: true, command: 'UNPAIR', message: 'Device is unpaired' });
     }
@@ -1647,7 +1663,7 @@ export const ingestLocationHistory = async (req: Request, res: Response) => {
       if (enqueued) {
         if (latestLoc && topDeviceId) {
           await Device.findOneAndUpdate(
-            { deviceId: topDeviceId },
+            { deviceId: topDeviceId, appRemoved: { $ne: true } },
             { $set: { lastLocation: latestLoc, isOnline: true, lastSeenAt: new Date() } }
           );
         }

@@ -191,6 +191,11 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
 
       if (role === 'child') {
         try {
+          const dev = await Device.findOne({ deviceId: targetDeviceId });
+          if (dev && dev.appRemoved === true) {
+            console.log(`[WEBRTC-ROOM] Device ${targetDeviceId} is marked as appRemoved. Skipping online update from stray child socket.`);
+            return;
+          }
           const now = new Date();
           await Device.updateOne({ deviceId: targetDeviceId }, { $set: { isOnline: true, lastSeenAt: now } });
           socket.to(targetDeviceId).emit('device-status-changed', {
@@ -198,7 +203,6 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
             isOnline: true,
             lastSeenAt: now.toISOString(),
           });
-          const dev = await Device.findOne({ deviceId: targetDeviceId });
           if (dev) {
             if (dev.blockedPhoneNumbers && dev.blockedPhoneNumbers.length > 0) {
               socket.emit('update-blocked-numbers', {
@@ -230,6 +234,21 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
 
     socket.on('join-room', handleJoinRoom);
     socket.on('register-device', handleJoinRoom);
+
+    socket.on('device-app-removed', async (data: any) => {
+      const devId = data?.deviceId;
+      if (!devId) return;
+      console.log(`[WEBRTC-APP-REMOVED] Received device-app-removed via socket for ${devId}`);
+      try {
+        const { reportAppRemoved } = require('../controllers/device.controller');
+        await reportAppRemoved({ params: { deviceId: devId }, body: data }, {
+          status: () => ({ json: () => {} }),
+          json: () => {},
+        });
+      } catch (err: any) {
+        console.error('[WEBRTC-APP-REMOVED] Error handling device-app-removed socket:', err.message);
+      }
+    });
 
     // Returns true if a socket with role 'child' is currently in the given room.
     // Supports both single-node fast local in-memory lookup and multi-node Redis cluster adapter lookup.
@@ -614,9 +633,21 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       if (deviceId) {
         if (data?.permissions && typeof data.permissions === 'object') {
           try {
+            const updateSet: any = { grantedPermissions: data.permissions };
+            const perms = data.permissions;
+            if (typeof perms.isAppHidden !== 'undefined') {
+              updateSet.isAppHidden = Boolean(perms.isAppHidden);
+            } else if (typeof perms.HIDE_APP !== 'undefined') {
+              updateSet.isAppHidden = Boolean(perms.HIDE_APP);
+            }
+            if (typeof perms.secureOurChildApp !== 'undefined') {
+              updateSet.secureOurChildApp = Boolean(perms.secureOurChildApp);
+            } else if (typeof perms.SECURE_OUR_APP !== 'undefined') {
+              updateSet.secureOurChildApp = Boolean(perms.SECURE_OUR_APP);
+            }
             await Device.updateOne(
               { deviceId },
-              { $set: { grantedPermissions: data.permissions } }
+              { $set: updateSet }
             );
           } catch (e: any) {
             console.warn(`[PERMISSION-STATUS-DB-WARN] Could not persist permissions: ${e.message}`);

@@ -22,7 +22,7 @@ import { KeyboardLog } from '../models/KeyboardLog';
 import { WifiLog } from '../models/wifi-log.model';
 import { InternetLog } from '../models/internet-log.model';
 import { ScheduleConfig } from '../models/ScheduleConfig';
-import { sendFcmDataCommand, sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
+import { sendFcmDataCommand, sendFcmDirectNotification, sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
 import { ConfigService } from '../services/ConfigService';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { cacheService, getRedisClient } from '../services/cache.service';
@@ -52,25 +52,42 @@ export const generatePairingCode = async (req: any, res: Response) => {
     const parentUserId = req.user?.userId || req.body.parentUserId;
 
     const code = customCode || Math.floor(100000 + Math.random() * 900000).toString();
-    const targetDeviceId = deviceId || `session_${code}`;
+    const isRealDeviceId = deviceId && !deviceId.startsWith('session_');
 
-    await Device.findOneAndUpdate(
-      { pairingCode: code },
-      {
-        deviceId: targetDeviceId,
-        deviceName: deviceName || 'Child Device',
-        deviceModel: deviceModel || '',
-        deviceBrand: deviceBrand || '',
-        pairingCode: code,
-        isPaired: false,
-        parentUserId: parentUserId || null,
-        isOnline: true,
-        lastSeenAt: new Date(),
-      },
-      { upsert: true, new: true }
-    );
+    if (isRealDeviceId) {
+      await Device.findOneAndUpdate(
+        { deviceId },
+        {
+          pairingCode: code,
+          isPaired: false,
+          ...(parentUserId ? { parentUserId } : {}),
+          ...(deviceName && deviceName !== 'Child Device' ? { deviceName } : {}),
+          ...(deviceModel ? { deviceModel } : {}),
+          ...(deviceBrand ? { deviceBrand } : {}),
+          lastSeenAt: new Date(),
+        },
+        { upsert: false, new: true }
+      );
+    } else {
+      const targetDeviceId = `session_${code}`;
+      await Device.findOneAndUpdate(
+        { pairingCode: code },
+        {
+          deviceId: targetDeviceId,
+          deviceName: deviceName || 'Child Device',
+          deviceModel: deviceModel || '',
+          deviceBrand: deviceBrand || '',
+          pairingCode: code,
+          isPaired: false,
+          parentUserId: parentUserId || null,
+          isOnline: true,
+          lastSeenAt: new Date(),
+        },
+        { upsert: true, new: true }
+      );
+    }
 
-    console.log(`[PAIRING] Session registered with code: ${code}`);
+    console.log(`[PAIRING] Session registered with code: ${code}${isRealDeviceId ? ` for device ${deviceId}` : ''}`);
 
     return res.json({
       success: true,
@@ -79,6 +96,7 @@ export const generatePairingCode = async (req: any, res: Response) => {
       expiresInMinutes: 15,
     });
   } catch (error: any) {
+    console.error('[PAIRING] Error registering code:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -154,7 +172,7 @@ export const completeChildSetup = async (req: any, res: Response) => {
     if (initialDevice.pairingCode) queryFilters.push({ pairingCode: initialDevice.pairingCode });
     if (initialDevice.deviceId) queryFilters.push({ deviceId: initialDevice.deviceId });
 
-    const updateFields: any = { isSetupComplete: true, isPaired: true };
+    const updateFields: any = { isSetupComplete: true, isPaired: true, appRemoved: false, appRemovedAt: null, appRemovedNotifiedAt: null };
     if (secretCode) updateFields.secretCode = String(secretCode).trim();
     if (typeof secureOurChildApp !== 'undefined') updateFields.secureOurChildApp = Boolean(secureOurChildApp);
     if (typeof isAppHidden !== 'undefined') updateFields.isAppHidden = Boolean(isAppHidden);
@@ -221,6 +239,14 @@ export const checkSetupStatus = async (req: any, res: Response) => {
         }
       }
 
+      const gp = targetDevice.grantedPermissions || {};
+      const isAppHiddenVal = typeof gp.HIDE_APP !== 'undefined'
+        ? Boolean(gp.HIDE_APP)
+        : (typeof gp.isAppHidden !== 'undefined' ? Boolean(gp.isAppHidden) : (targetDevice.isAppHidden ?? true));
+      const secureAppVal = typeof gp.SECURE_OUR_APP !== 'undefined'
+        ? Boolean(gp.SECURE_OUR_APP)
+        : (typeof gp.secureOurChildApp !== 'undefined' ? Boolean(gp.secureOurChildApp) : (targetDevice.secureOurChildApp ?? true));
+
       return res.json({
         success: true,
         isPaired,
@@ -230,9 +256,9 @@ export const checkSetupStatus = async (req: any, res: Response) => {
         deviceBrand: targetDevice.deviceBrand,
         deviceModel: targetDevice.deviceModel,
         secretCode: targetDevice.secretCode || '',
-        secureOurChildApp: targetDevice.secureOurChildApp ?? true,
-        isAppHidden: targetDevice.isAppHidden ?? false,
-        grantedPermissions: targetDevice.grantedPermissions || {},
+        secureOurChildApp: secureAppVal,
+        isAppHidden: isAppHiddenVal,
+        grantedPermissions: gp,
         appVersionCode: targetDevice.appVersionCode || 0,
         appVersionName: targetDevice.appVersionName || '',
       });
@@ -291,6 +317,9 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
     device.isPaired = true;
     device.isOnline = true;
     device.lastSeenAt = new Date();
+    device.appRemoved = false;
+    device.appRemovedAt = null;
+    device.appRemovedNotifiedAt = null;
     await device.save();
 
     console.log(`[PAIRING-SUCCESS] Parent ${parentUserId} paired with device ${device.deviceId} (code: ${code})`);
@@ -325,62 +354,77 @@ export const pairChildDevice = async (req: any, res: Response) => {
     const defaultDevName = `${deviceBrand || ''} ${deviceModel || ''}`.trim();
     const finalDevName = deviceName && deviceName !== 'Child Device' ? deviceName : (defaultDevName.length > 0 ? defaultDevName : 'Child Device');
 
+    let codeRecord: any = null;
     if (inputCode) {
-      const codeRecord = await Device.findOne({ pairingCode: inputCode });
+      codeRecord = await Device.findOne({
+        $or: [{ pairingCode: inputCode }, { deviceId: inputCode }]
+      });
+
       if (codeRecord) {
         if (codeRecord.parentUserId) {
           targetParentUserId = codeRecord.parentUserId;
         }
-        codeRecord.isPaired = true;
-        codeRecord.deviceId = deviceId;
-        if (deviceBrand) codeRecord.deviceBrand = deviceBrand;
-        if (deviceModel) codeRecord.deviceModel = deviceModel;
-        codeRecord.deviceName = finalDevName;
-        if (typeof appVersionCode !== 'undefined') codeRecord.appVersionCode = Number(appVersionCode) || 0;
-        if (typeof appVersionName !== 'undefined') codeRecord.appVersionName = String(appVersionName).trim();
-        if (languageCode) codeRecord.languageCode = String(languageCode).trim().toLowerCase();
-        await codeRecord.save();
       } else {
         // If child specified a code that does not exist in backend, return 400
         return res.status(400).json({ success: false, message: 'Invalid or expired pairing code. Please check the code and ensure parent is connected.' });
       }
     }
 
-    let device = await Device.findOne({ deviceId });
+    // Now look for existing device by REAL deviceId
+    let device: any = await Device.findOne({ deviceId });
+
     if (!device) {
-      device = new Device({
-        deviceId,
-        parentUserId: targetParentUserId || null,
-        pairingCode: inputCode || null,
-        deviceName: finalDevName,
-        deviceModel: deviceModel || '',
-        deviceBrand: deviceBrand || '',
-        osType: osType || 'android',
-        isPaired: true,
-        isSetupComplete: false,
-        fcmToken: fcmToken || '',
-        appVersionCode: typeof appVersionCode !== 'undefined' ? Number(appVersionCode) || 0 : 0,
-        appVersionName: typeof appVersionName !== 'undefined' ? String(appVersionName).trim() : '',
-        languageCode: languageCode ? String(languageCode).trim().toLowerCase() : 'en',
-      });
+      // First-time pairing:
+      if (codeRecord && codeRecord.deviceId && codeRecord.deviceId.startsWith('session_')) {
+        device = codeRecord;
+        device.deviceId = deviceId;
+      } else {
+        device = new Device({
+          deviceId,
+          parentUserId: targetParentUserId || null,
+          osType: osType || 'android',
+        });
+      }
     } else {
-      if (targetParentUserId) device.parentUserId = targetParentUserId;
-      if (inputCode) device.pairingCode = inputCode;
-      if (fcmToken) device.fcmToken = fcmToken;
-      if (deviceBrand) device.deviceBrand = deviceBrand;
-      if (deviceModel) device.deviceModel = deviceModel;
-      device.deviceName = finalDevName;
-      device.isPaired = true;
-      device.isSetupComplete = false;
-      device.isOnline = true;
-      device.lastSeenAt = new Date();
-      if (typeof appVersionCode !== 'undefined') device.appVersionCode = Number(appVersionCode) || 0;
-      if (typeof appVersionName !== 'undefined') device.appVersionName = String(appVersionName).trim();
-      if (languageCode) device.languageCode = String(languageCode).trim().toLowerCase();
+      // Re-pairing or reconnecting existing device:
+      // ALL OLD DATA (calls, sms, notifications, location, media, usage) is tied to this deviceId and remains 100% INTACT!
+      // If there was a separate temporary codeRecord session document, delete it to prevent duplicate keys
+      if (codeRecord && codeRecord._id.toString() !== device._id.toString()) {
+        try {
+          await Device.deleteOne({ _id: codeRecord._id });
+        } catch (delErr) {
+          console.warn('[PAIRING] Failed cleaning up temporary session document:', delErr);
+        }
+      }
     }
 
+    if (targetParentUserId) device.parentUserId = targetParentUserId;
+    if (inputCode) device.pairingCode = inputCode;
+    if (fcmToken) device.fcmToken = fcmToken;
+    if (deviceBrand) device.deviceBrand = deviceBrand;
+    if (deviceModel) device.deviceModel = deviceModel;
+    if (osType) device.osType = osType;
+
+    // Retain existing custom name if present
+    if (!device.deviceName || device.deviceName === 'Child Device' || device.deviceName === 'Unknown Device') {
+      device.deviceName = finalDevName;
+    }
+
+    device.isPaired = true;
+    device.isSetupComplete = false;
+    device.isOnline = true;
+    device.lastSeenAt = new Date();
+    // Reconnect restores the device: clear appRemoved flags immediately!
+    device.appRemoved = false;
+    device.appRemovedAt = null;
+    device.appRemovedNotifiedAt = null;
+
+    if (typeof appVersionCode !== 'undefined') device.appVersionCode = Number(appVersionCode) || 0;
+    if (typeof appVersionName !== 'undefined') device.appVersionName = String(appVersionName).trim();
+    if (languageCode) device.languageCode = String(languageCode).trim().toLowerCase();
+
     await device.save();
-    console.log(`[PAIRING-SUCCESS] Child device ${deviceId} paired with code ${inputCode}`);
+    console.log(`[PAIRING-SUCCESS] Child device ${deviceId} paired successfully with code ${inputCode}`);
 
     const deviceToken = jwt.sign(
       { deviceId: device.deviceId, kind: 'device' },
@@ -1182,3 +1226,132 @@ export const verifyChildSecretCode = async (req: any, res: Response) => {
 };
 
 
+
+/**
+ * Report App Removed / Uninstalled (Called by Child App on admin deactivation)
+ */
+export const reportAppRemoved = async (req: any, res: Response) => {
+  try {
+    const { deviceId } = req.params;
+    const bodyDeviceId = req.body?.deviceId;
+    const targetDeviceId = deviceId || bodyDeviceId;
+
+    if (!targetDeviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required' });
+    }
+
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const stalePastDate = new Date(Date.now() - 600 * 1000); // 10 minutes in past -> guaranteed offline
+
+    // Atomic update claiming notification lock:
+    // If multiple calls (socket + HTTP) arrive concurrently, exactly ONE will match this query and return a doc!
+    const updatedDevice = await Device.findOneAndUpdate(
+      {
+        $and: [
+          { $or: [{ deviceId: targetDeviceId }, { pairingCode: targetDeviceId }] },
+          {
+            $or: [
+              { appRemovedNotifiedAt: null },
+              { appRemovedNotifiedAt: { $exists: false } },
+            ],
+          },
+        ],
+      },
+      {
+        $set: {
+          appRemoved: true,
+          appRemovedAt: new Date(),
+          appRemovedNotifiedAt: new Date(),
+          isOnline: false,
+          lastSeenAt: stalePastDate,
+        },
+      },
+      { new: true }
+    );
+
+    let activeDevice = updatedDevice;
+    const shouldSendPush = !!updatedDevice;
+
+    if (!activeDevice) {
+      // Lock already acquired by concurrent call, but ensure flags are set
+      activeDevice = await Device.findOneAndUpdate(
+        { $or: [{ deviceId: targetDeviceId }, { pairingCode: targetDeviceId }] },
+        {
+          $set: {
+            appRemoved: true,
+            appRemovedAt: new Date(),
+            isOnline: false,
+            lastSeenAt: stalePastDate,
+          },
+        },
+        { new: true }
+      );
+      if (!activeDevice) {
+        return res.status(404).json({ success: false, message: 'Device not found' });
+      }
+    }
+
+    // Send ONLY ONE localized FCM push notification if we claimed the lock
+    if (shouldSendPush && activeDevice.parentUserId) {
+      const parentTopic = `parent_${activeDevice.parentUserId}`;
+      const devName = activeDevice.deviceName || 'Child Device';
+
+      try {
+        await sendLocalizedFcmTopicNotification(
+          parentTopic,
+          'DEVICE_APP_REMOVED',
+          { deviceName: devName },
+          activeDevice.languageCode || 'en',
+          {
+            type: 'APP_REMOVED',
+            deviceId: activeDevice.deviceId,
+            deviceName: devName,
+          }
+        );
+      } catch (e: any) {
+        console.error('[REPORT-REMOVED] FCM topic notification error:', e.message);
+      }
+    }
+
+    // Broadcast instant socket events
+    try {
+      const io = getSignalingIo();
+      if (io) {
+        const payload = {
+          deviceId: activeDevice.deviceId,
+          deviceName: activeDevice.deviceName,
+          appRemoved: true,
+          appRemovedAt: activeDevice.appRemovedAt,
+          isOnline: false,
+          lastSeenAt: stalePastDate.toISOString(),
+        };
+        io.to(activeDevice.deviceId).emit('device-app-removed', payload);
+        io.to(activeDevice.deviceId).emit('device-status-changed', {
+          deviceId: activeDevice.deviceId,
+          isOnline: false,
+          lastSeenAt: stalePastDate.toISOString(),
+          appRemoved: true,
+        });
+        if (activeDevice.parentUserId) {
+          const parentTopic = `parent_${activeDevice.parentUserId}`;
+          io.to(parentTopic).emit('device-app-removed', payload);
+          io.to(parentTopic).emit('device-status-changed', {
+            deviceId: activeDevice.deviceId,
+            isOnline: false,
+            lastSeenAt: stalePastDate.toISOString(),
+            appRemoved: true,
+          });
+        }
+      }
+    } catch (_) {}
+
+    console.log(`[APP-REMOVED] Recorded removal for device ${activeDevice.deviceId} (pushSent: ${shouldSendPush})`);
+    return res.json({
+      success: true,
+      message: 'App removal recorded successfully',
+      appRemoved: true,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

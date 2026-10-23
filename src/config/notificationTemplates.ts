@@ -356,6 +356,22 @@ export const NOTIFICATION_TEMPLATES: Record<string, NotificationTemplate> = {
       fr: 'Votre essai gratuit est terminé et la surveillance s’est arrêtée. Renouvelez votre forfait pour continuer.',
     },
   },
+  DEVICE_APP_REMOVED: {
+    title: {
+      en: 'Monitoring Stopped — App Removed',
+      hi: 'मॉनिटरिंग बंद — ऐप हटा दी गई',
+      gu: 'મોનિટરિંગ બંધ — ઍપ કાઢી નાખવામાં આવી',
+      es: 'Monitoreo detenido — App eliminada',
+      fr: 'Surveillance arrêtée — Application supprimée',
+    },
+    body: {
+      en: '{deviceName} removed the app or cleared its data. Reconnect to resume — your data is safe.',
+      hi: '{deviceName} ने ऐप को हटा दिया या डेटा साफ़ कर दिया। पुनः कनेक्ट करें — आपका डेटा सुरक्षित है।',
+      gu: '{deviceName} એ ઍપ કાઢી નાખી અથવા ડેટા ક્લિયર કર્યો. ફરીથી કનેક્ટ કરો — તમારો ડેટા સુરક્ષિત છે.',
+      es: '{deviceName} eliminó la app o borró sus datos. Reconecta para reanudar — tus datos están a salvo.',
+      fr: '{deviceName} a supprimé l’application ou effacé ses données. Reconnectez pour reprendre — vos données sont en sécurité.',
+    },
+  },
 };
 
 const TEMPLATE_KEY_ALIASES: Record<string, string> = {
@@ -372,6 +388,8 @@ const TEMPLATE_KEY_ALIASES: Record<string, string> = {
   LIVE_ADDON_EXHAUSTED: 'LIVE_ADDON_EXHAUSTED',
   LIVE_SESSION_CUTOFF: 'LIVE_SESSION_CUTOFF',
   RECORDING_COMPLETED: 'RECORDING_COMPLETED',
+  APP_REMOVED: 'DEVICE_APP_REMOVED',
+  DEVICE_APP_REMOVED: 'DEVICE_APP_REMOVED',
 };
 
 export const getLocalizedNotification = (
