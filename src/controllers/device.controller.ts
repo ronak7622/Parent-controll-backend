@@ -190,6 +190,28 @@ export const completeChildSetup = async (req: any, res: Response) => {
 
     console.log(`[SETUP-COMPLETE] Permissions setup completed for device ${updatedDevice.deviceId}`);
 
+    // Real-time broadcast to signaling server so parent app is notified immediately
+    try {
+      const io = getSignalingIo();
+      if (io) {
+        const payload = {
+          deviceId: updatedDevice.deviceId,
+          isSetupComplete: true,
+          pairingCode: updatedDevice.pairingCode,
+        };
+        io.to(updatedDevice.deviceId).emit('setup-complete', payload);
+        if (updatedDevice.pairingCode) {
+          io.to(updatedDevice.pairingCode).emit('setup-complete', payload);
+        }
+        if (updatedDevice.parentUserId) {
+          io.to(`user_${updatedDevice.parentUserId}`).emit('setup-complete', payload);
+          io.to(`parent_${updatedDevice.parentUserId}`).emit('setup-complete', payload);
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[SETUP-COMPLETE-SOCKET-WARN] ${e?.message}`);
+    }
+
     const deviceToken = jwt.sign(
       { deviceId: updatedDevice.deviceId, kind: 'device' },
       config.jwtSecret,
@@ -627,9 +649,9 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
     };
 
     if (device.fcmToken) {
-      await sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+      sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
         restrictions: JSON.stringify(restrictions),
-      });
+      }).catch(() => {});
     }
 
     getSignalingIo()?.to(device.deviceId).emit('remote-command', {
@@ -703,7 +725,7 @@ export const disconnectDevice = async (req: any, res: Response) => {
 
     const isParentCall = Boolean(req.user?.userId);
     const { secretCode } = req.body;
-    if (isParentCall && device && device.secretCode && device.secretCode.trim().length > 0) {
+    if (isParentCall && device && device.isSetupComplete && device.secretCode && device.secretCode.trim().length > 0) {
       if (!secretCode || secretCode.trim() !== device.secretCode.trim()) {
         return res.status(400).json({
           success: false,
@@ -1100,7 +1122,7 @@ export const clearTextCategoryData = async (req: AuthRequest, res: Response) => 
 export const updateDeviceProtection = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { secretCode, secureOurChildApp, isAppHidden } = req.body;
+    const { secretCode, secureOurChildApp, isAppHidden, deviceName } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     const device = await Device.findOne({ deviceId });
@@ -1108,6 +1130,9 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
 
     if (secretCode) {
       device.secretCode = String(secretCode).trim();
+    }
+    if (deviceName && String(deviceName).trim().length > 0) {
+      device.deviceName = String(deviceName).trim();
     }
     if (typeof secureOurChildApp !== 'undefined') {
       device.secureOurChildApp = Boolean(secureOurChildApp);
@@ -1118,6 +1143,13 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
     device.failedSecretCodeAttempts = 0;
     device.secretCodeBlockedUntil = null as any;
     await device.save();
+
+    if (device.deviceName && device.pairingCode) {
+      await Device.updateMany(
+        { pairingCode: device.pairingCode },
+        { $set: { deviceName: device.deviceName } }
+      );
+    }
 
     // Signal child device to update protection immediately
     const restrictions = {

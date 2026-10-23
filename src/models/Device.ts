@@ -282,11 +282,12 @@ export const Device = mongoose.model<IDevice>('Device', DeviceSchema);
  * Online/Offline status is derived dynamically with zero background cron costs.
  */
 export function isDeviceFresh(
-  dev: { lastSeenAt?: Date | string | null; lastSeen?: Date | string | null; appRemoved?: boolean } | null | undefined,
+  dev: { lastSeenAt?: Date | string | null; lastSeen?: Date | string | null; appRemoved?: boolean; isOnline?: boolean } | null | undefined,
   thresholdSeconds: number = 150
 ): boolean {
   if (!dev) return false;
   if (dev.appRemoved === true) return false;
+  if (dev.isOnline === false) return false;
   const rawDate = dev.lastSeenAt || dev.lastSeen;
   if (!rawDate) return false;
   const time = new Date(rawDate).getTime();
@@ -300,15 +301,54 @@ export function isDeviceFresh(
 export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
   dev: T,
   thresholdSeconds: number = 150
-): T & { isOnline: boolean; appRemoved: boolean; lastSeen?: any; lastSeenAt?: any } {
-  const isOnline = isDeviceFresh(dev, thresholdSeconds);
-  const rawDate = dev.lastSeenAt || dev.lastSeen;
+): T & {
+  isOnline: boolean;
+  appRemoved: boolean;
+  lastSeen?: any;
+  lastSeenAt?: any;
+  isCriticalPermissionsOff: boolean;
+  disabledPermissionsCount: number;
+  disabledPermissionsList: string[];
+} {
   const isRemoved = dev.appRemoved === true;
+  const isOnline = (isRemoved || dev.isOnline === false) ? false : isDeviceFresh(dev, thresholdSeconds);
+  const rawDate = dev.lastSeenAt || dev.lastSeen;
+
+  const perms = (dev as any).grantedPermissions || {};
+  // Tier 2: Critical Permissions: ACCESSIBILITY, DEVICE_ADMIN
+  // If either of these is explicitly false, critical permissions are OFF.
+  const isAccessibilityOff = perms.ACCESSIBILITY === false;
+  const isDeviceAdminOff = perms.DEVICE_ADMIN === false;
+  const isCriticalPermissionsOff = !isRemoved && (isAccessibilityOff || isDeviceAdminOff);
+
+  // Total disabled permissions (including critical & feature permissions)
+  const disabledPermissionsList: string[] = [];
+  if (!isRemoved) {
+    const nonMinorKeys = new Set([
+
+
+      'isAppHidden',
+      'HIDE_APP',
+      'secureOurChildApp',
+      'SECURE_OUR_APP',
+      'STORAGE',
+      'LOCK_APP',
+    ]);
+    for (const [key, val] of Object.entries(perms)) {
+      if (val === false && !nonMinorKeys.has(key)) {
+        disabledPermissionsList.push(key);
+      }
+    }
+  }
+
   return {
     ...dev,
-    isOnline: isRemoved ? false : isOnline,
+    isOnline: (isRemoved || dev.isOnline === false) ? false : isOnline,
     appRemoved: isRemoved,
     appRemovedAt: dev.appRemovedAt || null,
+    isCriticalPermissionsOff,
+    disabledPermissionsCount: disabledPermissionsList.length,
+    disabledPermissionsList,
     lastSeen: rawDate,
     lastSeenAt: rawDate,
   };

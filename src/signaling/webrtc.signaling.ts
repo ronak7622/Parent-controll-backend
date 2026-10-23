@@ -5,7 +5,7 @@ import Redis from 'ioredis';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { config } from '../config/env';
-import { Device } from '../models/Device';
+import { Device, enrichDeviceWithOnlineStatus } from '../models/Device';
 import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
 import { LiveUsageService } from '../services/LiveUsageService';
@@ -340,6 +340,19 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
         if (!childPresentRetry) {
           console.warn(`[WEBRTC-REQUEST] Still no child socket in room ${targetDeviceId} after grace period! Emitting stream-failed (DEVICE_OFFLINE)`);
           LiveUsageService.cancelSession(sessionId, targetDeviceId, socket.id);
+          try {
+            await Device.updateMany({ $or: [{ deviceId: targetDeviceId }, { deviceId: inputDeviceId }] }, { $set: { isOnline: false } });
+            signalingNamespace.to(targetDeviceId).emit('device-status-changed', {
+              deviceId: targetDeviceId,
+              isOnline: false,
+            });
+            if (inputDeviceId !== targetDeviceId) {
+              signalingNamespace.to(inputDeviceId).emit('device-status-changed', {
+                deviceId: inputDeviceId,
+                isOnline: false,
+              });
+            }
+          } catch (_) {}
           socket.emit('stream-failed', {
             deviceId: inputDeviceId,
             type: data?.type,
@@ -645,10 +658,29 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
             } else if (typeof perms.SECURE_OUR_APP !== 'undefined') {
               updateSet.secureOurChildApp = Boolean(perms.SECURE_OUR_APP);
             }
-            await Device.updateOne(
+            const updatedDev = await Device.findOneAndUpdate(
               { deviceId },
-              { $set: updateSet }
+              { $set: updateSet },
+              { new: true }
             );
+            if (updatedDev) {
+              const enriched = enrichDeviceWithOnlineStatus(updatedDev.toObject());
+              const statusPayload = {
+                deviceId,
+                isOnline: enriched.isOnline,
+                appRemoved: enriched.appRemoved,
+                grantedPermissions: enriched.grantedPermissions,
+                isCriticalPermissionsOff: enriched.isCriticalPermissionsOff,
+                disabledPermissionsCount: enriched.disabledPermissionsCount,
+                disabledPermissionsList: enriched.disabledPermissionsList,
+                lastSeen: enriched.lastSeen,
+                lastSeenAt: enriched.lastSeenAt,
+              };
+              io.to(deviceId).emit('device-status-changed', statusPayload);
+              if (updatedDev.parentUserId) {
+                io.to(`parent_${updatedDev.parentUserId}`).emit('device-status-changed', statusPayload);
+              }
+            }
           } catch (e: any) {
             console.warn(`[PERMISSION-STATUS-DB-WARN] Could not persist permissions: ${e.message}`);
           }
@@ -676,6 +708,27 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
     socket.on('disconnect', async () => {
       console.log(`[WEBRTC-DISCONNECT] Socket disconnected: ${socket.id}`);
       await LiveUsageService.endSession(socket.id, 'SOCKET_DISCONNECT');
+      if (socket.data?.role === 'child' && socket.data?.deviceId) {
+        const devId = socket.data.deviceId;
+        const isStillPresent = await isChildInRoom(devId);
+        if (!isStillPresent) {
+          console.log(`[WEBRTC-DISCONNECT] Child socket disconnected and no other child sockets in room for device ${devId}. Marking device offline.`);
+          try {
+            const now = new Date();
+            await Device.updateMany(
+              { $or: [{ deviceId: devId }, ...(mongoose.isValidObjectId(devId) ? [{ _id: devId }] : [])] },
+              { $set: { isOnline: false, lastSeenAt: now } }
+            );
+            signalingNamespace.to(devId).emit('device-status-changed', {
+              deviceId: devId,
+              isOnline: false,
+              lastSeenAt: now.toISOString(),
+            });
+          } catch (err: any) {
+            console.error(`[WEBRTC-DISCONNECT] Error marking child device offline:`, err?.message);
+          }
+        }
+      }
     });
   });
 

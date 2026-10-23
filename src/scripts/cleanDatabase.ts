@@ -52,6 +52,30 @@ async function cleanUserDataOnly() {
     console.log(`- Preserved Collections: ${preservedCollections.join(', ')}`);
     console.log('======================================================\n');
 
+    // Clean user uploads on disk
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const uploadsDir = path.join(__dirname, '../../public/uploads');
+      if (fs.existsSync(uploadsDir)) {
+        const subdirs = ['captures', 'keyboard-captures', 'recordings'];
+        for (const sub of subdirs) {
+          const targetPath = path.join(uploadsDir, sub);
+          if (fs.existsSync(targetPath)) {
+            const items = fs.readdirSync(targetPath);
+            for (const item of items) {
+              if (item === '.gitkeep') continue;
+              const fullPath = path.join(targetPath, item);
+              fs.rmSync(fullPath, { recursive: true, force: true });
+            }
+          }
+        }
+        console.log('🧹 Cleaned local user uploads (recordings/captures).');
+      }
+    } catch (uploadErr) {
+      console.warn('⚠️ Could not clear local upload folder:', uploadErr);
+    }
+
     await mongoose.disconnect();
     process.exit(0);
   } catch (err) {

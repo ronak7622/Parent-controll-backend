@@ -67,7 +67,7 @@ export const getLocalDateString = getISTDateString;
  */
 export const updateHeartbeat = async (req: Request, res: Response) => {
   try {
-    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled, appVersionCode, appVersionName } = req.body;
+    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled, appVersionCode, appVersionName, grantedPermissions } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     const mongoSet: any = {
@@ -88,6 +88,9 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     }
     if (typeof appVersionName !== 'undefined') {
       mongoSet.appVersionName = String(appVersionName).trim();
+    }
+    if (grantedPermissions && typeof grantedPermissions === 'object') {
+      mongoSet.grantedPermissions = grantedPermissions;
     }
 
     const isObjId = mongoose.isValidObjectId(deviceId);

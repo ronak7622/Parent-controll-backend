@@ -2373,6 +2373,23 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
         }
       }
     }
+    if (!childOnline) {
+      try {
+        await Device.updateMany({ $or: [{ deviceId: targetDeviceId }, { deviceId }] }, { $set: { isOnline: false } });
+        if (io) {
+          io.to(targetDeviceId).emit('device-status-changed', {
+            deviceId: targetDeviceId,
+            isOnline: false,
+          });
+          if (deviceId !== targetDeviceId) {
+            io.to(deviceId).emit('device-status-changed', {
+              deviceId,
+              isOnline: false,
+            });
+          }
+        }
+      } catch (_) {}
+    }
 
     if (feature) {
       if (io) {
