@@ -10,6 +10,7 @@ const PROTECTED_COLLECTIONS = new Set([
   'plans',
   'addonplans',
   'configs',
+  'trialledgers',
   'system.indexes',
   'system.profile',
   'system.views',

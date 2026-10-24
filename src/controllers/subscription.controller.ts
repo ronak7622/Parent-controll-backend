@@ -25,6 +25,43 @@ import { toMs, DurationUnit } from '../utils/duration';
 // plansI18n imported ONLY for seeding/migration – NOT used in request response path
 import { PLAN_NAMES_I18N, ADDON_NAMES_I18N, localizeFeatureItem } from '../config/plansI18n';
 
+/**
+ * Permanently records a parent user, phone number, and/or device ID into TrialLedger
+ * so that a Free Trial can never be offered or claimed again once any plan or trial is consumed.
+ */
+async function recordTrialOrPlanUsage(parentUserId?: string, phoneInput?: string, deviceIdInput?: string) {
+  try {
+    let phoneNumber = (phoneInput || '').trim();
+    if (!phoneNumber && parentUserId && mongoose.isValidObjectId(parentUserId)) {
+      const u = await User.findById(parentUserId).lean();
+      if (u?.phoneNumber) {
+        phoneNumber = u.phoneNumber.trim();
+      }
+    }
+
+    if (phoneNumber || parentUserId || deviceIdInput) {
+      await TrialLedger.findOneAndUpdate(
+        {
+          $or: [
+            ...(phoneNumber ? [{ phoneNumber }] : []),
+            ...(deviceIdInput ? [{ deviceId: deviceIdInput }] : []),
+            ...(parentUserId ? [{ parentUserId }] : []),
+          ],
+        },
+        {
+          ...(parentUserId ? { parentUserId } : {}),
+          ...(phoneNumber ? { phoneNumber } : {}),
+          ...(deviceIdInput ? { deviceId: deviceIdInput } : {}),
+          usedAt: new Date(),
+        },
+        { upsert: true, new: true }
+      );
+    }
+  } catch (err) {
+    console.warn('[TrialLedger] Warning recording trial or plan usage:', err);
+  }
+}
+
 export const getOptionsConfig = async (req: Request, res: Response) => {
   try {
     const rawLang = ((req.query.lang || req.headers['accept-language'] || (req as any).user?.languageCode || 'en') as string);
@@ -245,10 +282,17 @@ export const getPlans = async (req: Request, res: Response) => {
     const plans = await Plan.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
     const addons = await AddonPlan.find({ isActive: true }).lean();
 
-    const phone = (req as any).user?.phoneNumber || (req as any).user?.phone || (req.query.phoneNumber as string) || '';
+    let phone = (req as any).user?.phoneNumber || (req as any).user?.phone || (req.query.phoneNumber as string) || '';
     const email = (req as any).user?.email || (req.query.email as string) || '';
     const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id || (req.query.parentUserId as string);
     const deviceId = (req.query.deviceId as string) || '';
+
+    if (!phone && parentUserId && mongoose.isValidObjectId(parentUserId)) {
+      const u = await User.findById(parentUserId).lean();
+      if (u?.phoneNumber) {
+        phone = u.phoneNumber.trim();
+      }
+    }
 
     let trialUsed = false;
     if (parentUserId || phone || deviceId) {
@@ -261,6 +305,19 @@ export const getPlans = async (req: Request, res: Response) => {
       });
       if (existingLedger) {
         trialUsed = true;
+      }
+    }
+
+    // If not found in ledger yet, but parent already has or had a subscription or order,
+    // mark trial as used and backfill into TrialLedger immediately:
+    if (!trialUsed && parentUserId) {
+      const [existingSub, existingOrder] = await Promise.all([
+        Subscription.findOne({ parentUserId }).lean(),
+        Order.findOne({ parentUserId }).lean(),
+      ]);
+      if (existingSub || existingOrder) {
+        trialUsed = true;
+        recordTrialOrPlanUsage(parentUserId, phone, deviceId).catch(() => {});
       }
     }
 
@@ -462,6 +519,18 @@ export const getPlans = async (req: Request, res: Response) => {
       features: trialFeatures,
     };
 
+    let hasQueuedPlan = false;
+    let queuedPlan: any = null;
+    let activePlanExpireAt: string | null = null;
+    if (parentUserId) {
+      const parentSub = await Subscription.findOne({ parentUserId }).lean();
+      if (parentSub && (parentSub as any).queuedPlan && (parentSub as any).queuedPlan.planSnapshot) {
+        hasQueuedPlan = true;
+        queuedPlan = (parentSub as any).queuedPlan;
+        activePlanExpireAt = parentSub.expireAt ? parentSub.expireAt.toISOString() : null;
+      }
+    }
+
     return res.json({
       success: true,
       region: resolvedRegion,
@@ -475,6 +544,9 @@ export const getPlans = async (req: Request, res: Response) => {
       trialUsed,
       trialEligible: !trialUsed,
       trialConfig: trialUsed ? null : trialConfig,
+      hasQueuedPlan,
+      queuedPlan,
+      activePlanExpireAt,
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
@@ -579,6 +651,20 @@ export const subscribe = async (req: Request, res: Response) => {
 
     if (isRealPlanActive) {
       // ════════════════════════════════════════════════════════════
+      // ENFORCE SINGLE QUEUED PLAN LIMIT (Option 1)
+      // Block further advance plan purchases if 1 is already queued
+      // ════════════════════════════════════════════════════════════
+      if (currentSub.queuedPlan && (currentSub.queuedPlan as any).planSnapshot) {
+        const qName = (currentSub.queuedPlan as any).planSnapshot.name || 'Upcoming Plan';
+        const expireStr = currentSub.expireAt ? currentSub.expireAt.toISOString().split('T')[0] : '';
+        return res.status(400).json({
+          success: false,
+          code: 'ADVANCE_PLAN_ALREADY_QUEUED',
+          message: `An advance plan (${qName}) is already queued to activate after current plan expires on ${expireStr}. Only 1 advance plan is allowed in queue.`,
+        });
+      }
+
+      // ════════════════════════════════════════════════════════════
       // ADVANCE / QUEUED PLAN (§5)
       // Queued to activate automatically after current validity ends
       // ════════════════════════════════════════════════════════════
@@ -666,6 +752,7 @@ export const subscribe = async (req: Request, res: Response) => {
         });
       }
 
+      recordTrialOrPlanUsage(parentUserId, (req as any).user?.phoneNumber).catch(() => {});
       return res.json({
         success: true,
         isQueued: true,
@@ -780,6 +867,7 @@ export const subscribe = async (req: Request, res: Response) => {
       }
     }
 
+    recordTrialOrPlanUsage(parentUserId, (req as any).user?.phoneNumber).catch(() => {});
     return res.json({ success: true, isQueued: false, subscription });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
@@ -791,7 +879,10 @@ export const activateTrial = async (req: Request, res: Response) => {
     const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const { phoneNumber, deviceId } = req.body;
+    const user = await User.findById(parentUserId).lean();
+    const phoneInput = req.body.phoneNumber || (req as any).user?.phoneNumber || user?.phoneNumber || '';
+    const phoneNumber = (phoneInput || '').trim();
+    const { deviceId } = req.body;
 
     // Check anti-fraud ledger
     const existingLedger = await TrialLedger.findOne({
@@ -805,7 +896,20 @@ export const activateTrial = async (req: Request, res: Response) => {
     if (existingLedger) {
       return res.status(400).json({
         success: false,
-        message: 'Free trial has already been used on this phone or device.',
+        message: 'Free trial has already been used on this phone number or device.',
+      });
+    }
+
+    // Also check if user already has or had any active/expired subscription or order
+    const [existingSub, existingOrder] = await Promise.all([
+      Subscription.findOne({ parentUserId }).lean(),
+      Order.findOne({ parentUserId }).lean(),
+    ]);
+    if (existingSub || existingOrder) {
+      await recordTrialOrPlanUsage(parentUserId, phoneNumber, deviceId);
+      return res.status(400).json({
+        success: false,
+        message: 'Free trial is only available for brand new users. An existing plan was already detected.',
       });
     }
 
@@ -935,12 +1039,7 @@ export const activateTrial = async (req: Request, res: Response) => {
       { upsert: true, new: true }
     );
 
-    await TrialLedger.create({
-      parentUserId,
-      phoneNumber,
-      deviceId,
-      usedAt: new Date(),
-    });
+    await recordTrialOrPlanUsage(parentUserId, phoneNumber, deviceId);
 
     // Record Free Trial in Orders Collection
     await Order.create({
@@ -1470,6 +1569,19 @@ export const deleteAccount = async (req: Request, res: Response) => {
     // CRITICAL: TrialLedger is PRESERVED so that if the parent re-registers with the same phone or device ID,
     // the Free Trial will NEVER be offered again!
     const phoneFilter = user?.phoneNumber || (req as any).user?.phoneNumber;
+
+    // Ensure TrialLedger permanently remembers this phone number before account data is wiped
+    const hadPlanOrSub = await Subscription.findOne({ parentUserId: { $in: uniqueParentUserIds } })
+      || await Order.findOne({ parentUserId: { $in: uniqueParentUserIds } })
+      || await TrialLedger.findOne({ $or: [{ parentUserId: { $in: uniqueParentUserIds } }, ...(phoneFilter ? [{ phoneNumber: phoneFilter }] : [])] });
+
+    if (hadPlanOrSub && phoneFilter) {
+      await TrialLedger.findOneAndUpdate(
+        { phoneNumber: phoneFilter },
+        { phoneNumber: phoneFilter, usedAt: new Date() },
+        { upsert: true }
+      ).catch(() => {});
+    }
     await Promise.all([
       Subscription.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
       LiveUsage.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
