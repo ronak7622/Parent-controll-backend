@@ -18,6 +18,7 @@ import { DrivingTrip } from '../models/DrivingTrip';
 import { KeyboardLog } from '../models/KeyboardLog';
 import { ChatMessage } from '../models/ChatMessage';
 import { Device } from '../models/Device';
+import { shouldSendAlertShared } from './device.controller';
 import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl } from '../services/r2.service';
 import { config } from '../config/env';
 import { enqueueIngestJob } from '../queues/ingest.queue';
@@ -323,21 +324,18 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
   }
 };
 
-const lastSentBlockedPushMap = new Map<string, number>();
-
 async function sendBlockedUrlPush(deviceId: string, doc: any) {
   const target = doc.url || doc.domain || 'a website';
   const cleanTarget = String(target).toLowerCase().trim();
   const cacheKey = `${deviceId}:${cleanTarget}`;
-  const nowMs = Date.now();
-  const lastSentTime = lastSentBlockedPushMap.get(cacheKey) || 0;
 
-  // Deduplicate: If push notification for this device & domain was sent within 60s, skip duplicate
-  if (nowMs - lastSentTime < 60000) {
+  // Cluster-safe dedup (Redis atomic SET NX, with DB/in-memory fallback) so multiple backend
+  // instances don't each fire the same blocked-URL push within the 60s window.
+  const allowed = await shouldSendAlertShared(`blockedpush:${cacheKey}`, 60000);
+  if (!allowed) {
     console.log(`[FCM-SKIP] Duplicate blocked push skipped for ${cacheKey}`);
     return;
   }
-  lastSentBlockedPushMap.set(cacheKey, nowMs);
 
   const device = await Device.findOne({ deviceId });
   if (!device?.parentUserId) return;

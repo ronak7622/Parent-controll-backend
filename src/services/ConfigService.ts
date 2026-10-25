@@ -1,6 +1,21 @@
 import { Config } from '../models/Config';
 
 export const DEFAULT_OPTIONS = {
+  // WebRTC ICE servers delivered to child & parent apps via /config/options.
+  // Default = free public STUN + relay. To switch to Cloudflare TURN (or any TURN),
+  // override the "iceServers" option in the DB Config (admin) — clients pick it up with
+  // NO app update. Each entry: { urls, username?, credential? }.
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ],
   supportedLanguages: [
     { code: 'en', name: 'English', nativeName: 'English', isActive: true },
     { code: 'hi', name: 'Hindi', nativeName: 'हिन्दी', isActive: true },

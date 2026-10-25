@@ -6,7 +6,7 @@ import mongoose from 'mongoose';
 import { Recording } from '../models/Recording';
 import { Device } from '../models/Device';
 import { sendFcmDataCommand, sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
-import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { getSignalingIo, isChildOnline } from '../signaling/webrtc.signaling';
 import { getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { DeletedRecording } from '../models/DeletedRecording';
@@ -162,17 +162,9 @@ export const startRecording = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Device not found' });
     }
 
-    const roomSockets = getSignalingIo()?.adapter?.rooms?.get(deviceId);
-    let hasChildInRoom = false;
-    if (roomSockets) {
-      for (const sId of roomSockets) {
-        const s = getSignalingIo()?.sockets?.get(sId);
-        if (s && s.data?.role === 'child') {
-          hasChildInRoom = true;
-          break;
-        }
-      }
-    }
+    // Cross-instance presence (Redis adapter) — correct under horizontal scaling. adapter.rooms
+    // is local-only and must not be used for presence checks.
+    const hasChildInRoom = await isChildOnline(deviceId);
 
     const isReachable = hasChildInRoom;
 
@@ -323,17 +315,9 @@ export const getActiveRecordingStatus = async (req: Request, res: Response) => {
       status: { $in: ['in_progress', 'saving'] },
     });
 
-    const roomSockets = getSignalingIo()?.adapter?.rooms?.get(deviceId);
-    let hasChildInRoom = false;
-    if (roomSockets) {
-      for (const sId of roomSockets) {
-        const s = getSignalingIo()?.sockets?.get(sId);
-        if (s && s.data?.role === 'child') {
-          hasChildInRoom = true;
-          break;
-        }
-      }
-    }
+    // Cross-instance presence (Redis adapter) — correct under horizontal scaling. adapter.rooms
+    // is local-only and must not be used for presence checks.
+    const hasChildInRoom = await isChildOnline(deviceId);
 
     if (activeSession) {
       const elapsedSeconds = Math.max(0, Math.floor((Date.now() - activeSession.startedAt.getTime()) / 1000));

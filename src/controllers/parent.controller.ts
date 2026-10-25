@@ -21,7 +21,7 @@ import { DrivingTrip } from '../models/DrivingTrip';
 import { KeyboardLog } from '../models/KeyboardLog';
 import { ChatMessage } from '../models/ChatMessage';
 import { Device, isDeviceFresh } from '../models/Device';
-import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { getSignalingIo, isChildOnline } from '../signaling/webrtc.signaling';
 import { sendFcmDataCommand } from '../services/fcm.service';
 import { getReadQuery, buildShardFilter, clampPaginationLimit } from '../dal/db.dal';
 import { cacheService } from '../services/cache.service';
@@ -2360,18 +2360,11 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
     // If the child has no internet / is powered off, it will NOT be in the signaling room,
     // so we must NOT pretend the sync happened (the parent relies on this to avoid showing
     // a fresh "last synced" time when nothing actually synced).
+    // Cross-instance presence: correct across all backend servers (Redis adapter). Do NOT use
+    // adapter.rooms here — it is local to one instance and breaks under horizontal scaling.
     let childOnline = false;
     if (io) {
-      const roomSockets = io.adapter?.rooms?.get(targetDeviceId) || (deviceId ? io.adapter?.rooms?.get(deviceId) : null);
-      if (roomSockets) {
-        for (const sid of roomSockets) {
-          const s: any = io.sockets?.get ? io.sockets.get(sid) : (io.sockets ? io.sockets[sid] : null);
-          if (s && s.data?.role === 'child') {
-            childOnline = true;
-            break;
-          }
-        }
-      }
+      childOnline = await isChildOnline(targetDeviceId, deviceId);
     }
     if (!childOnline) {
       try {

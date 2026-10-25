@@ -155,16 +155,17 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
       // live child socket per device fixes that and also lowers memory/connection cost.
       if (role === 'child') {
         try {
-          const roomSet = signalingNamespace.adapter.rooms.get(targetDeviceId);
-          if (roomSet) {
-            for (const sid of roomSet) {
-              if (sid === socket.id) continue;
-              const other = signalingNamespace.sockets.get(sid);
-              if (other && other.data?.role === 'child') {
-                console.log(`[WEBRTC-ROOM] Evicting stale child socket ${sid} for device ${targetDeviceId} (replaced by ${socket.id})`);
-                try { other.leave(targetDeviceId); } catch (_) {}
-                try { other.disconnect(true); } catch (_) {}
-              }
+          // Cross-instance eviction: fetchSockets() returns matching sockets across ALL backend
+          // instances via the Redis adapter (adapter.rooms is LOCAL-only and would miss a ghost
+          // socket living on another server). This keeps "one child = one socket" correct when
+          // horizontally scaled to multiple OVH boxes.
+          const existing = await signalingNamespace.in(targetDeviceId).fetchSockets();
+          for (const other of existing) {
+            if (other.id === socket.id) continue;
+            if (other.data?.role === 'child') {
+              console.log(`[WEBRTC-ROOM] Evicting stale child socket ${other.id} for device ${targetDeviceId} (replaced by ${socket.id})`);
+              try { other.leave(targetDeviceId); } catch (_) {}
+              try { other.disconnect(true); } catch (_) {}
             }
           }
         } catch (e: any) {
@@ -736,3 +737,22 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
 };
 
 export const getSignalingIo = () => signalingIo;
+
+/**
+ * Cross-instance presence check: is a 'child'-role socket currently connected for this device
+ * anywhere in the cluster? Uses the Redis adapter's fetchSockets() which aggregates sockets
+ * across ALL backend instances. NEVER use adapter.rooms for presence — that is local to one
+ * instance and breaks as soon as a second server is added.
+ */
+export const isChildOnline = async (deviceId?: string, alternateId?: string): Promise<boolean> => {
+  const ns: any = signalingIo;
+  if (!ns) return false;
+  const ids = Array.from(new Set([deviceId, alternateId].filter((x): x is string => !!x)));
+  for (const id of ids) {
+    try {
+      const sockets = await ns.in(id).fetchSockets();
+      if (sockets.some((s: any) => s?.data?.role === 'child')) return true;
+    } catch (_) {}
+  }
+  return false;
+};

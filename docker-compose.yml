@@ -1,0 +1,40 @@
+# Local all-in-one stack for development/testing.
+# Production: run the backend container(s) pointing MONGODB_URI/REDIS_URI at your
+# separate OVH Mongo box + Redis, behind a load balancer. Same image, just env.
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override to reach the compose services by name (wins over .env locally)
+      - MONGODB_URI=mongodb://mongo:27017/child_protect_db
+      - REDIS_URI=redis://redis:6379
+    depends_on:
+      - mongo
+      - redis
+    ports:
+      - "5000:5000"
+
+volumes:
+  mongo_data:
+  redis_data:
