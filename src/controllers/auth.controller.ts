@@ -1,17 +1,66 @@
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import rateLimit from 'express-rate-limit';
 import { User } from '../models/User';
 import { config } from '../config/env';
-import { SmsService } from '../services/sms.service';
 import { connectDatabase } from '../config/database';
+import { verifyFirebaseToken, normalizeProvider } from '../services/firebaseAuth.service';
+import { isDisposableEmail } from '../utils/disposableEmail';
+import { normalizeEmail } from '../utils/normalizeEmail';
+import { cacheService } from '../services/cache.service';
+import { getSignalingIo } from '../signaling/webrtc.signaling';
 
 /**
- * Send OTP to Parent Phone Number
- * Enforces rate limiting: Max 3 OTPs per hour per phone number to prevent SMS fraud.
- * Auto bypasses cost for QA/Test numbers (+919999999999 -> 123456).
+ * IP-based Rate Limiter for Authentication Gateway (Protection against brute force & flooding)
  */
-export const requestOtp = async (req: Request, res: Response) => {
+export const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per 15 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many authentication attempts from this IP, please try again after 15 minutes.',
+  },
+});
+
+/**
+ * Extracts the portion before '.', before digits (0-9), or before '@'
+ * and capitalizes the first letter (e.g., "ronakpatel.delogico@gmail.com" -> "Ronakpatel").
+ */
+export function formatCleanNameFromEmail(email?: string, explicitName?: string): string {
+  if (explicitName && explicitName.trim() && explicitName.trim().toLowerCase() !== 'parent user') {
+    const trimmed = explicitName.trim();
+    if (trimmed.includes(' ') && !trimmed.includes('@') && !trimmed.includes('.')) {
+      return trimmed;
+    }
+    let clean = trimmed;
+    if (clean.includes('@')) clean = clean.split('@')[0];
+    if (clean.includes('.')) clean = clean.split('.')[0];
+    if (clean.includes('_')) clean = clean.split('_')[0];
+    const match = clean.match(/^[a-zA-Z]+/);
+    if (match && match[0]) clean = match[0];
+    if (clean) return clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
+  }
+  let clean = (email || '').split('@')[0] || '';
+  if (clean.includes('.')) clean = clean.split('.')[0];
+  if (clean.includes('_')) clean = clean.split('_')[0];
+  const match = clean.match(/^[a-zA-Z]+/);
+  if (match && match[0]) clean = match[0];
+  if (!clean) return 'Parent User';
+  return clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
+}
+
+/**
+ * Unified Firebase Authentication Gateway (Google, Email/Password, Apple)
+ *
+ * Accepts Firebase ID Token, verifies via Firebase Admin SDK,
+ * links account idempotently by email and firebaseUid,
+ * enforces canonical email normalization (preventing alias trial abuse),
+ * validates email verification status, and issues the system JWT.
+ */
+export const authenticateFirebase = async (req: Request, res: Response) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       await connectDatabase();
@@ -23,109 +72,161 @@ export const requestOtp = async (req: Request, res: Response) => {
       });
     }
 
-    const rawPhone = req.body.phoneNumber || req.body.phone;
-    if (!rawPhone || String(rawPhone).trim().length < 8) {
-      return res.status(400).json({ success: false, message: 'Valid phone number is required.' });
+    const {
+      idToken,
+      provider: clientProvider,
+      platform: clientPlatform,
+      deviceName: clientDeviceName,
+      forceLogoutOthers,
+    } = req.body;
+    if (!idToken || typeof idToken !== 'string') {
+      return res.status(400).json({ success: false, message: 'Firebase authentication token is required.' });
     }
 
-    const cleanPhone = String(rawPhone).trim();
-    const now = new Date();
-    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-
-    const isTest = SmsService.isTestNumber(cleanPhone);
-    let user = await User.findOne({ phoneNumber: cleanPhone });
-
-    if (user) {
-      // Check Rate Limit: max 3 requests per hour (exempt test numbers)
-      const lastRequest = user.lastOtpRequestedAt;
-      if (!isTest && lastRequest && lastRequest > oneHourAgo) {
-        if ((user.otpAttemptsCount || 0) >= 3) {
-          return res.status(429).json({
-            success: false,
-            message: 'Maximum 3 OTP requests allowed per hour to prevent SMS spam. Please try again later.',
-          });
-        }
-        user.otpAttemptsCount = (user.otpAttemptsCount || 0) + 1;
-      } else {
-        // Reset counter after 1 hour or for test numbers
-        user.otpAttemptsCount = 1;
-      }
-    } else {
-      user = new User({
-        phoneNumber: cleanPhone,
-        otpAttemptsCount: 1,
-        isVerified: false,
+    let decoded;
+    try {
+      decoded = await verifyFirebaseToken(idToken);
+    } catch (tokenErr: any) {
+      console.error('[FIREBASE-VERIFY-ERROR]', tokenErr.message);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired Firebase authentication token. Please sign in again.',
       });
     }
 
-    // Generate 6-digit OTP (or fixed 123456 for test numbers)
-    const otpCode = isTest ? '123456' : String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 mins expiry
-
-    user.otp = otpCode;
-    user.otpExpiresAt = expiresAt;
-    user.lastOtpRequestedAt = now;
-    await user.save();
-
-    // Send SMS via Provider Gateway (MSG91 / Fast2SMS / Mock)
-    await SmsService.sendOtpSms(cleanPhone, otpCode);
-
-    return res.json({
-      success: true,
-      message: 'OTP sent successfully.',
-      phoneNumber: cleanPhone,
-      otpForTesting: isTest || process.env.NODE_ENV !== 'production' ? otpCode : undefined,
-    });
-  } catch (error: any) {
-    console.error('[OTP-ERROR]', error);
-    return res.status(500).json({ success: false, message: error.message || 'Server error' });
-  }
-};
-
-/**
- * Verify OTP and return JWT Bearer Token for Parent App (Android/iOS) & Web
- */
-export const verifyOtp = async (req: Request, res: Response) => {
-  try {
-    const rawPhone = req.body.phoneNumber || req.body.phone;
-    const otp = req.body.otp;
-
-    if (!rawPhone || !otp) {
-      return res.status(400).json({ success: false, message: 'Phone number and OTP are required.' });
+    if (!decoded || !decoded.uid) {
+      return res.status(401).json({ success: false, message: 'Invalid Firebase authentication token.' });
     }
 
-    const cleanPhone = String(rawPhone).trim();
-    const user = await User.findOne({ phoneNumber: cleanPhone });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found. Request OTP first.' });
+    const firebaseUid = decoded.uid;
+    const rawEmail = decoded.email ? decoded.email.trim() : undefined;
+    const email = rawEmail ? rawEmail.toLowerCase() : undefined;
+    const normEmail = email ? normalizeEmail(email) : undefined;
+    const name = decoded.name || (email ? email.split('@')[0] : 'Parent User');
+    const provider = normalizeProvider(decoded.firebase?.sign_in_provider || clientProvider);
+
+    // Google accounts are auto-verified by Google; password accounts require email verification
+    const emailVerified = provider === 'google' ? true : Boolean(decoded.email_verified);
+
+    // Reject disposable emails on password auth (Google accounts exempt)
+    if (normEmail && provider === 'password') {
+      if (isDisposableEmail(normEmail) || isDisposableEmail(email || '')) {
+        return res.status(400).json({
+          success: false,
+          message: 'Disposable or temporary email addresses are not allowed. Please use a valid personal email.',
+        });
+      }
     }
 
-    // Check expiry
-    if (user.otpExpiresAt && user.otpExpiresAt < new Date()) {
-      return res.status(400).json({ success: false, message: 'OTP has expired. Please request a new OTP.' });
+    // ACCOUNT LINKING & IDEMPOTENT FIND-OR-CREATE
+    // 1. Search by firebaseUid
+    let user = await User.findOne({ firebaseUid });
+
+    // 2. If not found by firebaseUid, link by email (or normalizedEmail)
+    if (!user && (email || normEmail)) {
+      user = await User.findOne({
+        $or: [
+          ...(email ? [{ email }] : []),
+          ...(normEmail ? [{ normalizedEmail: normEmail }] : []),
+        ],
+      });
+      if (user && !user.firebaseUid) {
+        user.firebaseUid = firebaseUid;
+      }
     }
 
-    const isTest = SmsService.isTestNumber(cleanPhone);
-    if (user.otp !== String(otp).trim() && !(isTest && String(otp).trim() === '123456')) {
-      return res.status(400).json({ success: false, message: 'Incorrect OTP code entered.' });
+    // SINGLE ACTIVE SESSION CHECK
+    if (user && user.currentSessionId) {
+      const activeCachedSession = await cacheService.get(`user_session_${user._id.toString()}`);
+      const isOtherSessionActive = Boolean(activeCachedSession && activeCachedSession === user.currentSessionId);
+
+      if (isOtherSessionActive && !forceLogoutOthers) {
+        return res.status(200).json({
+          success: false,
+          requiresLogoutConfirm: true,
+          message: 'This account is currently active on another device or browser.',
+          activeSession: {
+            deviceName: user.currentDeviceName || 'Another device/browser',
+            platform: user.lastActivePlatform || 'device',
+            lastActive: user.lastLoginAt,
+          },
+        });
+      }
     }
 
-    user.isVerified = true;
-    user.otp = undefined;
-    user.otpExpiresAt = undefined;
-    user.otpAttemptsCount = 0;
+    const newSessionId = new mongoose.Types.ObjectId().toString();
 
-    const userLanguageCode = req.body.languageCode || (req.headers['accept-language'] as string)?.split(',')[0]?.split('-')[0]?.trim();
-    if (userLanguageCode && typeof userLanguageCode === 'string') {
-      user.languageCode = userLanguageCode.toLowerCase();
+    // Revoke previous session if user already existed
+    if (user && user.currentSessionId) {
+      try {
+        getSignalingIo()?.to(`parent_${user._id.toString()}`).emit('session-revoked', {
+          reason: 'Your account was logged in from another device.',
+          newDevice: clientDeviceName || (clientPlatform === 'flutter_app' ? 'Mobile App' : 'Web Browser'),
+        });
+      } catch (_) {}
     }
-    if (req.body.fcmToken && typeof req.body.fcmToken === 'string') {
-      user.fcmToken = req.body.fcmToken.trim();
+
+    if (user) {
+      if (!user.linkedProviders) user.linkedProviders = [];
+      if (provider && !user.linkedProviders.includes(provider)) user.linkedProviders.push(provider);
+      if (!user.primaryProvider && provider) user.primaryProvider = provider;
+      if (!user.email && email) user.email = email;
+      if (normEmail) user.normalizedEmail = normEmail;
+      if (!user.name && name) user.name = name;
+      user.isVerified = true;
+      user.emailVerified = emailVerified;
+      user.currentSessionId = newSessionId;
+      user.currentDeviceName = clientDeviceName || (clientPlatform === 'flutter_app' ? 'Mobile App' : 'Web Browser');
+      user.lastActivePlatform = clientPlatform || 'web';
+      user.lastLoginAt = new Date();
+
+      const userLanguageCode = req.body.languageCode || (req.headers['accept-language'] as string)?.split(',')[0]?.split('-')[0]?.trim();
+      if (userLanguageCode && typeof userLanguageCode === 'string') {
+        user.languageCode = userLanguageCode.toLowerCase();
+      }
+      if (req.body.fcmToken && typeof req.body.fcmToken === 'string') {
+        user.fcmToken = req.body.fcmToken.trim();
+      }
+      await user.save();
+    } else {
+      const userLanguageCode = (
+        req.body.languageCode ||
+        (req.headers['accept-language'] as string)?.split(',')[0]?.split('-')[0]?.trim() ||
+        'en'
+      ).toLowerCase();
+
+      user = new User({
+        firebaseUid,
+        email,
+        normalizedEmail: normEmail,
+        emailVerified,
+        name,
+        primaryProvider: provider || 'google',
+        linkedProviders: provider ? [provider] : ['google'],
+        isVerified: true,
+        languageCode: userLanguageCode,
+        fcmToken: req.body.fcmToken && typeof req.body.fcmToken === 'string' ? req.body.fcmToken.trim() : undefined,
+        currentSessionId: newSessionId,
+        currentDeviceName: clientDeviceName || (clientPlatform === 'flutter_app' ? 'Mobile App' : 'Web Browser'),
+        lastActivePlatform: clientPlatform || 'web',
+        lastLoginAt: new Date(),
+      });
+      await user.save();
     }
-    await user.save();
+
+    await cacheService.set(`user_session_${user._id.toString()}`, newSessionId, 365 * 86400);
 
     const token = jwt.sign(
-      { userId: user._id.toString(), phoneNumber: user.phoneNumber },
+      {
+        userId: user._id.toString(),
+        sessionId: newSessionId,
+        phoneNumber: user.phoneNumber || '',
+        name: formatCleanNameFromEmail(user.email, user.name),
+        email: user.email || '',
+        normalizedEmail: user.normalizedEmail || '',
+        emailVerified: user.emailVerified ?? false,
+        firebaseUid: user.firebaseUid || '',
+      },
       config.jwtSecret,
       { expiresIn: '365d' }
     );
@@ -133,16 +234,24 @@ export const verifyOtp = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       token,
+      emailVerified: user.emailVerified ?? false,
+      requiresEmailVerification: provider === 'password' && !user.emailVerified,
       user: {
         id: user._id.toString(),
-        phoneNumber: user.phoneNumber,
-        name: user.name || 'Parent User',
+        uid: user._id.toString(),
+        firebaseUid: user.firebaseUid,
+        phoneNumber: user.phoneNumber || '',
+        email: user.email || '',
+        name: formatCleanNameFromEmail(user.email, user.name),
+        emailVerified: user.emailVerified ?? false,
         languageCode: user.languageCode || 'en',
+        primaryProvider: user.primaryProvider,
+        linkedProviders: user.linkedProviders || [],
       },
     });
   } catch (error: any) {
-    console.error('[VERIFY-OTP-ERROR]', error);
-    return res.status(500).json({ success: false, message: error.message || 'Server error' });
+    console.error('[FIREBASE-AUTH-ERROR]', error);
+    return res.status(500).json({ success: false, message: error.message || 'Authentication failed.' });
   }
 };
 
@@ -182,10 +291,8 @@ export const updateParentFcmToken = async (req: any, res: Response) => {
     }
     const cleanToken = fcmToken.trim();
     await User.findByIdAndUpdate(parentUserId, { fcmToken: cleanToken });
-    console.log(`[FCM-TOKEN] Updated FCM token for parent ${parentUserId}: ${cleanToken.substring(0, 15)}...`);
     return res.json({ success: true, message: 'FCM token updated successfully' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
 };
-

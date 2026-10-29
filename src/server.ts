@@ -8,6 +8,8 @@ import { config } from './config/env';
 import { connectDatabase } from './config/database';
 import { migrateYoutubeAppBlockToAppRule } from './migrations/youtubeAppBlockToAppRule';
 import { runPlanI18nMigration } from './services/PlanMigrationService';
+import { backfillTrialLedgerNormalizedEmail } from './migrations/backfillTrialLedger';
+import { TrialLedger } from './models/TrialLedger';
 import apiRoutes from './routes/api.routes';
 import { setupWebRtcSignaling } from './signaling/webrtc.signaling';
 
@@ -46,6 +48,18 @@ app.use('/api/uploads', express.static(uploadsDir));
 // Metrics & Health Checks
 app.get('/metrics', getPrometheusMetrics);
 
+app.get(['/', '/api'], (req, res) => {
+  const dbConnected = mongoose.connection.readyState === 1;
+  res.status(200).json({
+    status: 'online',
+    system: 'Child Protect Backend API Engine (10M+ Scalable)',
+    dbConnected,
+    localUrl: 'http://192.168.1.12:5000/api',
+    health: '/health',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.get(['/health', '/api/health'], (req, res) => {
   const dbConnected = mongoose.connection.readyState === 1;
   res.status(dbConnected ? 200 : 503).json({
@@ -68,7 +82,9 @@ app.get(['/ready', '/api/ready'], (req, res) => {
 app.use('/api', apiRoutes);
 
 // Setup WebRTC P2P Signaling Server via WebSockets
-setupWebRtcSignaling(server);
+const io = setupWebRtcSignaling(server);
+app.set('io', io);
+app.set('signalingIo', io.of('/webrtc-signaling'));
 
 // Global Express Error Handling Middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -92,6 +108,12 @@ process.on('uncaughtException', (error: Error) => {
 const startServer = async () => {
   await connectDatabase();
   await migrateYoutubeAppBlockToAppRule();
+  await backfillTrialLedgerNormalizedEmail();
+  try {
+    await TrialLedger.syncIndexes();
+  } catch (indexErr: any) {
+    console.warn('[TrialLedger-Index-Sync] Warning syncing indexes:', indexErr?.message);
+  }
   initIngestQueue();
   await initSubscriptionQueue();
 

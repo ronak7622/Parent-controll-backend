@@ -1,5 +1,10 @@
 import { Router } from 'express';
-import { requestOtp, verifyOtp, updateUserLanguage, updateParentFcmToken } from '../controllers/auth.controller';
+import {
+  authenticateFirebase,
+  authRateLimiter,
+  updateUserLanguage,
+  updateParentFcmToken,
+} from '../controllers/auth.controller';
 import {
   getOptionsConfig,
   getPlans,
@@ -200,11 +205,9 @@ router.post('/parent/auto-delete-settings', authenticateJwt, updateAutoDeleteCon
 
 
 // ===================================
-// 1. Auth Routes (Parent App & Web)
+// 1. Auth Routes (Parent App & Web - Unified Firebase Gateway)
 // ===================================
-router.post('/auth/send-otp', requestOtp);
-router.post('/auth/request-otp', requestOtp);
-router.post('/auth/verify-otp', verifyOtp);
+router.post('/auth/firebase', authRateLimiter, authenticateFirebase);
 router.post('/user/language', authenticateJwt, updateUserLanguage);
 router.put('/user/language', authenticateJwt, updateUserLanguage);
 router.post('/user/fcm-token', authenticateJwt, updateParentFcmToken);

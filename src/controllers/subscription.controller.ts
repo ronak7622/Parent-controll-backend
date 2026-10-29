@@ -1,3 +1,5 @@
+import { normalizeEmail } from '../utils/normalizeEmail';
+import { isDisposableEmail } from '../utils/disposableEmail';
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { Plan } from '../models/Plan';
@@ -7,6 +9,7 @@ import { TrialLedger } from '../models/TrialLedger';
 import { StorageUsage } from '../models/StorageUsage';
 import { LiveUsage } from '../models/LiveUsage';
 import { User } from '../models/User';
+import { deleteFirebaseUser, deleteFirebaseUserByEmail } from '../services/firebaseAuth.service';
 import { Device } from '../models/Device';
 import { Order } from '../models/Order';
 import { AppLimit } from '../models/AppLimit';
@@ -29,20 +32,29 @@ import { PLAN_NAMES_I18N, ADDON_NAMES_I18N, localizeFeatureItem } from '../confi
  * Permanently records a parent user, phone number, and/or device ID into TrialLedger
  * so that a Free Trial can never be offered or claimed again once any plan or trial is consumed.
  */
-async function recordTrialOrPlanUsage(parentUserId?: string, phoneInput?: string, deviceIdInput?: string) {
+async function recordTrialOrPlanUsage(parentUserId?: string, phoneInput?: string, deviceIdInput?: string, emailInput?: string) {
   try {
     let phoneNumber = (phoneInput || '').trim();
-    if (!phoneNumber && parentUserId && mongoose.isValidObjectId(parentUserId)) {
+    let rawEmail = (emailInput || '').trim().toLowerCase();
+    let normEmail = rawEmail ? normalizeEmail(rawEmail) : '';
+
+    if ((!phoneNumber || !normEmail) && parentUserId && mongoose.isValidObjectId(parentUserId)) {
       const u = await User.findById(parentUserId).lean();
-      if (u?.phoneNumber) {
+      if (!phoneNumber && u?.phoneNumber) {
         phoneNumber = u.phoneNumber.trim();
+      }
+      if (!rawEmail && u?.email) {
+        rawEmail = u.email.trim().toLowerCase();
+        normEmail = normalizeEmail(rawEmail);
       }
     }
 
-    if (phoneNumber || parentUserId || deviceIdInput) {
+    if (phoneNumber || parentUserId || deviceIdInput || normEmail || rawEmail) {
       await TrialLedger.findOneAndUpdate(
         {
           $or: [
+            ...(normEmail ? [{ normalizedEmail: normEmail }] : []),
+            ...(rawEmail ? [{ email: rawEmail }] : []),
             ...(phoneNumber ? [{ phoneNumber }] : []),
             ...(deviceIdInput ? [{ deviceId: deviceIdInput }] : []),
             ...(parentUserId ? [{ parentUserId }] : []),
@@ -51,6 +63,8 @@ async function recordTrialOrPlanUsage(parentUserId?: string, phoneInput?: string
         {
           ...(parentUserId ? { parentUserId } : {}),
           ...(phoneNumber ? { phoneNumber } : {}),
+          ...(rawEmail ? { email: rawEmail } : {}),
+          ...(normEmail ? { normalizedEmail: normEmail } : {}),
           ...(deviceIdInput ? { deviceId: deviceIdInput } : {}),
           usedAt: new Date(),
         },
@@ -282,22 +296,31 @@ export const getPlans = async (req: Request, res: Response) => {
     const plans = await Plan.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
     const addons = await AddonPlan.find({ isActive: true }).lean();
 
-    let phone = (req as any).user?.phoneNumber || (req as any).user?.phone || (req.query.phoneNumber as string) || '';
-    const email = (req as any).user?.email || (req.query.email as string) || '';
-    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id || (req.query.parentUserId as string);
-    const deviceId = (req.query.deviceId as string) || '';
+    const rawDeviceId = req.headers['x-device-id'] || req.headers['device-id'] || req.headers['x-device-uuid'] || req.query.deviceId || req.body?.deviceId || '';
+    const deviceId = (typeof rawDeviceId === 'string' ? rawDeviceId : Array.isArray(rawDeviceId) ? rawDeviceId[0] : '').trim();
 
-    if (!phone && parentUserId && mongoose.isValidObjectId(parentUserId)) {
+    let phone = String((req as any).user?.phoneNumber || (req as any).user?.phone || req.query.phoneNumber || req.body?.phoneNumber || '').trim();
+    let email = String((req as any).user?.email || req.query.email || req.body?.email || '').trim().toLowerCase();
+    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id || (req.query.parentUserId as string);
+
+    if ((!phone || !email) && parentUserId && mongoose.isValidObjectId(parentUserId)) {
       const u = await User.findById(parentUserId).lean();
-      if (u?.phoneNumber) {
+      if (!phone && u?.phoneNumber) {
         phone = u.phoneNumber.trim();
+      }
+      if (!email && u?.email) {
+        email = u.email.trim().toLowerCase();
       }
     }
 
+    const normEmail = email ? normalizeEmail(email) : '';
+
     let trialUsed = false;
-    if (parentUserId || phone || deviceId) {
+    if (parentUserId || phone || deviceId || normEmail || email) {
       const existingLedger = await TrialLedger.findOne({
         $or: [
+          ...(normEmail ? [{ normalizedEmail: normEmail }] : []),
+          ...(email ? [{ email }] : []),
           ...(phone ? [{ phoneNumber: phone }] : []),
           ...(deviceId ? [{ deviceId }] : []),
           ...(parentUserId ? [{ parentUserId }] : []),
@@ -305,19 +328,29 @@ export const getPlans = async (req: Request, res: Response) => {
       });
       if (existingLedger) {
         trialUsed = true;
+        // Permanently link current identifiers in TrialLedger
+        recordTrialOrPlanUsage(parentUserId, phone, deviceId, email).catch(() => {});
       }
     }
 
     // If not found in ledger yet, but parent already has or had a subscription or order,
     // mark trial as used and backfill into TrialLedger immediately:
-    if (!trialUsed && parentUserId) {
-      const [existingSub, existingOrder] = await Promise.all([
-        Subscription.findOne({ parentUserId }).lean(),
-        Order.findOne({ parentUserId }).lean(),
-      ]);
-      if (existingSub || existingOrder) {
-        trialUsed = true;
-        recordTrialOrPlanUsage(parentUserId, phone, deviceId).catch(() => {});
+    if (!trialUsed) {
+      const parentUserIdsToCheck: string[] = [];
+      if (parentUserId) parentUserIdsToCheck.push(parentUserId);
+      if (email) {
+        const matchingUsers = await User.find({ email }).select('_id').lean();
+        matchingUsers.forEach(mu => parentUserIdsToCheck.push(mu._id.toString()));
+      }
+      if (parentUserIdsToCheck.length > 0) {
+        const [existingSub, existingOrder] = await Promise.all([
+          Subscription.findOne({ parentUserId: { $in: parentUserIdsToCheck } }).lean(),
+          Order.findOne({ parentUserId: { $in: parentUserIdsToCheck } }).lean(),
+        ]);
+        if (existingSub || existingOrder) {
+          trialUsed = true;
+          recordTrialOrPlanUsage(parentUserId, phone, deviceId, email).catch(() => {});
+        }
       }
     }
 
@@ -752,7 +785,9 @@ export const subscribe = async (req: Request, res: Response) => {
         });
       }
 
-      recordTrialOrPlanUsage(parentUserId, (req as any).user?.phoneNumber).catch(() => {});
+      const subDeviceId1 = String(req.headers['x-device-id'] || req.headers['device-id'] || req.body?.deviceId || '').trim();
+      const subEmail1 = String((req as any).user?.email || '').trim().toLowerCase();
+      recordTrialOrPlanUsage(parentUserId, (req as any).user?.phoneNumber, subDeviceId1, subEmail1).catch(() => {});
       return res.json({
         success: true,
         isQueued: true,
@@ -867,7 +902,9 @@ export const subscribe = async (req: Request, res: Response) => {
       }
     }
 
-    recordTrialOrPlanUsage(parentUserId, (req as any).user?.phoneNumber).catch(() => {});
+    const subDeviceId2 = String(req.headers['x-device-id'] || req.headers['device-id'] || req.body?.deviceId || '').trim();
+    const subEmail2 = String((req as any).user?.email || '').trim().toLowerCase();
+    recordTrialOrPlanUsage(parentUserId, (req as any).user?.phoneNumber, subDeviceId2, subEmail2).catch(() => {});
     return res.json({ success: true, isQueued: false, subscription });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
@@ -880,13 +917,38 @@ export const activateTrial = async (req: Request, res: Response) => {
     if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const user = await User.findById(parentUserId).lean();
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    // REQUIRE EMAIL VERIFICATION for password accounts before granting trial
+    if (user.primaryProvider === 'password' && !user.emailVerified) {
+      return res.status(403).json({
+        success: false,
+        code: 'EMAIL_VERIFICATION_REQUIRED',
+        message: 'Please verify your email address via the link sent to your inbox before activating the free trial.',
+      });
+    }
+
     const phoneInput = req.body.phoneNumber || (req as any).user?.phoneNumber || user?.phoneNumber || '';
     const phoneNumber = (phoneInput || '').trim();
-    const { deviceId } = req.body;
+    const emailInput = req.body.email || (req as any).user?.email || user?.email || '';
+    const email = (emailInput || '').trim().toLowerCase();
+    const normEmail = email ? normalizeEmail(email) : '';
+    const rawDevId = req.headers['x-device-id'] || req.headers['device-id'] || req.headers['x-device-uuid'] || req.body?.deviceId || '';
+    const deviceId = (typeof rawDevId === 'string' ? rawDevId : Array.isArray(rawDevId) ? rawDevId[0] : '').trim();
 
-    // Check anti-fraud ledger
+    // DISPOSABLE-EMAIL BLOCK: Prevent trial activation with disposable/temporary emails (check normalized)
+    if (normEmail && isDisposableEmail(normEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Free trial cannot be activated with a disposable or temporary email address.',
+      });
+    }
+
+    // Check anti-fraud ledger (including normalizedEmail to stop user+1@ farming)
     const existingLedger = await TrialLedger.findOne({
       $or: [
+        ...(normEmail ? [{ normalizedEmail: normEmail }] : []),
+        ...(email ? [{ email }] : []),
         ...(phoneNumber ? [{ phoneNumber }] : []),
         ...(deviceId ? [{ deviceId }] : []),
         { parentUserId },
@@ -894,9 +956,10 @@ export const activateTrial = async (req: Request, res: Response) => {
     });
 
     if (existingLedger) {
+      await recordTrialOrPlanUsage(parentUserId, phoneNumber, deviceId, email);
       return res.status(400).json({
         success: false,
-        message: 'Free trial has already been used on this phone number or device.',
+        message: 'Free trial has already been used on this device or account.',
       });
     }
 
@@ -906,11 +969,51 @@ export const activateTrial = async (req: Request, res: Response) => {
       Order.findOne({ parentUserId }).lean(),
     ]);
     if (existingSub || existingOrder) {
-      await recordTrialOrPlanUsage(parentUserId, phoneNumber, deviceId);
+      await recordTrialOrPlanUsage(parentUserId, phoneNumber, deviceId, email);
       return res.status(400).json({
         success: false,
         message: 'Free trial is only available for brand new users. An existing plan was already detected.',
       });
+    }
+
+    // ATOMIC RESERVATION GUARD: Atomic insert-first prevents concurrent double-trial activation
+    try {
+      const atomicGuard = await TrialLedger.findOneAndUpdate(
+        {
+          $or: [
+            ...(normEmail ? [{ normalizedEmail: normEmail }] : []),
+            ...(deviceId ? [{ deviceId }] : []),
+            { parentUserId },
+          ],
+        },
+        {
+          $setOnInsert: {
+            parentUserId,
+            phoneNumber: phoneNumber || undefined,
+            email: email || undefined,
+            normalizedEmail: normEmail || undefined,
+            deviceId: deviceId || undefined,
+            usedAt: new Date(),
+          },
+        },
+        { upsert: true, new: false }
+      );
+
+      if (atomicGuard) {
+        return res.status(400).json({
+          success: false,
+          message: 'Free trial has already been used on this device or account.',
+        });
+      }
+    } catch (ledgerErr: any) {
+      // Catch MongoDB duplicate-key (E11000) error on normalizedEmail / deviceId
+      if (ledgerErr?.code === 11000 || ledgerErr?.message?.includes('E11000') || ledgerErr?.name === 'MongoServerError') {
+        return res.status(400).json({
+          success: false,
+          message: 'Free trial has already been used on this device or account.',
+        });
+      }
+      throw ledgerErr;
     }
 
     // Find trial plan from Plan collection (DB plans table)
@@ -1039,7 +1142,7 @@ export const activateTrial = async (req: Request, res: Response) => {
       { upsert: true, new: true }
     );
 
-    await recordTrialOrPlanUsage(parentUserId, phoneNumber, deviceId);
+    await recordTrialOrPlanUsage(parentUserId, phoneNumber, deviceId, email);
 
     // Record Free Trial in Orders Collection
     await Order.create({
@@ -1058,6 +1161,12 @@ export const activateTrial = async (req: Request, res: Response) => {
 
     return res.json({ success: true, subscription });
   } catch (err: any) {
+    if (err?.code === 11000 || err?.message?.includes('E11000') || err?.name === 'MongoServerError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Free trial has already been used on this device or account.',
+      });
+    }
     return res.status(500).json({ success: false, message: err?.message });
   }
 };
@@ -1566,22 +1675,77 @@ export const deleteAccount = async (req: Request, res: Response) => {
     });
 
     // 5. Remove all Parent-level data: Subscriptions, Orders, LiveUsage, StorageUsage, User
-    // CRITICAL: TrialLedger is PRESERVED so that if the parent re-registers with the same phone or device ID,
+    // CRITICAL: TrialLedger is PRESERVED so that if the parent re-registers with the same email, phone, or device ID,
     // the Free Trial will NEVER be offered again!
     const phoneFilter = user?.phoneNumber || (req as any).user?.phoneNumber;
+    const emailFilter = (user?.email || (req as any).user?.email || '').toLowerCase().trim();
+    const normEmailFilter = emailFilter ? normalizeEmail(emailFilter) : (user?.normalizedEmail || '');
 
-    // Ensure TrialLedger permanently remembers this phone number before account data is wiped
-    const hadPlanOrSub = await Subscription.findOne({ parentUserId: { $in: uniqueParentUserIds } })
-      || await Order.findOne({ parentUserId: { $in: uniqueParentUserIds } })
-      || await TrialLedger.findOne({ $or: [{ parentUserId: { $in: uniqueParentUserIds } }, ...(phoneFilter ? [{ phoneNumber: phoneFilter }] : [])] });
-
-    if (hadPlanOrSub && phoneFilter) {
-      await TrialLedger.findOneAndUpdate(
-        { phoneNumber: phoneFilter },
-        { phoneNumber: phoneFilter, usedAt: new Date() },
-        { upsert: true }
-      ).catch(() => {});
+    // Permanently remember email, normalizedEmail, phone number, and child deviceIds in TrialLedger
+    try {
+      const ledgerPromises: any[] = [];
+      if (normEmailFilter) {
+        ledgerPromises.push(
+          TrialLedger.findOneAndUpdate(
+            { normalizedEmail: normEmailFilter },
+            { normalizedEmail: normEmailFilter, email: emailFilter, usedAt: new Date() },
+            { upsert: true }
+          )
+        );
+      }
+      if (emailFilter && emailFilter !== normEmailFilter) {
+        ledgerPromises.push(
+          TrialLedger.findOneAndUpdate(
+            { email: emailFilter },
+            { email: emailFilter, normalizedEmail: normEmailFilter, usedAt: new Date() },
+            { upsert: true }
+          )
+        );
+      }
+      if (phoneFilter) {
+        ledgerPromises.push(
+          TrialLedger.findOneAndUpdate(
+            { phoneNumber: phoneFilter },
+            { phoneNumber: phoneFilter, email: emailFilter, usedAt: new Date() },
+            { upsert: true }
+          )
+        );
+      }
+      for (const devId of deviceIds) {
+        if (devId) {
+          ledgerPromises.push(
+            TrialLedger.findOneAndUpdate(
+              { deviceId: devId },
+              { deviceId: devId, email: emailFilter, usedAt: new Date() },
+              { upsert: true }
+            )
+          );
+        }
+      }
+      await Promise.allSettled(ledgerPromises);
+      console.log(`[DELETE-ACCOUNT] Permanently preserved trial prevention in TrialLedger for: email=${emailFilter}, phone=${phoneFilter}, devices=${deviceIds.length}`);
+    } catch (e: any) {
+      console.warn('[DELETE-ACCOUNT] TrialLedger preserve warning:', e?.message);
     }
+    // Delete Firebase Auth identities so old credentials cannot log back in (no resurrection)
+    try {
+      const usersToDelete = await User.find({
+        $or: [
+          { _id: { $in: [parentUserId, userObjId].filter(Boolean) } },
+          ...(phoneFilter ? [{ phoneNumber: phoneFilter }] : []),
+        ],
+      }).select('firebaseUid email').lean();
+      const fbUids = Array.from(new Set(usersToDelete.map((u: any) => u.firebaseUid).filter(Boolean))) as string[];
+      const fbEmails = Array.from(new Set([user?.email, ...usersToDelete.map((u: any) => u.email)].filter(Boolean))) as string[];
+      console.log('[DELETE-ACCOUNT] users found:', usersToDelete.length, '| uids:', JSON.stringify(fbUids), '| emails:', JSON.stringify(fbEmails));
+      await Promise.all([
+        ...fbUids.map((uid) => deleteFirebaseUser(uid)),
+        ...fbEmails.map((em) => deleteFirebaseUserByEmail(em)),
+      ]);
+    } catch (e: any) {
+      console.warn('[DELETE-ACCOUNT] Firebase user delete warning:', e?.message);
+    }
+
     await Promise.all([
       Subscription.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),
       LiveUsage.deleteMany({ parentUserId: { $in: uniqueParentUserIds } }),

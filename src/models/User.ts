@@ -1,14 +1,20 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IUser extends Document {
-  phoneNumber: string;
+  phoneNumber?: string;
+  firebaseUid?: string;
+  email?: string;
+  normalizedEmail?: string;
+  emailVerified?: boolean;
+  password?: string;
+  primaryProvider?: string;
+  linkedProviders?: string[];
   otp?: string;
   otpExpiresAt?: Date;
   otpAttemptsCount?: number;
   lastOtpRequestedAt?: Date;
   isVerified: boolean;
   name?: string;
-  email?: string;
   planType?: 'free' | 'monthly' | 'yearly';
   planExpiresAt?: Date;
   planGracePeriodEndsAt?: Date;
@@ -22,20 +28,30 @@ export interface IUser extends Document {
   autoDeleteDeviceIds?: string[];
   languageCode?: string;
   fcmToken?: string;
+  currentSessionId?: string;
+  currentDeviceName?: string;
+  lastActivePlatform?: string;
+  lastLoginAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
 
 const UserSchema = new Schema<IUser>(
   {
-    phoneNumber: { type: String, required: true, unique: true, index: true },
+    phoneNumber: { type: String, required: false, sparse: true, index: true },
+    firebaseUid: { type: String, required: false, sparse: true, unique: true, index: true },
+    email: { type: String, required: false, sparse: true, unique: true, index: true, lowercase: true, trim: true },
+    normalizedEmail: { type: String, required: false, sparse: true, index: true, lowercase: true, trim: true },
+    emailVerified: { type: Boolean, default: false },
+    password: { type: String, select: false },
+    primaryProvider: { type: String },
+    linkedProviders: [{ type: String }],
     otp: { type: String },
     otpExpiresAt: { type: Date },
     otpAttemptsCount: { type: Number, default: 0 },
     lastOtpRequestedAt: { type: Date },
     isVerified: { type: Boolean, default: false },
     name: { type: String },
-    email: { type: String },
     planType: { type: String, enum: ['free', 'monthly', 'yearly'], default: 'monthly' },
     planExpiresAt: { type: Date },
     planGracePeriodEndsAt: { type: Date },
@@ -49,6 +65,10 @@ const UserSchema = new Schema<IUser>(
     autoDeleteDeviceIds: [{ type: String }],
     languageCode: { type: String, default: 'en' },
     fcmToken: { type: String },
+    currentSessionId: { type: String },
+    currentDeviceName: { type: String },
+    lastActivePlatform: { type: String },
+    lastLoginAt: { type: Date },
   },
   { timestamps: true }
 );

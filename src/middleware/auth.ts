@@ -1,15 +1,19 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
+import { cacheService } from '../services/cache.service';
 
 export interface AuthRequest extends Request {
   user?: {
     userId: string;
-    phoneNumber: string;
+    sessionId?: string;
+    phoneNumber?: string;
+    email?: string;
+    firebaseUid?: string;
   };
 }
 
-export const authenticateJwt = (req: AuthRequest, res: Response, next: NextFunction) => {
+export const authenticateJwt = async (req: AuthRequest, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ success: false, message: 'Authorization token missing or invalid' });
@@ -17,8 +21,29 @@ export const authenticateJwt = (req: AuthRequest, res: Response, next: NextFunct
 
   const token = authHeader.split(' ')[1];
   try {
-    const decoded = jwt.verify(token, config.jwtSecret) as { userId: string; phoneNumber: string };
+    const decoded = jwt.verify(token, config.jwtSecret) as {
+      userId: string;
+      sessionId?: string;
+      phoneNumber?: string;
+      email?: string;
+      firebaseUid?: string;
+    };
     req.user = decoded;
+
+    // Single active session enforcement across all platforms
+    if (decoded.sessionId) {
+      try {
+        const activeSessionId = await cacheService.get(`user_session_${decoded.userId}`);
+        if (activeSessionId && activeSessionId !== decoded.sessionId) {
+          return res.status(401).json({
+            success: false,
+            sessionRevoked: true,
+            message: 'Your account was signed in on another device or browser. You have been logged out.',
+          });
+        }
+      } catch (_) {}
+    }
+
     next();
   } catch (error) {
     return res.status(401).json({ success: false, message: 'Invalid or expired authentication token' });

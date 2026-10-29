@@ -2618,6 +2618,18 @@ export const getInstalledApps = async (req: AuthRequest, res: Response) => {
       appName: a.appName || a.packageName,
       appIcon: a.appIcon || null,
       isSystemApp: a.isSystemApp || false,
+      versionName: a.versionName || '',
+      versionCode: a.versionCode || null,
+      firstInstallTime: a.firstInstallTime || null,
+      lastUpdateTime: a.lastUpdateTime || null,
+      permissions: a.permissions || [],
+      grantedPermissions: a.grantedPermissions || [],
+      category: a.category || '',
+      targetSdkVersion: a.targetSdkVersion || null,
+      minSdkVersion: a.minSdkVersion || null,
+      apkSizeBytes: a.apkSizeBytes || null,
+      apkDownloadSizeBytes: a.apkDownloadSizeBytes || null,
+      isEnabled: a.isEnabled !== false,
     }));
     return res.json({ success: true, apps, lastSyncedAt: device.updatedAt || device.lastUsageSyncTime || null });
   } catch (error: any) {

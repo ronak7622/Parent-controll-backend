@@ -62,6 +62,11 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
 
   signalingNamespace.on('connection', (socket: Socket) => {
     console.log(`[WEBRTC-SIGNALING] New socket connected: ${socket.id}`);
+    const initialUserId = socket.data.auth?.userId || socket.data.auth?.id || socket.data.auth?._id;
+    if (initialUserId) {
+      socket.join(`user_${initialUserId}`);
+      socket.join(`parent_${initialUserId}`);
+    }
 
     // Join room identified by deviceId (Handles both 'join-room' and 'register-device')
     const handleJoinRoom = async (data: any) => {
@@ -79,6 +84,12 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
             socket.data.auth = auth;
           } catch (_) {}
         }
+      }
+
+      if (auth && (auth.userId || auth.id || auth._id)) {
+        const uid = auth.userId || auth.id || auth._id;
+        socket.join(`user_${uid}`);
+        socket.join(`parent_${uid}`);
       }
 
       if (!auth) {
