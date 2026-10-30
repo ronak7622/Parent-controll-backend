@@ -370,7 +370,19 @@ export const pairChildDevice = async (req: any, res: Response) => {
     }
 
     const rawCode = code || pairingCode;
-    const inputCode = rawCode ? String(rawCode).trim() : null;
+    let inputCode = rawCode ? String(rawCode).trim() : null;
+    if (inputCode) {
+      if (inputCode.startsWith('child_protect_pair:')) {
+        inputCode = inputCode.replace('child_protect_pair:', '').trim();
+      }
+      if (inputCode.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(inputCode);
+          if (parsed.code) inputCode = String(parsed.code).trim();
+          else if (parsed.pairingCode) inputCode = String(parsed.pairingCode).trim();
+        } catch {}
+      }
+    }
     let targetParentUserId = parentUserId;
 
     const defaultDevName = `${deviceBrand || ''} ${deviceModel || ''}`.trim();
