@@ -232,25 +232,21 @@ export const initSubscriptionQueue = async () => {
       console.error(`[SUBSCRIPTION-QUEUE] Job ${job?.id} failed:`, err.message);
     });
 
-    // Remove stale repeatables so interval changes take effect
-    const reps = await (subscriptionQueue as any).getRepeatableJobs().catch(() => []);
-    for (const r of reps) {
-      await (subscriptionQueue as any).removeRepeatableByKey(r.key).catch(() => {});
-    }
-
     const scanMs = Number(process.env.SUBSCRIPTION_SCAN_MS) || 60000;
 
-    // Schedule repeatable job
-    await (subscriptionQueue.add as any)(
-      'subscription-scan-job',
-      {},
+    // BullMQ v6 Job Scheduler (replaces the deprecated repeatable-jobs API).
+    // Idempotent: a single scheduler is upserted, so interval changes apply cleanly
+    // on every boot without the old remove-all-then-add dance.
+    await subscriptionQueue.upsertJobScheduler(
+      'subscription-scan-scheduler',
+      { every: scanMs },
       {
-        repeat: { every: scanMs },
-        jobId: 'repeatable-subscription-scan-job',
+        name: 'subscription-scan-job',
+        data: {},
       }
     );
 
-    console.log(`[SUBSCRIPTION-QUEUE] Subscription & Notification BullMQ Queue initialized with scan interval: ${scanMs}ms.`);
+    console.log(`[SUBSCRIPTION-QUEUE] Job Scheduler initialized. Interval: ${scanMs}ms`);
   } catch (err: any) {
     console.warn('[SUBSCRIPTION-QUEUE-ERROR] Failed to initialize subscription queue:', err.message);
   }
