@@ -79,7 +79,8 @@ async function recordTrialOrPlanUsage(parentUserId?: string, phoneInput?: string
 
 export const getOptionsConfig = async (req: Request, res: Response) => {
   try {
-    const rawLang = ((req.query.lang || req.headers['accept-language'] || (req as any).user?.languageCode || 'en') as string);
+    const langQuery = Array.isArray(req.query.lang) ? req.query.lang[0] : req.query.lang;
+    const rawLang = String(langQuery || req.headers['accept-language'] || (req as any).user?.languageCode || 'en');
     const lang = rawLang.split(',')[0].split('-')[0].trim().toLowerCase();
     const options = await ConfigService.getLocalizedOptions(lang);
     try {
@@ -379,7 +380,8 @@ export const getPlans = async (req: Request, res: Response) => {
       }
     }
 
-    const rawLang = ((req.query.lang || req.headers['accept-language'] || (req as any).user?.languageCode || 'en') as string);
+    const langQuery = Array.isArray(req.query.lang) ? req.query.lang[0] : req.query.lang;
+    const rawLang = String(langQuery || req.headers['accept-language'] || (req as any).user?.languageCode || 'en');
     const cleanLang = rawLang.split(',')[0].split('-')[0].trim().toLowerCase();
 
     const formattedPlans = visiblePlans.map((p: any) => {
@@ -901,6 +903,15 @@ export const subscribe = async (req: Request, res: Response) => {
     // Signal child devices via FCM to resume / upload held grace data (§6 & §7)
     const devices = await Device.find({ parentUserId });
     for (const d of devices) {
+      // Socket path: instant resume for an online child regardless of fcmToken presence.
+      try {
+        getSignalingIo()?.to(d.deviceId).emit('remote-command', {
+          command: 'SUBSCRIPTION_RESUME',
+          action: 'RESUME_AND_UPLOAD',
+          deviceId: d.deviceId,
+          status: 'active',
+        });
+      } catch (_) {}
       if (d.fcmToken) {
         await sendFcmDataCommand(d.fcmToken, 'SUBSCRIPTION_RESUME', {
           status: 'active',
@@ -1393,6 +1404,15 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
         // Signal child devices to resume/ensure active
         const devs = await Device.find({ parentUserId });
         for (const d of devs) {
+          // Socket path: instant resume for an online child regardless of fcmToken presence.
+          try {
+            getSignalingIo()?.to(d.deviceId).emit('remote-command', {
+              command: 'SUBSCRIPTION_RESUME',
+              action: 'RESUME_AND_UPLOAD',
+              deviceId: d.deviceId,
+              status: 'active',
+            });
+          } catch (_) {}
           if (d.fcmToken) {
             await sendFcmDataCommand(d.fcmToken, 'SUBSCRIPTION_RESUME', {
               status: 'active',

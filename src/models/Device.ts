@@ -275,6 +275,10 @@ const DeviceSchema = new Schema<IDevice>(
   { timestamps: true }
 );
 
+// Pairing lookups do findOne({ pairingCode }) / $or:[{pairingCode},{deviceId}] on every
+// pair/reconnect. Sparse because most devices have no pairingCode once paired -> smaller index.
+DeviceSchema.index({ pairingCode: 1 }, { sparse: true });
+
 export const Device = mongoose.model<IDevice>('Device', DeviceSchema);
 
 /**

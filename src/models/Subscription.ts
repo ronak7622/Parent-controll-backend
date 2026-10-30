@@ -152,4 +152,9 @@ const SubscriptionSchema: Schema = new Schema(
   { timestamps: true }
 );
 
+// Background SubscriptionJob scans by (status + expireAt) and (status + graceEndsAt) over
+// the whole collection on a timer -> compound indexes keep these O(matches) not O(total) at 10M+.
+SubscriptionSchema.index({ status: 1, expireAt: 1 });
+SubscriptionSchema.index({ status: 1, graceEndsAt: 1 });
+
 export const Subscription = mongoose.model<ISubscription>('Subscription', SubscriptionSchema);
