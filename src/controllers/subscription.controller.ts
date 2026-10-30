@@ -10,6 +10,7 @@ import { StorageUsage } from '../models/StorageUsage';
 import { LiveUsage } from '../models/LiveUsage';
 import { User } from '../models/User';
 import { deleteFirebaseUser, deleteFirebaseUserByEmail } from '../services/firebaseAuth.service';
+import { getCloudflareTurnIceServers } from '../services/cloudflareTurn.service';
 import { Device } from '../models/Device';
 import { Order } from '../models/Order';
 import { AppLimit } from '../models/AppLimit';
@@ -81,6 +82,13 @@ export const getOptionsConfig = async (req: Request, res: Response) => {
     const rawLang = ((req.query.lang || req.headers['accept-language'] || (req as any).user?.languageCode || 'en') as string);
     const lang = rawLang.split(',')[0].split('-')[0].trim().toLowerCase();
     const options = await ConfigService.getLocalizedOptions(lang);
+    try {
+      const turn = await getCloudflareTurnIceServers();
+      if (turn.length > 0) {
+        const stun = (options.iceServers || []).filter((s: any) => String(s.urls).startsWith('stun:'));
+        options.iceServers = [...stun, ...turn];
+      }
+    } catch (_) {}
     return res.json({ success: true, options });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });

@@ -31,6 +31,12 @@ export const config = {
   
   firebaseServiceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '',
 
+  // Cloudflare TURN (short-lived credentials generated server-side, served via /config/options iceServers)
+  turn: {
+    keyId: process.env.CLOUDFLARE_TURN_KEY_ID || '',
+    apiToken: process.env.CLOUDFLARE_TURN_API_TOKEN || '',
+  },
+
   // SMTP Email Delivery Configuration (Nodemailer)
   smtp: {
     host: process.env.SMTP_HOST || '',
