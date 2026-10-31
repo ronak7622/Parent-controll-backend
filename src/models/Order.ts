@@ -11,7 +11,18 @@ export interface IOrder extends Document {
   validityStart: Date;
   validityEnd: Date;
   txnId: string;
-  status: 'completed' | 'queued' | 'refunded';
+  status: 'pending' | 'processing' | 'success' | 'failed' | 'completed' | 'queued' | 'refunded';
+  paymentProvider?: 'razorpay' | 'google_play' | 'trial' | 'none';
+  providerOrderId?: string;
+  providerPaymentId?: string;
+  providerSubscriptionId?: string;
+  providerPurchaseToken?: string;
+  failureReason?: string;
+  autoRenew: boolean;
+  baseAmount?: number;
+  gstAmount?: number;
+  gstRatePercent?: number;
+  gstin?: string;
   metadata?: Record<string, any>;
   createdAt: Date;
   updatedAt: Date;
@@ -29,12 +40,34 @@ const OrderSchema: Schema = new Schema(
     validityStart: { type: Date, required: true },
     validityEnd: { type: Date, required: true },
     txnId: { type: String, required: true, unique: true, index: true },
-    status: { type: String, enum: ['completed', 'queued', 'refunded'], default: 'completed', index: true },
+    status: {
+      type: String,
+      enum: ['pending', 'processing', 'success', 'failed', 'completed', 'queued', 'refunded'],
+      default: 'pending',
+      index: true,
+    },
+    paymentProvider: {
+      type: String,
+      enum: ['razorpay', 'google_play', 'trial', 'none'],
+      default: 'none',
+      index: true,
+    },
+    providerOrderId: { type: String },
+    providerPaymentId: { type: String },
+    providerSubscriptionId: { type: String },
+    providerPurchaseToken: { type: String },
+    failureReason: { type: String },
+    autoRenew: { type: Boolean, default: false },
+    baseAmount: { type: Number },
+    gstAmount: { type: Number },
+    gstRatePercent: { type: Number },
+    gstin: { type: String },
     metadata: { type: Schema.Types.Mixed },
   },
   { timestamps: true }
 );
 
 OrderSchema.index({ parentUserId: 1, createdAt: -1 });
+OrderSchema.index({ parentUserId: 1, status: 1, createdAt: -1 });
 
 export const Order = mongoose.model<IOrder>('Order', OrderSchema);

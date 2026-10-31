@@ -6,11 +6,18 @@ import {
   updateParentFcmToken,
 } from '../controllers/auth.controller';
 import {
+  createRazorpayPayment,
+  verifyRazorpayPayment,
+  handleRazorpayWebhook,
+  verifyGooglePayment,
+  handleGooglePlayWebhook,
+} from '../controllers/payment.controller';
+import {
   getOptionsConfig,
   getPlans,
   subscribe,
-  activateTrial,
   purchaseAddon,
+  activateTrial,
   getSubscriptionStatus,
   getAutoDeleteConfig,
   updateAutoDeleteConfig,
@@ -183,6 +190,13 @@ router.use('/', recordingRoutes);
 // Remote Dynamic Config & optionAPI Route
 router.get('/config/remote', getRemoteConfig);
 router.get('/config/options', getOptionsConfig);
+
+// Online Payment Routes (Razorpay for Web, Google Play for App)
+router.post('/payment/razorpay/create', authenticateJwt, createRazorpayPayment);
+router.post('/payment/razorpay/verify', authenticateJwt, verifyRazorpayPayment);
+router.post('/payment/razorpay/webhook', handleRazorpayWebhook);
+router.post('/payment/google/verify', authenticateJwt, verifyGooglePayment);
+router.post('/payment/google/webhook', handleGooglePlayWebhook);
 
 // Subscription, Plans, Add-ons & Auto-Delete Routes
 router.get('/plans', optionalAuthenticateJwt, getPlans);

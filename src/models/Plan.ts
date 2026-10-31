@@ -14,10 +14,20 @@ export interface IPlan extends Document {
   /** Per-language name stored in DB – single source of truth for translations */
   nameI18n?: I18nLangMap;
   type: string; // 'monthly' | 'yearly' | '6_months' | '3_months' | 'quarterly' | 'trial' etc.
-  priceByRegion: {
+  webPriceByRegion: {
     IN_INR: number;
-    LOW_USD: number;
-    HIGH_USD: number;
+    OTHER_USD: number;
+  };
+  appPriceByRegion: {
+    IN_INR: number;
+    OTHER_USD: number;
+  };
+  discountCompareToApp: number; // integer % shown on web only, e.g. 15 → "15% cheaper than app"
+  priceByRegion?: {
+    IN_INR: number;
+    LOW_USD?: number;
+    HIGH_USD?: number;
+    OTHER_USD?: number;
   };
   storageBytes: number;
   planDurationValueInMinute: number;
@@ -48,10 +58,20 @@ const PlanSchema: Schema = new Schema(
     planId: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
     type: { type: String, default: 'monthly', index: true },
-    priceByRegion: {
+    webPriceByRegion: {
       IN_INR: { type: Number, required: true, default: 299 },
-      LOW_USD: { type: Number, required: true, default: 4.99 },
-      HIGH_USD: { type: Number, required: true, default: 9.99 },
+      OTHER_USD: { type: Number, required: true, default: 9.99 },
+    },
+    appPriceByRegion: {
+      IN_INR: { type: Number, required: true, default: 299 },
+      OTHER_USD: { type: Number, required: true, default: 9.99 },
+    },
+    discountCompareToApp: { type: Number, default: 0 },
+    priceByRegion: {
+      IN_INR: { type: Number },
+      LOW_USD: { type: Number },
+      HIGH_USD: { type: Number },
+      OTHER_USD: { type: Number },
     },
     storageBytes: { type: Number, required: true, default: 10737418240 }, // 10 GB
     planDurationValueInMinute: { type: Number, required: true, default: 43200 }, // 30 days in minutes

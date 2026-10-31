@@ -60,15 +60,16 @@ export class SubscriptionJob {
           sub.isTrial = false;
           sub.planLiveMinutesUsed = 0;
 
-          // Apply queued add-ons if any
-          if (q.storageAddon) {
-            sub.addonStorageBytes = (sub.addonStorageBytes || 0) + (q.storageAddon.storageBytes || 0);
-            sub.lastPurchasedStorageAddonId = q.storageAddon.addonId;
-          }
-          if (q.liveAddon) {
-            sub.addonLiveMinutesPool = (sub.addonLiveMinutesPool || 0) + (q.liveAddon.liveMinutes || 0);
-            sub.lastPurchasedLiveAddonId = q.liveAddon.addonId;
-          }
+          // Period boundary = add-ons reset to the queued plan's own bundled add-ons only (do NOT accumulate)
+          sub.addonStorageBytes = q.storageAddon?.storageBytes || 0;
+          sub.lastPurchasedStorageAddonId = q.storageAddon?.addonId;
+          sub.addonLiveMinutesPool = q.liveAddon?.liveMinutes || 0;
+          sub.lastPurchasedLiveAddonId = q.liveAddon?.addonId;
+          sub.autoRenew = false;
+          sub.liveTotalLimitNotified = false;
+          sub.addonLiveExhaustedNotified = false;
+          sub.lastExpireWarnNotificationAt = undefined;
+          sub.lastStorageWarnNotificationAt = undefined;
 
           // If queued plan had storage downgrade confirmed, trim oldest excess data upon activation
           if (q.allowStorageTrim) {
@@ -325,6 +326,23 @@ export class SubscriptionJob {
           await StorageAccountingService.invalidateCache(sub.parentUserId);
         }
       }
+
+      // Clean up abandoned pending orders older than 2 hours
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      await Order.updateMany(
+        {
+          status: 'pending',
+          createdAt: { $lt: twoHoursAgo },
+        },
+        {
+          $set: {
+            status: 'failed',
+            failureReason: 'Checkout not completed',
+          },
+        }
+      ).catch((err) => {
+        console.error('[SUBSCRIPTION-JOB] Error cleaning up stale pending orders:', err);
+      });
     } catch (err: any) {
       console.error(`[SUBSCRIPTION-JOB-ERROR] ${err?.message}`);
     }

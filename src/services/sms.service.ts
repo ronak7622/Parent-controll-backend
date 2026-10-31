@@ -16,7 +16,7 @@ export class SmsService {
 
   public static async sendOtpSms(phoneNumber: string, otp: string): Promise<boolean> {
     if (this.isTestNumber(phoneNumber)) {
-      console.log(`[SMS-SERVICE] QA Test number detected (${phoneNumber}). Bypassing SMS gateway cost. Fix OTP: ${otp}`);
+      console.log('[SMS-SERVICE] QA Test number detected. Bypassing SMS gateway cost.');
       return true;
     }
 
@@ -29,7 +29,7 @@ export class SmsService {
       return this.sendViaFast2Sms(phoneNumber, otp, apiKey);
     }
 
-    console.log(`[SMS-SERVICE-MOCK] Provider: ${provider}. Sent OTP ${otp} to ${phoneNumber}`);
+    console.log(`[SMS-SERVICE-MOCK] Provider: ${provider}. Sent OTP to recipient.`);
     return true;
   }
 

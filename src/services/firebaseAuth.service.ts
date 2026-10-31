@@ -1,3 +1,4 @@
+import { hashId } from '../utils/privacy';
 import admin from 'firebase-admin';
 import { config } from '../config/env';
 
@@ -78,7 +79,7 @@ export async function deleteFirebaseUser(uid: string): Promise<void> {
   if (admin.apps.length === 0) { console.warn('[FirebaseAuth] deleteFirebaseUser: Firebase Admin NOT initialized'); return; }
   try {
     await admin.auth().deleteUser(uid);
-    console.log('[FirebaseAuth] Firebase user DELETED:', uid);
+    console.log('[FirebaseAuth] Firebase user DELETED. Hash:', hashId(uid));
   } catch (err: any) {
     if (err?.code === 'auth/user-not-found') { console.warn('[FirebaseAuth] deleteFirebaseUser: user-not-found', uid); return; }
     console.warn('[FirebaseAuth] deleteFirebaseUser ERROR for', uid, ':', err?.code, err?.message || err);
@@ -93,9 +94,9 @@ export async function deleteFirebaseUserByEmail(email: string): Promise<void> {
   try {
     const u = await admin.auth().getUserByEmail(email);
     await admin.auth().deleteUser(u.uid);
-    console.log('[FirebaseAuth] Firebase user DELETED by email:', email, u.uid);
+    console.log('[FirebaseAuth] Firebase user DELETED by email. Hash:', hashId(u.uid));
   } catch (err: any) {
     if (err?.code === 'auth/user-not-found') { console.warn('[FirebaseAuth] deleteByEmail: user-not-found', email); return; }
-    console.warn('[FirebaseAuth] deleteFirebaseUserByEmail ERROR for', email, ':', err?.code, err?.message || err);
+    console.warn('[FirebaseAuth] deleteFirebaseUserByEmail ERROR:', err?.code, err?.message || err);
   }
 }

@@ -67,6 +67,13 @@ export interface ISubscription extends Document {
   addonLiveExhaustedNotified?: boolean;
   liveTotalLimitNotified?: boolean;
   planLiveMinutesUsed?: number; // cumulative live minutes used from base plan
+  paymentProvider?: 'razorpay' | 'google_play' | 'trial' | 'none';
+  providerRef?: string;
+  providerSubscriptionId?: string;
+  autoRenew?: boolean;
+  autoRenewCancelledAt?: Date;
+  lastPaymentSyncAt?: Date;
+  lastRenewalOrderId?: string;
 }
 
 const PlanSnapshotSchema: Schema = new Schema(
@@ -148,6 +155,18 @@ const SubscriptionSchema: Schema = new Schema(
     addonLiveExhaustedNotified: { type: Boolean, default: false },
     liveTotalLimitNotified: { type: Boolean, default: false },
     planLiveMinutesUsed: { type: Number, default: 0 },
+    paymentProvider: {
+      type: String,
+      enum: ['razorpay', 'google_play', 'trial', 'none'],
+      default: 'trial',
+      index: true,
+    },
+    providerRef: { type: String },
+    providerSubscriptionId: { type: String },
+    autoRenew: { type: Boolean, default: false },
+    autoRenewCancelledAt: { type: Date },
+    lastPaymentSyncAt: { type: Date },
+    lastRenewalOrderId: { type: String },
   },
   { timestamps: true }
 );

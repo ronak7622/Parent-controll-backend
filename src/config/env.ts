@@ -45,4 +45,17 @@ export const config = {
     pass: process.env.SMTP_PASS || '',
     from: process.env.SMTP_FROM || '"Child Protect" <noreply@childprotect.com>',
   },
+
+  // Payment Gateways (Razorpay for Web, Google Play for App)
+  razorpay: {
+    keyId: process.env.RAZORPAY_KEY_ID || '',
+    keySecret: process.env.RAZORPAY_KEY_SECRET || '',
+    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || '',
+  },
+
+  googlePlay: {
+    packageName: process.env.GOOGLE_PLAY_PACKAGE_NAME || 'com.parentprotect.parent_app',
+    serviceAccountJson: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || '',
+    pubsubVerificationToken: process.env.GOOGLE_PLAY_PUBSUB_VERIFICATION_TOKEN || '',
+  },
 };

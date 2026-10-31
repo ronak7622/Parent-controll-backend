@@ -1,3 +1,4 @@
+import { hashId } from '../utils/privacy';
 import mongoose from 'mongoose';
 import { Response } from 'express';
 import jwt from 'jsonwebtoken';
@@ -87,7 +88,7 @@ export const generatePairingCode = async (req: any, res: Response) => {
       );
     }
 
-    console.log(`[PAIRING] Session registered with code: ${code}${isRealDeviceId ? ` for device ${deviceId}` : ''}`);
+    console.log(`[PAIRING] Session registered${isRealDeviceId ? ` for device hash=${hashId(deviceId)}` : ''}`);
 
     return res.json({
       success: true,
@@ -344,7 +345,7 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
     device.appRemovedNotifiedAt = null;
     await device.save();
 
-    console.log(`[PAIRING-SUCCESS] Parent ${parentUserId} paired with device ${device.deviceId} (code: ${code})`);
+    console.log(`[PAIRING-SUCCESS] Parent hash=${hashId(parentUserId)} paired with device hash=${hashId(device.deviceId)}`);
 
     const deviceData = device.toObject();
     delete deviceData.installedApps;
@@ -458,7 +459,7 @@ export const pairChildDevice = async (req: any, res: Response) => {
     if (languageCode) device.languageCode = String(languageCode).trim().toLowerCase();
 
     await device.save();
-    console.log(`[PAIRING-SUCCESS] Child device ${deviceId} paired successfully with code ${inputCode}`);
+    console.log(`[PAIRING-SUCCESS] Child device hash=${hashId(deviceId)} paired successfully`);
 
     const deviceToken = jwt.sign(
       { deviceId: device.deviceId, kind: 'device' },

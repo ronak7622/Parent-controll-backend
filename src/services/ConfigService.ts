@@ -1,6 +1,11 @@
 import { Config } from '../models/Config';
 
 export const DEFAULT_OPTIONS = {
+  // GST-ready (dormant now, config-driven)
+  gstEnabled: false,
+  gstRatePercent: 18,
+  gstin: '',
+
   // WebRTC ICE servers delivered to child & parent apps via /config/options.
   // Default = free public STUN + relay. To switch to Cloudflare TURN (or any TURN),
   // override the "iceServers" option in the DB Config (admin) — clients pick it up with
@@ -321,17 +326,7 @@ export const DEFAULT_OPTIONS = {
 
   regionTierMap: {
     IN: 'IN_INR',
-    PK: 'LOW_USD',
-    BD: 'LOW_USD',
-    LK: 'LOW_USD',
-    NP: 'LOW_USD',
-    US: 'HIGH_USD',
-    GB: 'HIGH_USD',
-    CA: 'HIGH_USD',
-    AU: 'HIGH_USD',
-    AE: 'HIGH_USD',
-    RU: 'HIGH_USD',
-    DEFAULT: 'HIGH_USD',
+    DEFAULT: 'OTHER_USD',
   },
 
   // Dynamic Profile & App Configs

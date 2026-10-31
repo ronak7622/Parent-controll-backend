@@ -35,7 +35,14 @@ app.set('trust proxy', 1);
 // Enable Gzip Compression, CORS and JSON Body Parser
 app.use(compression());
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '50mb' }));
+app.use(
+  express.json({
+    limit: '50mb',
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Apply rate limiting to API routes

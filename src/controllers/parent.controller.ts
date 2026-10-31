@@ -26,6 +26,7 @@ import { sendFcmDataCommand } from '../services/fcm.service';
 import { getReadQuery, buildShardFilter, clampPaginationLimit } from '../dal/db.dal';
 import { cacheService } from '../services/cache.service';
 import { StorageAccountingService } from '../services/StorageAccountingService';
+import { Subscription } from '../models/Subscription';
 import { checkQuotaBlocked } from './ingest.controller';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC+5:30
@@ -3245,6 +3246,20 @@ export const getChatThreads = async (req: AuthRequest, res: Response) => {
     const { deviceId } = req.params;
     const { packageName, date } = req.query;
 
+    const parentUserId = req.user?.userId || (await StorageAccountingService.resolveParentUserId(deviceId));
+    if (parentUserId) {
+      const sub = await Subscription.findOne({ parentUserId }).lean();
+      if (sub && sub.planSnapshot && sub.planSnapshot.isAllowSocialAppChatHistory === false) {
+        return res.json({
+          success: true,
+          threads: [],
+          total: 0,
+          featureLocked: true,
+          message: 'Social app chat history is not permitted by active plan',
+        });
+      }
+    }
+
     const matchQuery: any = { deviceId };
     if (packageName) {
       matchQuery.packageName = packageName as string;
@@ -3296,6 +3311,21 @@ export const getChatMessages = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
     const { packageName, contactId, before, limit = 50 } = req.query;
+
+    const parentUserId = req.user?.userId || (await StorageAccountingService.resolveParentUserId(deviceId));
+    if (parentUserId) {
+      const sub = await Subscription.findOne({ parentUserId }).lean();
+      if (sub && sub.planSnapshot && sub.planSnapshot.isAllowSocialAppChatHistory === false) {
+        return res.json({
+          success: true,
+          messages: [],
+          total: 0,
+          hasMore: false,
+          featureLocked: true,
+          message: 'Social app chat history is not permitted by active plan',
+        });
+      }
+    }
 
     if (!contactId) {
       return res.status(400).json({ success: false, message: 'contactId is required' });

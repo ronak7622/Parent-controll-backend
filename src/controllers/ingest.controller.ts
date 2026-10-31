@@ -1,3 +1,4 @@
+import { hashId } from '../utils/privacy';
 import mongoose from 'mongoose';
 import { Request, Response } from 'express';
 import fs from 'fs';
@@ -1241,7 +1242,7 @@ export const ingestCallRecording = async (req: Request, res: Response) => {
 
     await callRecording.save();
 
-    console.log(`[CALL-RECORDING] Uploaded call recording for device ${deviceId}, phone ${phoneNumber}: ${audioUrl}`);
+    console.log(`[CALL-RECORDING] Uploaded call recording for device hash=${hashId(deviceId)}, duration: ${durationSeconds}s`);
 
     return res.json({
       success: true,
@@ -1339,7 +1340,7 @@ export const ingestCallRecordingStream = async (req: Request, res: Response) => 
         });
         await callRecording.save();
 
-        console.log(`[CALL-RECORDING-STREAM] Streamed call recording for ${deviceId}, phone ${phoneNumber}, size: ${fileSizeBytes} bytes`);
+        console.log(`[CALL-RECORDING-STREAM] Streamed call recording for device hash=${hashId(deviceId)}, duration: ${durationSeconds}s, size: ${fileSizeBytes} bytes`);
         return res.json({
           success: true,
           message: 'Call recording streamed successfully',
@@ -2014,6 +2015,19 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
         uploadBlocked: true,
         message: 'Subscription inactive or storage full. Upload rejected.',
       });
+    }
+
+    // Gating check: Active plan must permit social chat history storage
+    const parentUserId = await StorageAccountingService.resolveParentUserId(topDeviceId);
+    if (parentUserId) {
+      const sub = await Subscription.findOne({ parentUserId }).lean();
+      if (sub && sub.planSnapshot && sub.planSnapshot.isAllowSocialAppChatHistory === false) {
+        return res.status(200).json({
+          success: true,
+          stored: 0,
+          message: 'Chat history not permitted by active plan',
+        });
+      }
     }
 
     const items = Array.isArray(rawEvents) ? rawEvents : [rawEvents];

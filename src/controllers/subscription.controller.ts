@@ -1,3 +1,4 @@
+import { hashId } from '../utils/privacy';
 import { normalizeEmail } from '../utils/normalizeEmail';
 import { isDisposableEmail } from '../utils/disposableEmail';
 import { Request, Response } from 'express';
@@ -9,6 +10,7 @@ import { TrialLedger } from '../models/TrialLedger';
 import { StorageUsage } from '../models/StorageUsage';
 import { LiveUsage } from '../models/LiveUsage';
 import { User } from '../models/User';
+import { runPricingMigration } from '../scripts/migratePricingToWebAndApp';
 import { deleteFirebaseUser, deleteFirebaseUserByEmail } from '../services/firebaseAuth.service';
 import { getCloudflareTurnIceServers } from '../services/cloudflareTurn.service';
 import { Device } from '../models/Device';
@@ -103,15 +105,26 @@ export const getPlans = async (req: Request, res: Response) => {
     const regionTierMap = options.regionTierMap || {};
 
     let resolvedRegion = regionTierMap[rawParam] || rawParam;
-    if (!['IN_INR', 'LOW_USD', 'HIGH_USD'].includes(resolvedRegion)) {
-      resolvedRegion = regionTierMap.DEFAULT || 'HIGH_USD';
+    if (resolvedRegion !== 'IN_INR' && resolvedRegion !== 'IN') {
+      resolvedRegion = 'OTHER_USD';
+    } else {
+      resolvedRegion = 'IN_INR';
     }
 
     const countryListsByRegion = {
       IN_INR: ['IN'],
-      LOW_USD: ['PK', 'BD', 'NP', 'LK', 'NG', 'PH', 'VN', 'ID', 'EG', 'KE', 'TZ', 'UG', 'BR', 'MX', 'AR', 'CO'],
-      HIGH_USD: ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'AE', 'SA', 'JP', 'SG', 'NZ', 'KR', 'IT', 'ES', 'NL', 'SE', 'GLOBAL'],
+      OTHER_USD: ['GLOBAL'],
     };
+
+    const platformQuery = (req.query.platform || req.headers['x-platform'] || '').toString().toLowerCase().trim();
+    const isApp = platformQuery === 'app' || platformQuery === 'android' || platformQuery === 'ios';
+    const resolvedPlatform: 'web' | 'app' = isApp ? 'app' : 'web';
+
+    // Lazy migration check: ensure docs have webPriceByRegion & appPriceByRegion
+    const unmigratedPlan = await Plan.findOne({ webPriceByRegion: { $exists: false } }).lean();
+    if (unmigratedPlan) {
+      await runPricingMigration().catch((e) => console.warn('[PricingMigration] Lazy migration error:', e));
+    }
 
     // Seed default plans if DB empty or trial plan needs field update
     const trialPlanExists = await Plan.findOne({ planId: 'plan_1_day_trial' });
@@ -160,7 +173,9 @@ export const getPlans = async (req: Request, res: Response) => {
           planId: 'plan_1_day_trial',
           name: '1 Day Free Trial',
           type: 'trial',
-          priceByRegion: { IN_INR: 0, LOW_USD: 0, HIGH_USD: 0 },
+          webPriceByRegion: { IN_INR: 0, OTHER_USD: 0 },
+          appPriceByRegion: { IN_INR: 0, OTHER_USD: 0 },
+          discountCompareToApp: 0,
           storageBytes: 104857600, // 100 MB
           planDurationValueInMinute: 1440,
           planDurationUnit: 'minutes',
@@ -180,7 +195,9 @@ export const getPlans = async (req: Request, res: Response) => {
           planId: 'plan_1_month',
           name: '1 Month Plan',
           type: 'monthly',
-          priceByRegion: { IN_INR: 1000, LOW_USD: 14.99, HIGH_USD: 24.99 },
+          webPriceByRegion: { IN_INR: 1000, OTHER_USD: 24.99 },
+          appPriceByRegion: { IN_INR: 1000, OTHER_USD: 24.99 },
+          discountCompareToApp: 15,
           storageBytes: 21474836480, // 20 GB
           planDurationValueInMinute: 43200,
           planDurationUnit: 'minutes',
@@ -199,7 +216,9 @@ export const getPlans = async (req: Request, res: Response) => {
           planId: 'plan_6_months',
           name: '6 Months Plan',
           type: '6_months',
-          priceByRegion: { IN_INR: 2500, LOW_USD: 34.99, HIGH_USD: 59.99 },
+          webPriceByRegion: { IN_INR: 2500, OTHER_USD: 59.99 },
+          appPriceByRegion: { IN_INR: 2500, OTHER_USD: 59.99 },
+          discountCompareToApp: 15,
           storageBytes: 21474836480, // 20 GB
           planDurationValueInMinute: 259200,
           planDurationUnit: 'minutes',
@@ -219,7 +238,9 @@ export const getPlans = async (req: Request, res: Response) => {
           planId: 'plan_1_year',
           name: '1 Year Plan',
           type: 'yearly',
-          priceByRegion: { IN_INR: 2000, LOW_USD: 29.99, HIGH_USD: 49.99 },
+          webPriceByRegion: { IN_INR: 2000, OTHER_USD: 49.99 },
+          appPriceByRegion: { IN_INR: 2000, OTHER_USD: 49.99 },
+          discountCompareToApp: 15,
           storageBytes: 21474836480, // 20 GB
           planDurationValueInMinute: 525600,
           planDurationUnit: 'minutes',
@@ -249,7 +270,9 @@ export const getPlans = async (req: Request, res: Response) => {
           addonId: 'addon_5gb',
           name: '+5 GB Storage Booster',
           type: 'storage',
-          priceByRegion: { IN_INR: 99, LOW_USD: 1.49, HIGH_USD: 2.99 },
+          webPriceByRegion: { IN_INR: 99, OTHER_USD: 2.99 },
+          appPriceByRegion: { IN_INR: 99, OTHER_USD: 2.99 },
+          discountCompareToApp: 0,
           storageBytes: 5368709120,
           liveMinutes: 0,
           isActive: true,
@@ -258,7 +281,9 @@ export const getPlans = async (req: Request, res: Response) => {
           addonId: 'addon_20gb',
           name: '+20 GB Storage Booster',
           type: 'storage',
-          priceByRegion: { IN_INR: 299, LOW_USD: 3.99, HIGH_USD: 7.99 },
+          webPriceByRegion: { IN_INR: 299, OTHER_USD: 7.99 },
+          appPriceByRegion: { IN_INR: 299, OTHER_USD: 7.99 },
+          discountCompareToApp: 0,
           storageBytes: 21474836480,
           liveMinutes: 0,
           isActive: true,
@@ -267,7 +292,9 @@ export const getPlans = async (req: Request, res: Response) => {
           addonId: 'addon_50gb',
           name: '+50 GB Storage Booster',
           type: 'storage',
-          priceByRegion: { IN_INR: 599, LOW_USD: 7.99, HIGH_USD: 14.99 },
+          webPriceByRegion: { IN_INR: 599, OTHER_USD: 14.99 },
+          appPriceByRegion: { IN_INR: 599, OTHER_USD: 14.99 },
+          discountCompareToApp: 0,
           storageBytes: 53687091200,
           liveMinutes: 0,
           isActive: true,
@@ -276,7 +303,9 @@ export const getPlans = async (req: Request, res: Response) => {
           addonId: 'addon_live_60m',
           name: '+1 Hour Live Feature Booster',
           type: 'live_minutes',
-          priceByRegion: { IN_INR: 49, LOW_USD: 0.99, HIGH_USD: 1.99 },
+          webPriceByRegion: { IN_INR: 49, OTHER_USD: 1.99 },
+          appPriceByRegion: { IN_INR: 49, OTHER_USD: 1.99 },
+          discountCompareToApp: 0,
           storageBytes: 0,
           liveMinutes: 60,
           isActive: true,
@@ -285,7 +314,9 @@ export const getPlans = async (req: Request, res: Response) => {
           addonId: 'addon_live_120m',
           name: '+2 Hours Live Feature Booster',
           type: 'live_minutes',
-          priceByRegion: { IN_INR: 89, LOW_USD: 1.79, HIGH_USD: 3.49 },
+          webPriceByRegion: { IN_INR: 89, OTHER_USD: 3.49 },
+          appPriceByRegion: { IN_INR: 89, OTHER_USD: 3.49 },
+          discountCompareToApp: 0,
           storageBytes: 0,
           liveMinutes: 120,
           isActive: true,
@@ -294,7 +325,9 @@ export const getPlans = async (req: Request, res: Response) => {
           addonId: 'addon_live_300m',
           name: '+5 Hours Live Feature Booster',
           type: 'live_minutes',
-          priceByRegion: { IN_INR: 199, LOW_USD: 3.99, HIGH_USD: 7.99 },
+          webPriceByRegion: { IN_INR: 199, OTHER_USD: 7.99 },
+          appPriceByRegion: { IN_INR: 199, OTHER_USD: 7.99 },
+          discountCompareToApp: 0,
           storageBytes: 0,
           liveMinutes: 300,
           isActive: true,
@@ -372,8 +405,14 @@ export const getPlans = async (req: Request, res: Response) => {
 
     let dynamicSavePercent = 35; // fallback
     if (monthlyPlan && yearlyPlan) {
-      const mPrice = monthlyPlan.priceByRegion[resolvedRegion as keyof typeof monthlyPlan.priceByRegion] || monthlyPlan.priceByRegion.HIGH_USD;
-      const yPrice = yearlyPlan.priceByRegion[resolvedRegion as keyof typeof yearlyPlan.priceByRegion] || yearlyPlan.priceByRegion.HIGH_USD;
+      const mPriceSource = resolvedPlatform === 'web'
+        ? ((monthlyPlan as any).webPriceByRegion || (monthlyPlan as any).priceByRegion || {})
+        : ((monthlyPlan as any).appPriceByRegion || (monthlyPlan as any).priceByRegion || {});
+      const yPriceSource = resolvedPlatform === 'web'
+        ? ((yearlyPlan as any).webPriceByRegion || (yearlyPlan as any).priceByRegion || {})
+        : ((yearlyPlan as any).appPriceByRegion || (yearlyPlan as any).priceByRegion || {});
+      const mPrice = resolvedRegion === 'IN_INR' ? (mPriceSource.IN_INR ?? 299) : (mPriceSource.OTHER_USD ?? mPriceSource.HIGH_USD ?? 9.99);
+      const yPrice = resolvedRegion === 'IN_INR' ? (yPriceSource.IN_INR ?? 2000) : (yPriceSource.OTHER_USD ?? yPriceSource.HIGH_USD ?? 49.99);
       const annualizedMonthly = mPrice * 12;
       if (annualizedMonthly > 0 && yPrice < annualizedMonthly) {
         dynamicSavePercent = Math.round(((annualizedMonthly - yPrice) / annualizedMonthly) * 100);
@@ -385,7 +424,12 @@ export const getPlans = async (req: Request, res: Response) => {
     const cleanLang = rawLang.split(',')[0].split('-')[0].trim().toLowerCase();
 
     const formattedPlans = visiblePlans.map((p: any) => {
-      const price = p.priceByRegion[resolvedRegion as keyof typeof p.priceByRegion] || p.priceByRegion.HIGH_USD;
+      const priceSource = resolvedPlatform === 'web'
+        ? (p.webPriceByRegion || p.priceByRegion || {})
+        : (p.appPriceByRegion || p.priceByRegion || {});
+      const price = resolvedRegion === 'IN_INR'
+        ? (priceSource.IN_INR ?? 299)
+        : (priceSource.OTHER_USD ?? priceSource.HIGH_USD ?? 9.99);
       const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
       const durationMinutes = p.planDurationValueInMinute || (p.dayLimit ? p.dayLimit * 1440 : (p.type === 'yearly' ? 525600 : (p.type === '6_months' || p.type === 'half_yearly' ? 259200 : 43200)));
       const days = Math.round(durationMinutes / 1440);
@@ -440,11 +484,19 @@ export const getPlans = async (req: Request, res: Response) => {
         region: resolvedRegion,
         billingCycleText,
         dynamicSavePercent: discountPercen,
+        webPriceByRegion: p.webPriceByRegion,
+        appPriceByRegion: p.appPriceByRegion,
+        discountCompareToApp: typeof p.discountCompareToApp === 'number' ? p.discountCompareToApp : 0,
       };
     });
 
-    const formattedAddons = addons.map((a) => {
-      const price = a.priceByRegion[resolvedRegion as keyof typeof a.priceByRegion] || a.priceByRegion.HIGH_USD;
+    const formattedAddons = addons.map((a: any) => {
+      const priceSource = resolvedPlatform === 'web'
+        ? (a.webPriceByRegion || a.priceByRegion || {})
+        : (a.appPriceByRegion || a.priceByRegion || {});
+      const price = resolvedRegion === 'IN_INR'
+        ? (priceSource.IN_INR ?? 99)
+        : (priceSource.OTHER_USD ?? priceSource.HIGH_USD ?? 3.99);
       const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
       const storageGB = a.storageBytes ? Math.round(a.storageBytes / (1024 * 1024 * 1024)) : 0;
       // Read localized addon name from DB field; fall back to static dict then base name
@@ -456,6 +508,9 @@ export const getPlans = async (req: Request, res: Response) => {
         currency,
         storageGB,
         region: resolvedRegion,
+        webPriceByRegion: a.webPriceByRegion,
+        appPriceByRegion: a.appPriceByRegion,
+        discountCompareToApp: typeof a.discountCompareToApp === 'number' ? a.discountCompareToApp : 0,
       };
     });
 
@@ -577,6 +632,7 @@ export const getPlans = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       region: resolvedRegion,
+      platform: resolvedPlatform,
       detectedCountry: rawParam,
       countryListsByRegion,
       dynamicSavePercent,
@@ -590,344 +646,21 @@ export const getPlans = async (req: Request, res: Response) => {
       hasQueuedPlan,
       queuedPlan,
       activePlanExpireAt,
+      gstEnabled: options.gstEnabled === true,
+      gstRatePercent: Number(options.gstRatePercent) || 18,
+      gstin: options.gstin || '',
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
   }
 };
 
-export const subscribe = async (req: Request, res: Response) => {
-  try {
-    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
-    if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
-
-    const { planId, idempotencyKey, txnId, region, selectedStorageAddonId, selectedLiveAddonId, allowStorageTrim } = req.body;
-    if (!planId) return res.status(400).json({ success: false, message: 'planId is required' });
-
-    // Check idempotency
-    if (idempotencyKey) {
-      const existing = await Subscription.findOne({ parentUserId, idempotencyKey });
-      if (existing) {
-        return res.json({ success: true, subscription: existing, message: 'Subscription processed' });
-      }
-    }
-
-    const plan = await Plan.findOne({ planId, isActive: true });
-    if (!plan) return res.status(404).json({ success: false, message: 'Plan not found' });
-
-    const options = await ConfigService.getMergedOptions();
-    const resolvedRegion = region || 'HIGH_USD';
-    const price = plan.priceByRegion[resolvedRegion as keyof typeof plan.priceByRegion] || plan.priceByRegion.HIGH_USD;
-    const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
-
-    const defaultDaysByType = (plan.type === 'yearly' ? 365 : (plan.type === '6_months' || plan.type === 'half_yearly' ? 180 : 30));
-    const durationMinutes = plan.planDurationValueInMinute || ((plan as any).durationValue > 0 ? (plan as any).durationValue * 1440 : (((plan as any).dayLimit || defaultDaysByType) * 1440));
-    const durationDays = Math.round(durationMinutes / 1440);
-    const durationMs = durationMinutes * 60 * 1000;
-    const durVal = durationMinutes;
-    const durUnit = 'minutes';
-    const graceTimeInMinute = plan.graceTimeInMinute || 4320;
-    const graceMs = graceTimeInMinute * 60 * 1000;
-
-    const liveLimitPerDay = plan.liveLimitPerDayInMinutes || (plan as any).liveLimitPerDay || 60;
-    const liveMinutesTotal = plan.liveLimitTotalInMinute || (plan as any).liveMinutesTotal || (liveLimitPerDay * durationDays);
-
-    const planSnapshot = {
-      planId: plan.planId,
-      name: plan.name,
-      type: plan.type,
-      price,
-      storageBytes: plan.storageBytes,
-      liveMinutesTotal,
-      liveLimitTotalInMinute: liveMinutesTotal,
-      liveLimitPerDay,
-      liveLimitPerDayInMinutes: liveLimitPerDay,
-      liveSessionMaxMin: options.liveSessionMaxMin || 5,
-      deviceLimit: plan.deviceLimit,
-      dayLimit: durationDays,
-      planDurationValueInMinute: durationMinutes,
-      planDurationUnit: plan.planDurationUnit || 'minutes',
-      graceTimeInMinute,
-      planPriceDiscountPercen: plan.planPriceDiscountPercen || 0,
-      durationMs,
-      graceDays: Math.ceil(graceTimeInMinute / 1440),
-      storageWarnPercent: options.storageWarnDialogPercent || options.storageWarnNotificationPercent || 80,
-      features: plan.features,
-      isAllowSocialAppChatHistory: (plan as any).isAllowSocialAppChatHistory ?? false,
-    };
-
-    // Check optional add-ons bought in this transaction
-    let storageAddonDoc: any = null;
-    let liveAddonDoc: any = null;
-    if (selectedStorageAddonId) {
-      storageAddonDoc = await AddonPlan.findOne({ addonId: selectedStorageAddonId, isActive: true });
-    }
-    if (selectedLiveAddonId) {
-      liveAddonDoc = await AddonPlan.findOne({ addonId: selectedLiveAddonId, isActive: true });
-    }
-
-    // ════════════════════════════════════════════════════════════
-    // STORAGE DOWNGRADE VALIDATION (PART 3)
-    // ════════════════════════════════════════════════════════════
-    const newAllowedStorage = (plan.storageBytes || 10737418240) + (storageAddonDoc?.storageBytes || 0);
-    const currentUsageDoc = await StorageAccountingService.getStorageUsage(parentUserId);
-    const currentUsedBytes = currentUsageDoc?.totalBytes || 0;
-
-    if (newAllowedStorage < currentUsedBytes && allowStorageTrim !== true) {
-      return res.status(400).json({
-        success: false,
-        code: 'STORAGE_DOWNGRADE_NEEDS_CONFIRM',
-        message: 'Plan storage limit is smaller than current data usage. Confirmation required to trim oldest excess data.',
-        usedBytes: currentUsedBytes,
-        allowedBytes: newAllowedStorage,
-        excessBytes: currentUsedBytes - newAllowedStorage,
-      });
-    }
-
-    // Check current subscription for active status & advance queueing (§5 Jio-style)
-    // Only queue if user is on an ACTIVE PAID plan. If currently on Trial, activate immediately!
-    const currentSub = await Subscription.findOne({ parentUserId });
-    const now = new Date();
-    const isRealPlanActive = currentSub && currentSub.status === 'active' && !currentSub.isTrial && currentSub.expireAt > now;
-
-    const generatedTxnId = txnId || `txn_${Date.now()}`;
-
-    if (isRealPlanActive) {
-      // ════════════════════════════════════════════════════════════
-      // ENFORCE SINGLE QUEUED PLAN LIMIT (Option 1)
-      // Block further advance plan purchases if 1 is already queued
-      // ════════════════════════════════════════════════════════════
-      if (currentSub.queuedPlan && (currentSub.queuedPlan as any).planSnapshot) {
-        const qName = (currentSub.queuedPlan as any).planSnapshot.name || 'Upcoming Plan';
-        const expireStr = currentSub.expireAt ? currentSub.expireAt.toISOString().split('T')[0] : '';
-        return res.status(400).json({
-          success: false,
-          code: 'ADVANCE_PLAN_ALREADY_QUEUED',
-          message: `An advance plan (${qName}) is already queued to activate after current plan expires on ${expireStr}. Only 1 advance plan is allowed in queue.`,
-        });
-      }
-
-      // ════════════════════════════════════════════════════════════
-      // ADVANCE / QUEUED PLAN (§5)
-      // Queued to activate automatically after current validity ends
-      // ════════════════════════════════════════════════════════════
-      const queuedPlanData: any = {
-        planSnapshot,
-        durationDays,
-        durationMs,
-        txnId: generatedTxnId,
-        region: resolvedRegion,
-        purchasedAt: now,
-        allowStorageTrim: Boolean(allowStorageTrim),
-      };
-
-      if (storageAddonDoc) {
-        const sPrice = storageAddonDoc.priceByRegion[resolvedRegion as keyof typeof storageAddonDoc.priceByRegion] || storageAddonDoc.priceByRegion.HIGH_USD;
-        queuedPlanData.storageAddon = {
-          addonId: storageAddonDoc.addonId,
-          name: storageAddonDoc.name,
-          storageBytes: storageAddonDoc.storageBytes,
-          price: sPrice,
-        };
-      }
-
-      if (liveAddonDoc) {
-        const lPrice = liveAddonDoc.priceByRegion[resolvedRegion as keyof typeof liveAddonDoc.priceByRegion] || liveAddonDoc.priceByRegion.HIGH_USD;
-        queuedPlanData.liveAddon = {
-          addonId: liveAddonDoc.addonId,
-          name: liveAddonDoc.name,
-          liveMinutes: liveAddonDoc.liveMinutes,
-          price: lPrice,
-        };
-      }
-
-      currentSub.queuedPlan = queuedPlanData;
-      if (storageAddonDoc) currentSub.lastPurchasedStorageAddonId = storageAddonDoc.addonId;
-      if (liveAddonDoc) currentSub.lastPurchasedLiveAddonId = liveAddonDoc.addonId;
-      await currentSub.save();
-
-      // Record in Orders Collection
-      await Order.create({
-        parentUserId,
-        type: 'plan',
-        planId: plan.planId,
-        planLabel: `${plan.name} (Advance Queued)`,
-        amount: price,
-        currency,
-        validityStart: currentSub.expireAt,
-        validityEnd: new Date(currentSub.expireAt.getTime() + durationMs),
-        txnId: generatedTxnId,
-        status: 'queued',
-        metadata: { region: resolvedRegion, queued: true, parentTxnId: generatedTxnId, durVal, durUnit, durationMs },
-      });
-
-      if (storageAddonDoc) {
-        const sPrice = storageAddonDoc.priceByRegion[resolvedRegion as keyof typeof storageAddonDoc.priceByRegion] || storageAddonDoc.priceByRegion.HIGH_USD;
-        await Order.create({
-          parentUserId,
-          type: 'storage_addon',
-          addonId: storageAddonDoc.addonId,
-          planLabel: `${storageAddonDoc.name} (Advance Queued)`,
-          amount: sPrice,
-          currency,
-          validityStart: currentSub.expireAt,
-          validityEnd: new Date(currentSub.expireAt.getTime() + durationMs),
-          txnId: `${generatedTxnId}_s_addon`,
-          status: 'queued',
-          metadata: { parentTxnId: generatedTxnId, region: resolvedRegion, addonType: 'storage' },
-        });
-      }
-
-      if (liveAddonDoc) {
-        const lPrice = liveAddonDoc.priceByRegion[resolvedRegion as keyof typeof liveAddonDoc.priceByRegion] || liveAddonDoc.priceByRegion.HIGH_USD;
-        await Order.create({
-          parentUserId,
-          type: 'live_addon',
-          addonId: liveAddonDoc.addonId,
-          planLabel: `${liveAddonDoc.name} (Advance Queued)`,
-          amount: lPrice,
-          currency,
-          validityStart: currentSub.expireAt,
-          validityEnd: new Date(currentSub.expireAt.getTime() + durationMs),
-          txnId: `${generatedTxnId}_l_addon`,
-          status: 'queued',
-          metadata: { parentTxnId: generatedTxnId, region: resolvedRegion, addonType: 'live_minutes' },
-        });
-      }
-
-      const subDeviceId1 = String(req.headers['x-device-id'] || req.headers['device-id'] || req.body?.deviceId || '').trim();
-      const subEmail1 = String((req as any).user?.email || '').trim().toLowerCase();
-      recordTrialOrPlanUsage(parentUserId, (req as any).user?.phoneNumber, subDeviceId1, subEmail1).catch(() => {});
-      return res.json({
-        success: true,
-        isQueued: true,
-        subscription: currentSub,
-        message: `Your new ${plan.name} has been queued! It will start automatically after your current plan expires on ${currentSub.expireAt.toISOString().split('T')[0]}.`,
-      });
-    }
-
-    // ════════════════════════════════════════════════════════════
-    // IMMEDIATE ACTIVATION / RENEWAL
-    // ════════════════════════════════════════════════════════════
-    const startAt = now;
-    const expireAt = new Date(startAt.getTime() + durationMs);
-    const graceEndsAt = new Date(expireAt.getTime() + graceMs);
-
-    let initialAddonStorage = 0;
-    let initialAddonLivePool = 0;
-    if (storageAddonDoc) {
-      initialAddonStorage = storageAddonDoc.storageBytes || 0;
-    }
-    if (liveAddonDoc) {
-      initialAddonLivePool = liveAddonDoc.liveMinutes || 0;
-    }
-
-    const subscription = await Subscription.findOneAndUpdate(
-      { parentUserId },
-      {
-        parentUserId,
-        status: 'active',
-        planSnapshot,
-        planLiveMinutesUsed: 0,
-        liveTotalLimitNotified: false,
-        addonStorageBytes: initialAddonStorage,
-        addonLiveMinutesPool: initialAddonLivePool,
-        ...(storageAddonDoc ? { lastPurchasedStorageAddonId: storageAddonDoc.addonId } : {}),
-        ...(liveAddonDoc ? { lastPurchasedLiveAddonId: liveAddonDoc.addonId } : {}),
-        queuedPlan: undefined,
-        startAt,
-        expireAt,
-        graceEndsAt,
-        txnId: generatedTxnId,
-        idempotencyKey,
-        region: resolvedRegion,
-        isTrial: false,
-      },
-      { upsert: true, new: true }
-    );
-
-    // If storage downgrade was confirmed, trim oldest excess data immediately
-    if (allowStorageTrim && newAllowedStorage < currentUsedBytes) {
-      await StorageDeleteService.trimOldestExcessStorage(parentUserId, newAllowedStorage);
-    }
-
-    // Record in Orders Collection
-    await Order.create({
-      parentUserId,
-      type: 'plan',
-      planId: plan.planId,
-      planLabel: plan.name,
-      amount: price,
-      currency,
-      validityStart: startAt,
-      validityEnd: expireAt,
-      txnId: generatedTxnId,
-      status: 'completed',
-      metadata: { region: resolvedRegion, parentTxnId: generatedTxnId, durVal, durUnit, durationMs },
-    });
-
-    if (storageAddonDoc) {
-      const sPrice = storageAddonDoc.priceByRegion[resolvedRegion as keyof typeof storageAddonDoc.priceByRegion] || storageAddonDoc.priceByRegion.HIGH_USD;
-      await Order.create({
-        parentUserId,
-        type: 'storage_addon',
-        addonId: storageAddonDoc.addonId,
-        planLabel: storageAddonDoc.name,
-        amount: sPrice,
-        currency,
-        validityStart: startAt,
-        validityEnd: expireAt,
-        txnId: `${generatedTxnId}_s_addon`,
-        status: 'completed',
-        metadata: { parentTxnId: generatedTxnId, region: resolvedRegion, addonType: 'storage' },
-      });
-    }
-
-    if (liveAddonDoc) {
-      const lPrice = liveAddonDoc.priceByRegion[resolvedRegion as keyof typeof liveAddonDoc.priceByRegion] || liveAddonDoc.priceByRegion.HIGH_USD;
-      await Order.create({
-        parentUserId,
-        type: 'live_addon',
-        addonId: liveAddonDoc.addonId,
-        planLabel: liveAddonDoc.name,
-        amount: lPrice,
-        currency,
-        validityStart: startAt,
-        validityEnd: expireAt,
-        txnId: `${generatedTxnId}_l_addon`,
-        status: 'completed',
-        metadata: { parentTxnId: generatedTxnId, region: resolvedRegion, addonType: 'live_minutes' },
-      });
-    }
-
-    // Signal child devices via FCM to resume / upload held grace data (§6 & §7)
-    const devices = await Device.find({ parentUserId });
-    for (const d of devices) {
-      // Socket path: instant resume for an online child regardless of fcmToken presence.
-      try {
-        getSignalingIo()?.to(d.deviceId).emit('remote-command', {
-          command: 'SUBSCRIPTION_RESUME',
-          action: 'RESUME_AND_UPLOAD',
-          deviceId: d.deviceId,
-          status: 'active',
-        });
-      } catch (_) {}
-      if (d.fcmToken) {
-        await sendFcmDataCommand(d.fcmToken, 'SUBSCRIPTION_RESUME', {
-          status: 'active',
-          expireAt: expireAt.toISOString(),
-          graceEndsAt: graceEndsAt.toISOString(),
-        }).catch(() => {});
-      }
-    }
-
-    const subDeviceId2 = String(req.headers['x-device-id'] || req.headers['device-id'] || req.body?.deviceId || '').trim();
-    const subEmail2 = String((req as any).user?.email || '').trim().toLowerCase();
-    recordTrialOrPlanUsage(parentUserId, (req as any).user?.phoneNumber, subDeviceId2, subEmail2).catch(() => {});
-    return res.json({ success: true, isQueued: false, subscription });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, message: err?.message });
-  }
+export const subscribe = async (_req: Request, res: Response) => {
+  return res.status(410).json({
+    success: false,
+    code: 'ENDPOINT_DEPRECATED',
+    message: 'Direct unverified subscription is no longer permitted. Please use /payment/razorpay/* (web) or /payment/google/* (app).',
+  });
 };
 
 export const activateTrial = async (req: Request, res: Response) => {
@@ -1190,66 +923,12 @@ export const activateTrial = async (req: Request, res: Response) => {
   }
 };
 
-export const purchaseAddon = async (req: Request, res: Response) => {
-  try {
-    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
-    if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
-
-    const { addonId, region } = req.body;
-    const addon = await AddonPlan.findOne({ addonId, isActive: true });
-    if (!addon) return res.status(404).json({ success: false, message: 'Addon plan not found' });
-
-    const subscription = await Subscription.findOne({ parentUserId });
-    const now = new Date();
-    if (!subscription || subscription.status === 'expired' || subscription.status === 'grace' || subscription.isTrial || subscription.planSnapshot?.type === 'trial' || (subscription.expireAt && subscription.expireAt < now)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Add-on boosters are only available on an active paid plan. Please purchase or renew a subscription plan first.',
-      });
-    }
-
-    const resolvedRegion = region || subscription.region || 'HIGH_USD';
-    const price = addon.priceByRegion[resolvedRegion as keyof typeof addon.priceByRegion] || addon.priceByRegion.HIGH_USD;
-    const currency = resolvedRegion === 'IN_INR' ? '₹' : '$';
-
-    if (addon.type === 'live_minutes') {
-      subscription.addonLiveMinutesPool = (subscription.addonLiveMinutesPool || 0) + (addon.liveMinutes || 0);
-      subscription.lastPurchasedLiveAddonId = addon.addonId;
-      subscription.addonLiveExhaustedNotified = false;
-    } else {
-      subscription.addonStorageBytes = (subscription.addonStorageBytes || 0) + (addon.storageBytes || 0);
-      subscription.lastPurchasedStorageAddonId = addon.addonId;
-    }
-    await subscription.save();
-
-    const txnId = `txn_addon_${Date.now()}`;
-    await Order.create({
-      parentUserId,
-      type: addon.type === 'live_minutes' ? 'live_addon' : 'storage_addon',
-      addonId: addon.addonId,
-      planLabel: addon.name,
-      amount: price,
-      currency,
-      validityStart: subscription.startAt || now,
-      validityEnd: subscription.expireAt,
-      txnId,
-      status: 'completed',
-    });
-
-    const label = addon.type === 'live_minutes'
-      ? `+${addon.liveMinutes} Live Feature Minutes`
-      : `+${Math.round(addon.storageBytes / (1024 * 1024 * 1024))} GB Storage`;
-
-    const formattedExpiry = subscription.expireAt ? subscription.expireAt.toISOString().split('T')[0] : 'plan expiry';
-
-    return res.json({
-      success: true,
-      subscription,
-      message: `Successfully added ${label} booster. Booster is valid until main plan expiry on ${formattedExpiry}.`,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, message: err?.message });
-  }
+export const purchaseAddon = async (_req: Request, res: Response) => {
+  return res.status(410).json({
+    success: false,
+    code: 'ENDPOINT_DEPRECATED',
+    message: 'Direct unverified add-on purchase is no longer permitted. Please use /payment/razorpay/* (web) or /payment/google/* (app).',
+  });
 };
 
 export const getSubscriptionStatus = async (req: Request, res: Response) => {
@@ -1751,7 +1430,7 @@ export const deleteAccount = async (req: Request, res: Response) => {
         }
       }
       await Promise.allSettled(ledgerPromises);
-      console.log(`[DELETE-ACCOUNT] Permanently preserved trial prevention in TrialLedger for: email=${emailFilter}, phone=${phoneFilter}, devices=${deviceIds.length}`);
+      console.log(`[DELETE-ACCOUNT] Permanently preserved trial prevention in TrialLedger for parent hash=${hashId(parentUserId)}, devices=${deviceIds.length}`);
     } catch (e: any) {
       console.warn('[DELETE-ACCOUNT] TrialLedger preserve warning:', e?.message);
     }
@@ -1765,7 +1444,7 @@ export const deleteAccount = async (req: Request, res: Response) => {
       }).select('firebaseUid email').lean();
       const fbUids = Array.from(new Set(usersToDelete.map((u: any) => u.firebaseUid).filter(Boolean))) as string[];
       const fbEmails = Array.from(new Set([user?.email, ...usersToDelete.map((u: any) => u.email)].filter(Boolean))) as string[];
-      console.log('[DELETE-ACCOUNT] users found:', usersToDelete.length, '| uids:', JSON.stringify(fbUids), '| emails:', JSON.stringify(fbEmails));
+      console.log('[DELETE-ACCOUNT] users found:', usersToDelete.length, '| uids count:', fbUids.length, '| emails count:', fbEmails.length);
       await Promise.all([
         ...fbUids.map((uid) => deleteFirebaseUser(uid)),
         ...fbEmails.map((em) => deleteFirebaseUserByEmail(em)),
