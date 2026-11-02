@@ -18,7 +18,8 @@ import { LocationLog } from '../models/LocationLog';
 import { DrivingTrip } from '../models/DrivingTrip';
 import { KeyboardLog } from '../models/KeyboardLog';
 import { ChatMessage } from '../models/ChatMessage';
-import { Device } from '../models/Device';
+import { Device, enrichDeviceWithOnlineStatus } from '../models/Device';
+import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { shouldSendAlertShared } from './device.controller';
 import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl } from '../services/r2.service';
 import { config } from '../config/env';
@@ -32,6 +33,8 @@ import { ConfigService } from '../services/ConfigService';
 export const checkQuotaBlocked = async (deviceId: string): Promise<boolean> => {
   try {
     const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+
+
     if (!parentUserId) return false;
     const sub = await Subscription.findOne({ parentUserId });
     // Block uploads if no subscription, expired, or in grace period (grace is local only)
@@ -126,6 +129,32 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     }
 
     const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+
+    // Live Push Status & Permissions (match Flutter parity, minimal, idempotent, no-PII)
+    try {
+      const io = getSignalingIo();
+      if (io && device) {
+        const enriched = enrichDeviceWithOnlineStatus(typeof (device as any).toObject === 'function' ? (device as any).toObject() : device);
+        const statusPayload = {
+          deviceId: device.deviceId,
+          isOnline: enriched.isOnline,
+          batteryLevel: device.batteryLevel,
+          isCharging: device.isCharging,
+          appRemoved: enriched.appRemoved,
+          grantedPermissions: device.grantedPermissions,
+          isCriticalPermissionsOff: enriched.isCriticalPermissionsOff,
+          disabledPermissionsCount: enriched.disabledPermissionsCount,
+          disabledPermissionsList: enriched.disabledPermissionsList,
+          lastSeen: enriched.lastSeen,
+          lastSeenAt: enriched.lastSeenAt,
+        };
+        io.to(device.deviceId).emit('device-status-changed', statusPayload);
+        if (parentUserId) {
+          io.to(`parent_${parentUserId}`).emit('device-status-changed', statusPayload);
+          io.to(`user_${parentUserId}`).emit('device-status-changed', statusPayload);
+        }
+      }
+    } catch (_) {}
     let uploadBlocked = false;
     let isExpired = false;
     let isGrace = false;

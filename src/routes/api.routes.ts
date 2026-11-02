@@ -175,7 +175,7 @@ import {
 } from '../controllers/internet.controller';
 import { authenticateJwt, authenticateDevice, optionalAuthenticateJwt } from '../middleware/auth';
 import { verifyDeviceOwnership } from '../middleware/ownership';
-import { getRemoteConfig } from '../controllers/config.controller';
+import { getRemoteConfig, getPermissionCatalog } from '../controllers/config.controller';
 import {
   getStorageStatus,
   purchasePlan,
@@ -190,6 +190,7 @@ router.use('/', recordingRoutes);
 // Remote Dynamic Config & optionAPI Route
 router.get('/config/remote', getRemoteConfig);
 router.get('/config/options', getOptionsConfig);
+router.get('/config/permission-catalog', getPermissionCatalog);
 
 // Online Payment Routes (Razorpay for Web, Google Play for App)
 router.post('/payment/razorpay/create', authenticateJwt, createRazorpayPayment);

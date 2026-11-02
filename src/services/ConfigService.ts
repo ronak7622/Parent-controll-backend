@@ -354,31 +354,59 @@ export const DEFAULT_OPTIONS = {
   allowDeveloperModeOnParentApp: false,
   allowDeveloperModeOnChildApp: false,
 
-  // Permanent Demo Media Assets (CDN backed by GitHub, 100% independent of local server)
-  demoLiveVideoUrl: 'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/livevideo1.mp4',
-  demoLiveAudioUrl: 'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/call_recording1.mp3',
-  demoLiveMirrorUrl: 'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenmirror1.mp4',
-  demoVideos: [
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/livevideo1.mp4',
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/recordvid1.mp4',
+  // Permanent Demo Media Assets (Cloudflare R2, public CDN)
+  demoLiveVideoUrl: 'https://demo.childprotect.info/video/livevideo1.mp4', // 10s
+  demoLiveAudioUrl: 'https://demo.childprotect.info/audio/audio1.mp3', // 39s
+  demoLiveMirrorUrl: 'https://demo.childprotect.info/video/screenmirror1.mp4', // 10s
+
+  demoVideos: [ // Record Video list (camera recordings)
+    'https://demo.childprotect.info/video/livevideo1.mp4', // 10s
+    'https://demo.childprotect.info/video/livevideo2.mp4', // 10s
   ],
-  demoAudios: [
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/call_recording1.mp3',
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/call_recording2.mp3',
+  demoScreenVideos: [ // Record Screen list
+    'https://demo.childprotect.info/video/screenmirror1.mp4', // 10s
+    'https://demo.childprotect.info/video/screenmirror2.mp4', // 10s
   ],
-  demoScreenVideos: [
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenmirror1.mp4',
+  demoAudios: [ // Record Audio list AND call-recording playback source
+    'https://demo.childprotect.info/audio/audio1.mp3', // 39s
+    'https://demo.childprotect.info/audio/audio2.mp3', // 42s
   ],
-  demoPictures: [
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot1.png',
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot2.png',
+
+  demoScreenshots: [ // Screenshots gallery (general)
+    'https://demo.childprotect.info/image/chrome1.jpg',
+    'https://demo.childprotect.info/image/whatsapp1.jpg',
+    'https://demo.childprotect.info/image/whatsapp2.jpg',
+    'https://demo.childprotect.info/image/whatsapp3.jpg',
+    'https://demo.childprotect.info/image/youtube1.jpg',
+    'https://demo.childprotect.info/image/snap1.jpg',
+    'https://demo.childprotect.info/image/snap2.jpg',
+    'https://demo.childprotect.info/image/insta1.jpg',
+    'https://demo.childprotect.info/image/insta2.jpg',
+    'https://demo.childprotect.info/image/facebook1.jpg',
   ],
-  demoScreenshots: [
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot1.png',
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot2.png',
+
+  // NEW — per social app activity screenshots
+  demoFacebookScreenshot: ['https://demo.childprotect.info/image/facebook1.jpg'],
+  demoInstagramScreenshot: [
+    'https://demo.childprotect.info/image/insta1.jpg',
+    'https://demo.childprotect.info/image/insta2.jpg',
   ],
-  demoKeywordScreenshots: [
-    'https://cdn.jsdelivr.net/gh/ronak7622/Parent-controll-backend@main/public/demo-media/screenshot1.png',
+  demoSnapchatScreenshot: [
+    'https://demo.childprotect.info/image/snap1.jpg',
+    'https://demo.childprotect.info/image/snap2.jpg',
+  ],
+  demoMessengerScreenshot: ['https://demo.childprotect.info/image/facebook1.jpg'],
+  demoWhatsappScreenshot: [
+    'https://demo.childprotect.info/image/whatsapp1.jpg',
+    'https://demo.childprotect.info/image/whatsapp2.jpg',
+    'https://demo.childprotect.info/image/whatsapp3.jpg',
+  ],
+
+  // NEW — keyword tracker (image URLs; keyword/app/time metadata lives in client demo data per mapping)
+  demoKeywordTraker: [
+    'https://demo.childprotect.info/image/whatsapp2.jpg', // keyword "love you" · WhatsApp
+    'https://demo.childprotect.info/image/chrome1.jpg', // keyword "drugs" · Chrome
+    'https://demo.childprotect.info/image/insta2.jpg', // keyword "College" · Instagram
   ],
 };
 
@@ -395,37 +423,44 @@ export class ConfigService {
     }
 
     try {
-      // Purge legacy key documents if present in Mongo
+      // Purge legacy key documents and corrupted character-indexed demo docs from Mongo
       await Config.deleteMany({
-        key: {
-          $in: [
-            'permissionGuides',
-            'manualScreenshotDefaultQuality',
-            'keywordTrackerScreenshotDefaultQuality',
-            'manualScreenshotQualityOptions',
-            'keywordTrackerScreenshotQualityOptions',
-            'defaultAutoDeleteDays',
-            'defaultGraceHours',
-            'graceHoursOptions',
-            'graceDays',
-            'storageBackupAfterExpirPlan',
-            'planValidityExpireNotificationIntervalMin',
-            'testPlanPhones',
-            'testPlanEmails',
-            'expringSoonWarNotificationBeforeDay',
-            'expringSoonWarNotificationInterval',
-            'expringSoonWarDialogBeforeDay',
-            'expringSoonWarDialogInterval',
-            'expredWarNotificationAfterDay',
-            'expredWarNotificationInterval',
-            'expredWarDialogAfterDay',
-            'expredWarDialogInterval',
-            'storageWarnPercent',
-            'storageWarnNotificationIntervalMin',
-            'storageWarnPercentForDialog',
-            'storageWarnIntervalForDialog',
-          ],
-        },
+        $or: [
+          {
+            key: {
+              $in: [
+                'permissionGuides',
+                'manualScreenshotDefaultQuality',
+                'keywordTrackerScreenshotDefaultQuality',
+                'manualScreenshotQualityOptions',
+                'keywordTrackerScreenshotQualityOptions',
+                'defaultAutoDeleteDays',
+                'defaultGraceHours',
+                'graceHoursOptions',
+                'graceDays',
+                'storageBackupAfterExpirPlan',
+                'planValidityExpireNotificationIntervalMin',
+                'testPlanPhones',
+                'testPlanEmails',
+                'expringSoonWarNotificationBeforeDay',
+                'expringSoonWarNotificationInterval',
+                'expringSoonWarDialogBeforeDay',
+                'expringSoonWarDialogInterval',
+                'expredWarNotificationAfterDay',
+                'expredWarNotificationInterval',
+                'expredWarDialogAfterDay',
+                'expredWarDialogInterval',
+                'storageWarnPercent',
+                'storageWarnNotificationIntervalMin',
+                'storageWarnPercentForDialog',
+                'storageWarnIntervalForDialog',
+                'demoPictures',
+                'demoKeywordScreenshots',
+              ],
+            },
+          },
+          { key: /^demo/ },
+        ],
       });
 
 

@@ -136,6 +136,7 @@ export const checkPairingStatus = async (req: any, res: Response) => {
         deviceBrand: brand,
         deviceModel: model,
         parentUid: targetDevice.parentUserId ? targetDevice.parentUserId.toString() : 'parent',
+        grantedPermissions: targetDevice.grantedPermissions || {},
       });
     }
 

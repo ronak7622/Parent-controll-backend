@@ -60,3 +60,169 @@ export const getRemoteConfig = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+export interface PermissionCatalogItem {
+  key: string;
+  label: string;
+  description: string;
+  emoji: string;
+  critical: boolean;
+  androidOnly?: boolean;
+  isProtectionToggle?: boolean;
+}
+
+export const CANONICAL_PERMISSION_CATALOG: PermissionCatalogItem[] = [
+  {
+    key: 'ACCESSIBILITY',
+    label: 'Accessibility Service',
+    description: 'Core protection, keystroke logging, app lock',
+    emoji: '♿',
+    critical: true,
+    androidOnly: true,
+  },
+  {
+    key: 'DEVICE_ADMIN',
+    label: 'Device Administrator',
+    description: 'Anti-uninstall and anti-tamper security',
+    emoji: '🔒',
+    critical: true,
+    androidOnly: true,
+  },
+  {
+    key: 'LOCATION',
+    label: 'Background GPS Location',
+    description: 'Always-on precise GPS child tracking',
+    emoji: '📍',
+    critical: false,
+    androidOnly: false,
+  },
+  {
+    key: 'NOTIFICATION_ACCESS',
+    label: 'Notification Listener',
+    description: 'Capture incoming notifications and chats',
+    emoji: '🔔',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'USAGE_ACCESS',
+    label: 'App Usage Access',
+    description: 'Track screen time and app usage activity',
+    emoji: '📊',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'DISPLAY_OVER_APPS',
+    label: 'Display Over Other Apps',
+    description: 'Lock screen and app blocking overlays',
+    emoji: '🪟',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'SCREEN_CAPTURE',
+    label: 'Screen Capture',
+    description: 'Live screen monitoring and capture',
+    emoji: '📸',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'BACKGROUND_RUNNING',
+    label: 'Battery Optimization Disabled',
+    description: 'Keep child protection running continuously in background',
+    emoji: '🔋',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'MICROPHONE',
+    label: 'Microphone Access',
+    description: 'Real-time audio monitoring & environmental listening',
+    emoji: '🎙️',
+    critical: false,
+    androidOnly: false,
+  },
+  {
+    key: 'CAMERA',
+    label: 'Camera Access',
+    description: 'Live camera stream and remote snapshots',
+    emoji: '📷',
+    critical: false,
+    androidOnly: false,
+  },
+  {
+    key: 'CALL_LOG',
+    label: 'Call Logs',
+    description: 'Monitor incoming and outgoing call history',
+    emoji: '📞',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'CONTACTS',
+    label: 'Contacts Access',
+    description: 'Monitor address book and caller identification',
+    emoji: '👥',
+    critical: false,
+    androidOnly: false,
+  },
+  {
+    key: 'SMS',
+    label: 'SMS Messages',
+    description: 'Monitor incoming and outgoing text messages',
+    emoji: '💬',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'BATTERY_UNRESTRICTED',
+    label: 'Unrestricted Battery Usage',
+    description: 'Prevent OEM task killers from stopping protection',
+    emoji: '♾️',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'AUTOSTART',
+    label: 'OEM Autostart Protection',
+    description: 'Allow app to start automatically on system boot',
+    emoji: '🚀',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'LOCK_APP',
+    label: 'Lock App in Recent Tasks',
+    description: 'Prevent Clear All from killing protection',
+    emoji: '🔒',
+    critical: false,
+    androidOnly: true,
+  },
+  {
+    key: 'SECURE_OUR_APP',
+    label: 'Child App Tamper Protection',
+    description: 'Prevent unauthorized app stoppage or data clearing',
+    emoji: '🛡️',
+    critical: false,
+    androidOnly: true,
+    isProtectionToggle: true,
+  },
+  {
+    key: 'HIDE_APP',
+    label: 'Discreet App Icon',
+    description: 'Hide companion app icon from launcher',
+    emoji: '🕶️',
+    critical: false,
+    androidOnly: true,
+    isProtectionToggle: true,
+  },
+];
+
+export const getPermissionCatalog = async (req: Request, res: Response) => {
+  return res.json({
+    success: true,
+    permissions: CANONICAL_PERMISSION_CATALOG,
+  });
+};
