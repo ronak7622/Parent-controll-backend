@@ -6,3 +6,6 @@ dist/
 public/uploads/*
 !public/uploads/.gitkeep
 scratch/
+
+*.env.txt
+scratch_inspect.js

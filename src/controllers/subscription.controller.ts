@@ -1256,8 +1256,26 @@ export const getPurchaseHistory = async (req: Request, res: Response) => {
     for (const o of rawOrders) {
       if (o.status === 'queued' && o.validityStart && new Date(o.validityStart) <= now) {
         o.status = 'completed';
-        await Order.updateOne({ _id: o._id }, { $set: { status: 'completed' } }).catch(() => {});
+        (o as any).planStatus = 'active';
+        await Order.updateOne({ _id: o._id }, { $set: { status: 'completed', planStatus: 'active' } }).catch(() => {});
       }
+    }
+
+    // Backfill the two-part display statuses for legacy orders that pre-date these fields
+    const deriveStatuses = (st: string): { paymentStatus: string; planStatus: string } => {
+      switch (st) {
+        case 'completed':
+        case 'success': return { paymentStatus: 'paid', planStatus: 'active' };
+        case 'queued': return { paymentStatus: 'paid', planStatus: 'pending_to_active' };
+        case 'failed': return { paymentStatus: 'failed', planStatus: 'in_active' };
+        case 'refunded': return { paymentStatus: 'refunded', planStatus: 'in_active' };
+        default: return { paymentStatus: 'processing', planStatus: 'processing' };
+      }
+    };
+    for (const o of rawOrders) {
+      const d = deriveStatuses(o.status as any);
+      if (!(o as any).paymentStatus) (o as any).paymentStatus = d.paymentStatus;
+      if (!(o as any).planStatus) (o as any).planStatus = d.planStatus;
     }
 
     // Group addons under their respective parent plan

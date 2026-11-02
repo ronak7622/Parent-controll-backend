@@ -4,6 +4,8 @@ import { Subscription, ISubscription, IPlanSnapshot, IQueuedPlan } from '../mode
 import { Order, IOrder } from '../models/Order';
 import { Device } from '../models/Device';
 import { ConfigService } from './ConfigService';
+import { LiveUsage } from '../models/LiveUsage';
+import { LiveUsageService } from './LiveUsageService';
 import { StorageAccountingService } from './StorageAccountingService';
 import { StorageDeleteService } from './StorageDeleteService';
 import { sendFcmDataCommand } from './fcm.service';
@@ -251,6 +253,8 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
         {
           $set: {
             status: 'completed',
+            paymentStatus: 'paid',
+            planStatus: 'active',
             paymentProvider,
             providerOrderId,
             providerPaymentId,
@@ -269,6 +273,8 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
         {
           $set: {
             status: 'completed',
+            paymentStatus: 'paid',
+            planStatus: 'active',
             paymentProvider,
             providerOrderId,
             providerPaymentId,
@@ -293,6 +299,8 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
         validityEnd: updatedSub.expireAt,
         txnId,
         status: 'completed',
+        paymentStatus: 'paid',
+        planStatus: 'active',
         paymentProvider,
         providerOrderId,
         providerPaymentId,
@@ -370,6 +378,8 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
         {
           $set: {
             status: 'queued',
+            paymentStatus: 'paid',
+            planStatus: 'pending_to_active',
             paymentProvider,
             providerOrderId,
             providerPaymentId,
@@ -394,6 +404,8 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
         validityEnd: new Date(currentSub.expireAt.getTime() + durationMs),
         txnId,
         status: 'queued',
+        paymentStatus: 'paid',
+        planStatus: 'pending_to_active',
         paymentProvider,
         providerOrderId,
         providerPaymentId,
@@ -444,6 +456,9 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
 
   if (!updatedSub) throw new Error('Failed to save active subscription');
 
+  // Reset live usage on fresh plan activation/renewal so previous plan/trial usage starts fresh
+  await LiveUsage.deleteMany({ parentUserId }).catch(() => {});
+
   if (allowStorageTrim && newAllowedStorage < currentUsedBytes) {
     await StorageDeleteService.trimOldestExcessStorage(parentUserId, newAllowedStorage).catch(() => {});
   }
@@ -455,6 +470,8 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
       {
         $set: {
           status: 'completed',
+          paymentStatus: 'paid',
+          planStatus: 'active',
           paymentProvider,
           providerOrderId,
           providerPaymentId,
@@ -479,6 +496,8 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
       validityEnd: expireAt,
       txnId,
       status: 'completed',
+      paymentStatus: 'paid',
+      planStatus: 'active',
       paymentProvider,
       providerOrderId,
       providerPaymentId,

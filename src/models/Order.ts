@@ -18,6 +18,11 @@ export interface IOrder extends Document {
   providerSubscriptionId?: string;
   providerPurchaseToken?: string;
   failureReason?: string;
+  paymentStatus?: 'processing' | 'paid' | 'failed' | 'refunded';
+  planStatus?: 'in_active' | 'active' | 'processing' | 'pending_to_active';
+  activatesOn?: Date;
+  refundInfo?: { refundId?: string; amount?: number; at?: Date; reason?: string };
+  reconcileBy?: Date;
   autoRenew: boolean;
   baseAmount?: number;
   gstAmount?: number;
@@ -57,6 +62,24 @@ const OrderSchema: Schema = new Schema(
     providerSubscriptionId: { type: String },
     providerPurchaseToken: { type: String },
     failureReason: { type: String },
+    paymentStatus: {
+      type: String,
+      enum: ['processing', 'paid', 'failed', 'refunded'],
+      index: true,
+    },
+    planStatus: {
+      type: String,
+      enum: ['in_active', 'active', 'processing', 'pending_to_active'],
+      index: true,
+    },
+    activatesOn: { type: Date },
+    refundInfo: {
+      refundId: { type: String },
+      amount: { type: Number },
+      at: { type: Date },
+      reason: { type: String },
+    },
+    reconcileBy: { type: Date },
     autoRenew: { type: Boolean, default: false },
     baseAmount: { type: Number },
     gstAmount: { type: Number },
@@ -69,5 +92,6 @@ const OrderSchema: Schema = new Schema(
 
 OrderSchema.index({ parentUserId: 1, createdAt: -1 });
 OrderSchema.index({ parentUserId: 1, status: 1, createdAt: -1 });
+OrderSchema.index({ paymentStatus: 1, reconcileBy: 1 });
 
 export const Order = mongoose.model<IOrder>('Order', OrderSchema);

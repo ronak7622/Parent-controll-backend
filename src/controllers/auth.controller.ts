@@ -296,3 +296,16 @@ export const updateParentFcmToken = async (req: any, res: Response) => {
     return res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
 };
+
+// Clears the single-active-session so the NEXT login (same email, any platform)
+// goes straight through without the "active elsewhere" popup — unless a real session is still active.
+export const logout = async (req: any, res: Response) => {
+  try {
+    const userId = req.user?.userId || req.user?.id || req.user?._id;
+    if (userId) {
+      await cacheService.del(`user_session_${userId.toString()}`);
+      await User.findByIdAndUpdate(userId, { $set: { currentSessionId: null } });
+    }
+  } catch (_) {}
+  return res.status(200).json({ success: true });
+};

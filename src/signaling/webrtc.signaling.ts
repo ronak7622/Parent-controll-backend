@@ -72,7 +72,6 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
     const handleJoinRoom = async (data: any) => {
       const rawDeviceId = typeof data === 'string' ? data : (data?.deviceId || data);
       const role = typeof data === 'object' && data?.role ? data.role : 'unknown';
-      if (!rawDeviceId) return;
 
       // Extract auth from socket handshake or event payload fallback
       let auth = socket.data.auth;
@@ -91,6 +90,8 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
         socket.join(`user_${uid}`);
         socket.join(`parent_${uid}`);
       }
+
+      if (!rawDeviceId) return;
 
       if (!auth) {
         // Fallback for child device socket: if role === 'child' and the device exists & is paired in MongoDB, allow room join!

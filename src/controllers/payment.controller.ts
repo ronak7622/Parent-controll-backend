@@ -92,10 +92,13 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
         validityEnd: currentSub.expireAt,
         txnId: `txn_rzp_${rzpOrder.orderId}`,
         status: 'pending',
+        paymentStatus: 'processing',
+        planStatus: 'processing',
+        reconcileBy: new Date(Date.now() + 15 * 60 * 1000),
         paymentProvider: 'razorpay',
         providerOrderId: rzpOrder.orderId,
         autoRenew: false,
-        metadata: { region, addonType: addon.type, rzpAmount: rzpOrder.amount },
+        metadata: { region, addonType: addon.type, rzpAmount: rzpOrder.amount, hadActivePlan: true },
       });
 
       return res.json({
@@ -156,10 +159,13 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       validityEnd: new Date((isRealPlanActive ? currentSub.expireAt.getTime() : now.getTime()) + durationMs),
       txnId: `txn_rzp_${rzpOrder.orderId}`,
       status: 'pending',
+      paymentStatus: 'processing',
+      planStatus: 'processing',
+      reconcileBy: new Date(Date.now() + 15 * 60 * 1000),
       paymentProvider: 'razorpay',
       providerOrderId: rzpOrder.orderId,
       autoRenew: false,
-      metadata: { region, allowStorageTrim, rzpAmount: rzpOrder.amount },
+      metadata: { region, allowStorageTrim, rzpAmount: rzpOrder.amount, hadActivePlan: isRealPlanActive },
     });
 
     return res.json({
@@ -240,7 +246,7 @@ export const verifyRazorpayPayment = async (req: Request, res: Response) => {
     if (!isValid) {
       if (internalOrderId) {
         await Order.findByIdAndUpdate(internalOrderId, {
-          $set: { status: 'failed', failureReason: 'Invalid Razorpay signature' },
+          $set: { status: 'failed', paymentStatus: 'failed', planStatus: 'in_active', failureReason: 'Invalid Razorpay signature' },
         });
       }
       return res.status(400).json({
@@ -287,12 +293,31 @@ export const verifyRazorpayPayment = async (req: Request, res: Response) => {
         existingOrderId: order?._id?.toString(),
       });
 
+      const planStatusVal = result.isQueued ? 'pending_to_active' : 'active';
+      const activatesOnVal = result.isQueued ? (result.subscription as any)?.expireAt : undefined;
+      try {
+        if ((result.order as any)?._id) {
+          await Order.findByIdAndUpdate((result.order as any)._id, {
+            $set: {
+              paymentStatus: 'paid',
+              planStatus: planStatusVal,
+              ...(activatesOnVal ? { activatesOn: activatesOnVal } : {}),
+            },
+          });
+        }
+        (result.order as any).paymentStatus = 'paid';
+        (result.order as any).planStatus = planStatusVal;
+        if (activatesOnVal) (result.order as any).activatesOn = activatesOnVal;
+      } catch {}
       return res.json({
         success: true,
         message: 'Payment verified successfully and entitlement applied.',
         subscription: result.subscription,
         order: result.order,
         isQueued: result.isQueued,
+        planStatus: planStatusVal,
+        paymentStatus: 'paid',
+        activatesOn: activatesOnVal,
       });
     } catch (grantErr: any) {
       console.error('[Payment] applyEntitlement failed after capture. Triggering refund:', grantErr?.message);
@@ -301,6 +326,9 @@ export const verifyRazorpayPayment = async (req: Request, res: Response) => {
         await refundRazorpayPayment(razorpay_payment_id, undefined, 'Entitlement grant failure');
         if (order) {
           order.status = 'refunded';
+          order.paymentStatus = 'refunded';
+          order.planStatus = 'in_active';
+          order.refundInfo = { amount: order.amount, at: new Date(), reason: 'Entitlement grant failure (auto-refund)' };
           order.failureReason = `Entitlement grant failed: ${grantErr?.message || 'Unknown error'}. Auto-refunded.`;
           await order.save();
         }
@@ -365,7 +393,7 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
         if (order && order.status !== 'completed') {
           console.log(`[Razorpay Webhook] Applying entitlement from webhook durability for order: ${orderId}`);
           try {
-            await applyEntitlement({
+            const whResult = await applyEntitlement({
               parentUserId: order.parentUserId,
               type: order.type,
               planId: order.planId,
@@ -379,12 +407,23 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
               allowStorageTrim: order.metadata?.allowStorageTrim,
               existingOrderId: order._id.toString(),
             });
+            try {
+              const whPlanStatus = (whResult && (whResult as any).isQueued) ? 'pending_to_active' : 'active';
+              const whActivatesOn = (whResult && (whResult as any).isQueued) ? (whResult as any).subscription?.expireAt : undefined;
+              order.paymentStatus = 'paid';
+              order.planStatus = whPlanStatus as any;
+              if (whActivatesOn) order.activatesOn = whActivatesOn;
+              await order.save();
+            } catch {}
           } catch (grantErr: any) {
             console.error('[Razorpay Webhook] applyEntitlement failed for order:', orderId, grantErr?.message);
             if (paymentId) {
               try {
                 await refundRazorpayPayment(paymentId, undefined, 'Entitlement grant failure in webhook');
                 order.status = 'refunded';
+                order.paymentStatus = 'refunded';
+                order.planStatus = 'in_active';
+                order.refundInfo = { amount: order.amount, at: new Date(), reason: 'Webhook entitlement grant failure (auto-refund)' };
                 order.failureReason = `Webhook entitlement grant failed: ${grantErr?.message || 'Unknown error'}. Auto-refunded.`;
                 await order.save();
               } catch (rfErr: any) {
@@ -410,7 +449,32 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
           {
             $set: {
               status: 'failed',
+              paymentStatus: 'failed',
+              planStatus: 'in_active',
               failureReason: errorDesc,
+            },
+          }
+        );
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // EVENT 3: refund.created / refund.processed
+    // ─────────────────────────────────────────────────────────────
+    else if (event === 'refund.created' || event === 'refund.processed') {
+      const refundEntity = payload.refund?.entity;
+      const paymentId = refundEntity?.payment_id;
+      const refundId = refundEntity?.id;
+      const refundAmt = typeof refundEntity?.amount === 'number' ? refundEntity.amount / 100 : undefined;
+      if (paymentId) {
+        await Order.updateOne(
+          { providerPaymentId: paymentId },
+          {
+            $set: {
+              status: 'refunded',
+              paymentStatus: 'refunded',
+              planStatus: 'in_active',
+              refundInfo: { refundId, amount: refundAmt, at: new Date(), reason: 'Razorpay refund webhook' },
             },
           }
         );
@@ -478,10 +542,19 @@ export const verifyGooglePayment = async (req: Request, res: Response) => {
       });
     }
 
+    // Reuse a processing order that was recorded while this purchase was pending (if any)
+    const pendingOrder = await Order.findOne({ parentUserId, providerPurchaseToken: purchaseToken });
+
     // 3. Verify product purchase with Google Play Developer API (purchases.products.get)
     // In manual renewal / one-time consumable model, ALL items (plans & addons) are consumable products
     const verification = await verifyProductPurchase(productId, purchaseToken);
     if (!verification.valid) {
+      if (pendingOrder) {
+        await Order.updateOne(
+          { _id: pendingOrder._id },
+          { $set: { status: 'failed', paymentStatus: 'failed', planStatus: 'in_active', failureReason: 'Google Play product verification failed' } }
+        );
+      }
       return res.status(400).json({
         success: false,
         code: 'INVALID_PURCHASE_TOKEN',
@@ -510,6 +583,7 @@ export const verifyGooglePayment = async (req: Request, res: Response) => {
         providerOrderId: verification.orderId,
         providerPurchaseToken: purchaseToken,
         autoRenew: false,
+        existingOrderId: pendingOrder?._id?.toString(),
       });
 
       return res.json({
@@ -539,6 +613,7 @@ export const verifyGooglePayment = async (req: Request, res: Response) => {
         providerSubscriptionId: purchaseToken,
         autoRenew: false,
         allowStorageTrim,
+        existingOrderId: pendingOrder?._id?.toString(),
       });
 
       return res.json({
@@ -554,6 +629,89 @@ export const verifyGooglePayment = async (req: Request, res: Response) => {
       success: false,
       message: err?.message || 'Google Play payment verification failed',
     });
+  }
+};
+
+/**
+ * POST /payment/google/pending
+ * Records a 'processing' order when a Google Play purchase enters PENDING state,
+ * so it shows up in purchase history with processing status (parity with Razorpay).
+ * Idempotent by purchaseToken. The real validity/amount are finalized on verify.
+ */
+export const recordGooglePendingPurchase = async (req: Request, res: Response) => {
+  try {
+    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
+    if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const { productId, purchaseToken, type, region = 'OTHER_USD' } = req.body;
+    if (!productId || !purchaseToken) {
+      return res.status(400).json({ success: false, message: 'productId and purchaseToken are required' });
+    }
+
+    // Idempotent: if an order already exists for this token, return it
+    const existing = await Order.findOne({ parentUserId, providerPurchaseToken: purchaseToken });
+    if (existing) {
+      return res.json({ success: true, order: existing, alreadyRecorded: true });
+    }
+
+    const mapped = mapGoogleProductIdToInternal(productId);
+    const resolvedType = type || mapped?.type || 'plan';
+    const internalId = mapped?.internalId || productId;
+    const normRegion = region === 'IN_INR' || region === 'IN' ? 'IN_INR' : 'OTHER_USD';
+
+    let orderType: 'plan' | 'storage_addon' | 'live_addon' = 'plan';
+    let planLabel = 'Purchase';
+    let amount = 0;
+    const currency = normRegion === 'IN_INR' ? '₹' : '$';
+    let planIdVal: string | undefined;
+    let addonIdVal: string | undefined;
+
+    if (resolvedType === 'addon') {
+      const addon = await AddonPlan.findOne({ addonId: internalId, isActive: true });
+      if (addon) {
+        orderType = addon.type === 'live_minutes' ? 'live_addon' : 'storage_addon';
+        planLabel = addon.name;
+        addonIdVal = addon.addonId;
+        const priceSource = (addon as any).appPriceByRegion || (addon as any).priceByRegion || {};
+        amount = normRegion === 'IN_INR' ? (priceSource.IN_INR ?? 0) : (priceSource.OTHER_USD ?? priceSource.HIGH_USD ?? 0);
+      }
+    } else {
+      const plan = await Plan.findOne({ planId: internalId, isActive: true });
+      if (plan) {
+        orderType = 'plan';
+        planLabel = plan.name;
+        planIdVal = plan.planId;
+        const priceSource = (plan as any).appPriceByRegion || (plan as any).priceByRegion || {};
+        amount = normRegion === 'IN_INR' ? (priceSource.IN_INR ?? 0) : (priceSource.OTHER_USD ?? priceSource.HIGH_USD ?? 0);
+      }
+    }
+
+    const now = new Date();
+    const order = await Order.create({
+      parentUserId,
+      type: orderType,
+      planId: planIdVal,
+      addonId: addonIdVal,
+      planLabel,
+      amount,
+      currency,
+      validityStart: now,
+      validityEnd: now,
+      txnId: `txn_gplay_pending_${purchaseToken.substring(0, 20)}_${Date.now()}`,
+      status: 'pending',
+      paymentStatus: 'processing',
+      planStatus: 'processing',
+      reconcileBy: new Date(now.getTime() + 15 * 60 * 1000),
+      paymentProvider: 'google_play',
+      providerPurchaseToken: purchaseToken,
+      autoRenew: false,
+      metadata: { region: normRegion, source: 'google_pending' },
+    });
+
+    return res.json({ success: true, order });
+  } catch (err: any) {
+    console.error('[GooglePlay Pending] Error:', err?.message);
+    return res.status(500).json({ success: false, message: err?.message || 'Failed to record pending purchase' });
   }
 };
 
@@ -633,7 +791,7 @@ export const handleGooglePlayWebhook = async (req: Request, res: Response) => {
 
       if (Object.keys(filter).length > 0) {
         // Mark matching orders as refunded
-        await Order.updateMany(filter, { $set: { status: 'refunded' } });
+        await Order.updateMany(filter, { $set: { status: 'refunded', paymentStatus: 'refunded', planStatus: 'in_active', refundInfo: { at: new Date(), reason: 'Google Play refund/void' } } });
 
         // Revoke active or queued subscription if linked
         const sub = await Subscription.findOne({
@@ -733,7 +891,7 @@ export const handleGooglePlayWebhook = async (req: Request, res: Response) => {
       } else if (notificationType === 2) { // ONE_TIME_PRODUCT_CANCELED
         await Order.updateMany(
           { providerPurchaseToken: purchaseToken },
-          { $set: { status: 'refunded' } }
+          { $set: { status: 'refunded', paymentStatus: 'refunded', planStatus: 'in_active', refundInfo: { at: new Date(), reason: 'Google Play refund/void' } } }
         );
       }
     }
@@ -761,7 +919,7 @@ export const handleGooglePlayWebhook = async (req: Request, res: Response) => {
         );
         await Order.updateMany(
           { providerPurchaseToken: purchaseToken },
-          { $set: { status: 'refunded' } }
+          { $set: { status: 'refunded', paymentStatus: 'refunded', planStatus: 'in_active', refundInfo: { at: new Date(), reason: 'Google Play refund/void' } } }
         );
       }
     }

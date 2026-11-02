@@ -132,6 +132,15 @@ const startServer = async () => {
       console.error('[AUTO-DELETE-INTERVAL-ERROR]', err?.message);
     }
   }, 60000);
+
+  // Run payment reconciliation for stuck 'processing' Razorpay orders every 2 minutes
+  setInterval(async () => {
+    try {
+      await SubscriptionJob.processPaymentReconciliation();
+    } catch (err: any) {
+      console.error('[PAYMENT-RECONCILE-INTERVAL-ERROR]', err?.message);
+    }
+  }, 120000);
   // Run i18n migration for plans and addons
   await runPlanI18nMigration();
 

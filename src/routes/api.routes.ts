@@ -4,12 +4,14 @@ import {
   authRateLimiter,
   updateUserLanguage,
   updateParentFcmToken,
+  logout,
 } from '../controllers/auth.controller';
 import {
   createRazorpayPayment,
   verifyRazorpayPayment,
   handleRazorpayWebhook,
   verifyGooglePayment,
+  recordGooglePendingPurchase,
   handleGooglePlayWebhook,
 } from '../controllers/payment.controller';
 import {
@@ -197,6 +199,7 @@ router.post('/payment/razorpay/create', authenticateJwt, createRazorpayPayment);
 router.post('/payment/razorpay/verify', authenticateJwt, verifyRazorpayPayment);
 router.post('/payment/razorpay/webhook', handleRazorpayWebhook);
 router.post('/payment/google/verify', authenticateJwt, verifyGooglePayment);
+router.post('/payment/google/pending', authenticateJwt, recordGooglePendingPurchase);
 router.post('/payment/google/webhook', handleGooglePlayWebhook);
 
 // Subscription, Plans, Add-ons & Auto-Delete Routes
@@ -223,6 +226,7 @@ router.post('/parent/auto-delete-settings', authenticateJwt, updateAutoDeleteCon
 // 1. Auth Routes (Parent App & Web - Unified Firebase Gateway)
 // ===================================
 router.post('/auth/firebase', authRateLimiter, authenticateFirebase);
+router.post('/auth/logout', authenticateJwt, logout);
 router.post('/user/language', authenticateJwt, updateUserLanguage);
 router.put('/user/language', authenticateJwt, updateUserLanguage);
 router.post('/user/fcm-token', authenticateJwt, updateParentFcmToken);

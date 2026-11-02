@@ -4,6 +4,8 @@ import { LiveUsage } from '../models/LiveUsage';
 import { User } from '../models/User';
 import { Device } from '../models/Device';
 import { Order } from '../models/Order';
+import { applyEntitlement } from '../services/entitlement.service';
+import { fetchRazorpayOrderPayments, refundRazorpayPayment } from '../services/razorpay.service';
 import { ConfigService } from '../services/ConfigService';
 import { StorageDeleteService } from '../services/StorageDeleteService';
 import { StorageAccountingService } from '../services/StorageAccountingService';
@@ -345,6 +347,105 @@ export class SubscriptionJob {
       });
     } catch (err: any) {
       console.error(`[SUBSCRIPTION-JOB-ERROR] ${err?.message}`);
+    }
+  }
+
+  /**
+   * Payment reconciliation: resolves orders stuck in 'processing' by checking Razorpay.
+   * captured -> grant (active/pending_to_active); authorized-not-captured past deadline -> failed;
+   * nothing received -> failed (bank auto-reverses to user). Captured-but-grant-fail -> auto-refund.
+   */
+  static async processPaymentReconciliation(): Promise<void> {
+    try {
+      const now = new Date();
+      const stuck = await Order.find({
+        paymentProvider: 'razorpay',
+        paymentStatus: 'processing',
+        reconcileBy: { $lt: now },
+      }).limit(200);
+
+      for (const order of stuck) {
+        try {
+          if (!order.providerOrderId) continue;
+          const payments = await fetchRazorpayOrderPayments(order.providerOrderId);
+          const captured = payments.find((p: any) => p.status === 'captured');
+          const authorized = payments.find((p: any) => p.status === 'authorized');
+
+          if (captured) {
+            try {
+              const result = await applyEntitlement({
+                parentUserId: order.parentUserId,
+                type: order.type,
+                planId: order.planId,
+                addonId: order.addonId,
+                region: (order.metadata as any)?.region || 'OTHER_USD',
+                platform: 'web',
+                paymentProvider: 'razorpay',
+                providerOrderId: order.providerOrderId,
+                providerPaymentId: captured.id,
+                autoRenew: false,
+                allowStorageTrim: (order.metadata as any)?.allowStorageTrim,
+                existingOrderId: order._id.toString(),
+              });
+              const ps = (result as any).isQueued ? 'pending_to_active' : 'active';
+              const ao = (result as any).isQueued ? (result as any).subscription?.expireAt : undefined;
+              order.paymentStatus = 'paid';
+              order.planStatus = ps as any;
+              if (ao) order.activatesOn = ao;
+              await order.save();
+              console.log(`[PAYMENT-RECONCILE] Granted order ${order._id} -> ${ps}`);
+            } catch (grantErr: any) {
+              try { await refundRazorpayPayment(captured.id, undefined, 'Reconcile grant failure'); } catch {}
+              order.status = 'refunded';
+              order.paymentStatus = 'refunded';
+              order.planStatus = 'in_active';
+              order.refundInfo = { amount: order.amount, at: new Date(), reason: 'Reconcile grant failure (auto-refund)' };
+              await order.save();
+              console.warn(`[PAYMENT-RECONCILE] Captured but grant failed, refunded order ${order._id}`);
+            }
+          } else if (authorized) {
+            const hardDeadline = new Date(order.createdAt.getTime() + 60 * 60 * 1000);
+            if (now > hardDeadline) {
+              order.status = 'failed';
+              order.paymentStatus = 'failed';
+              order.planStatus = 'in_active';
+              order.failureReason = 'Payment authorized but not captured in time; auto-refunded by gateway.';
+              await order.save();
+            } else {
+              order.reconcileBy = new Date(now.getTime() + 10 * 60 * 1000);
+              await order.save();
+            }
+          } else {
+            order.status = 'failed';
+            order.paymentStatus = 'failed';
+            order.planStatus = 'in_active';
+            order.failureReason = 'Payment not received by gateway; any debit is auto-reversed by the bank.';
+            await order.save();
+          }
+        } catch (perr: any) {
+          console.error('[PAYMENT-RECONCILE] order error', order._id?.toString(), perr?.message);
+        }
+      }
+
+      // Google Play pending purchases that never completed -> fail after 72h
+      const staleGoogle = await Order.find({
+        paymentProvider: 'google_play',
+        paymentStatus: 'processing',
+        createdAt: { $lt: new Date(now.getTime() - 72 * 60 * 60 * 1000) },
+      }).limit(200);
+      for (const g of staleGoogle) {
+        try {
+          g.status = 'failed';
+          g.paymentStatus = 'failed';
+          g.planStatus = 'in_active';
+          g.failureReason = 'Google Play pending purchase did not complete in time.';
+          await g.save();
+        } catch (ge: any) {
+          console.error('[PAYMENT-RECONCILE] google stale error', g._id?.toString(), ge?.message);
+        }
+      }
+    } catch (err: any) {
+      console.error('[PAYMENT-RECONCILE-JOB-ERROR]', err?.message);
     }
   }
 

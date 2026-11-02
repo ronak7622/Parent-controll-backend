@@ -530,6 +530,40 @@ export class LiveUsageService {
       console.error(`[LIVE-NOTIF-ERROR] ${notifErr?.message}`);
     }
 
+    // Real-time WebSocket sync: Broadcast updated live usage to parent & device rooms
+    try {
+      const io = getSignalingIo();
+      if (io) {
+        const freshUsage = await LiveUsageService.getRemainingLiveMinutes(session.parentUserId);
+        const configOpts = await ConfigService.getMergedOptions();
+        const payload = {
+          liveUsage: {
+            dayKey,
+            monthKey,
+            dailyMinutesUsed: freshUsage.dailyUsed,
+            dailyLimit: freshUsage.dailyLimit,
+            remainingDailyMinutes: freshUsage.dailyRemaining,
+            planTotalLimit: freshUsage.planTotalLimit,
+            planTotalUsed: freshUsage.planTotalUsed,
+            planTotalRemaining: freshUsage.planTotalRemaining,
+            basePlanRemainingToday: freshUsage.basePlanRemainingToday,
+            addonPool: freshUsage.addonPoolRemaining,
+            remainingAddonPool: freshUsage.addonPoolRemaining,
+            totalRemainingLiveMinutes: freshUsage.totalRemaining,
+            liveSessionMaxMin: configOpts.liveSessionMaxMin || 5,
+          },
+          timestamp: Date.now(),
+        };
+        io.to(`user_${session.parentUserId}`).emit('live-usage-updated', payload);
+        io.to(`parent_${session.parentUserId}`).emit('live-usage-updated', payload);
+        if (session.deviceId) {
+          io.to(session.deviceId).emit('live-usage-updated', payload);
+        }
+      }
+    } catch (broadcastErr: any) {
+      console.warn('[LIVE-USAGE-BROADCAST-WARN]', broadcastErr?.message);
+    }
+
     return minutesToCharge;
   }
 

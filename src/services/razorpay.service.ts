@@ -251,3 +251,18 @@ export async function refundRazorpayPayment(paymentId: string, amount?: number, 
 
   return await rzp.payments.refund(paymentId, options);
 }
+
+/**
+ * Fetches all payment attempts for a Razorpay order (used by reconciliation).
+ */
+export async function fetchRazorpayOrderPayments(orderId: string): Promise<any[]> {
+  const rzp = getRazorpayClient();
+  if (!rzp) return [];
+  try {
+    const res = await rzp.orders.fetchPayments(orderId);
+    return res?.items || [];
+  } catch (e) {
+    return [];
+  }
+}
+
