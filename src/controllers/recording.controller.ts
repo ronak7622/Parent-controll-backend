@@ -10,7 +10,7 @@ import { getSignalingIo, isChildOnline } from '../signaling/webrtc.signaling';
 import { getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { DeletedRecording } from '../models/DeletedRecording';
-import { deleteMediaFromR2, bulkDeleteMediaFromR2 } from '../services/r2.service';
+import { deleteMediaFromR2, bulkDeleteMediaFromR2, generatePresignedPutUrl } from '../services/r2.service';
 import { checkQuotaBlocked } from './ingest.controller';
 
 // Format duration helper
@@ -565,10 +565,28 @@ export const getRecordingPresignedUrl = async (req: Request, res: Response) => {
     }
 
     const key = `recordings/${recordingType}/${deviceId}/${uuidv4()}.${extension}`;
+    const contentType =
+      extension === 'mp4' ? 'video/mp4'
+      : extension === 'aac' ? 'audio/aac'
+      : extension === 'm4a' ? 'audio/mp4'
+      : 'application/octet-stream';
+
+    // Direct-to-R2 presigned PUT (zero-egress, 10M-scalable). generatePresignedPutUrl
+    // gracefully falls back to a local direct-upload endpoint if R2 is not configured.
+    const media = await generatePresignedPutUrl(key, contentType, 900);
+    const thumbKey = `recordings/thumbs/${deviceId}/${uuidv4()}.webp`;
+    const thumb = await generatePresignedPutUrl(thumbKey, 'image/webp', 900);
+
     return res.json({
       success: true,
-      uploadUrl: `/ingest/recording/direct?key=${encodeURIComponent(key)}`,
-      key,
+      uploadUrl: media.uploadUrl,
+      key: media.objectKey,
+      cdnUrl: media.cdnUrl,
+      isDirectS3: media.isDirectS3,
+      thumbUploadUrl: thumb.uploadUrl,
+      thumbKey: thumb.objectKey,
+      thumbCdnUrl: thumb.cdnUrl,
+      thumbIsDirectS3: thumb.isDirectS3,
       expiresInSeconds: 900,
     });
   } catch (error: any) {

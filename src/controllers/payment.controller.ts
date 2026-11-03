@@ -413,6 +413,7 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
               order.paymentStatus = 'paid';
               order.planStatus = whPlanStatus as any;
               if (whActivatesOn) order.activatesOn = whActivatesOn;
+              if (paymentEntity?.method) order.paymentMethod = paymentEntity.method;
               await order.save();
             } catch {}
           } catch (grantErr: any) {
@@ -474,7 +475,35 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
               status: 'refunded',
               paymentStatus: 'refunded',
               planStatus: 'in_active',
-              refundInfo: { refundId, amount: refundAmt, at: new Date(), reason: 'Razorpay refund webhook' },
+              refundInfo: { refundId, amount: refundAmt, at: new Date(), reason: 'Razorpay refund webhook', status: 'processed' },
+            },
+          }
+        );
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // EVENT 4: refund.failed
+    // ─────────────────────────────────────────────────────────────
+    else if (event === 'refund.failed') {
+      const refundEntity = payload.refund?.entity;
+      const paymentId = refundEntity?.payment_id;
+      const refundId = refundEntity?.id;
+      const refundAmt = typeof refundEntity?.amount === 'number' ? refundEntity.amount / 100 : undefined;
+      const reason = refundEntity?.notes?.reason || refundEntity?.status_reason || 'Refund failed at gateway';
+      if (paymentId) {
+        await Order.updateOne(
+          { providerPaymentId: paymentId },
+          {
+            $set: {
+              refundInfo: {
+                refundId,
+                amount: refundAmt,
+                at: new Date(),
+                reason,
+                status: 'failed',
+                expectedBy: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+              },
             },
           }
         );

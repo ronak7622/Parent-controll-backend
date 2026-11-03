@@ -392,6 +392,7 @@ export class SubscriptionJob {
               order.paymentStatus = 'paid';
               order.planStatus = ps as any;
               if (ao) order.activatesOn = ao;
+              if ((captured as any).method) order.paymentMethod = (captured as any).method;
               await order.save();
               console.log(`[PAYMENT-RECONCILE] Granted order ${order._id} -> ${ps}`);
             } catch (grantErr: any) {
