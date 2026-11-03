@@ -1257,7 +1257,8 @@ export const getPurchaseHistory = async (req: Request, res: Response) => {
       if (o.status === 'queued' && o.validityStart && new Date(o.validityStart) <= now) {
         o.status = 'completed';
         (o as any).planStatus = 'active';
-        await Order.updateOne({ _id: o._id }, { $set: { status: 'completed', planStatus: 'active' } }).catch(() => {});
+        if (!(o as any).activatedAt) (o as any).activatedAt = now;
+        await Order.updateOne({ _id: o._id }, { $set: { status: 'completed', planStatus: 'active', activatedAt: now } }).catch(() => {});
       }
     }
 
@@ -1276,6 +1277,13 @@ export const getPurchaseHistory = async (req: Request, res: Response) => {
       const d = deriveStatuses(o.status as any);
       if (!(o as any).paymentStatus) (o as any).paymentStatus = d.paymentStatus;
       if (!(o as any).planStatus) (o as any).planStatus = d.planStatus;
+      // Display-only timestamp backfill for legacy orders that pre-date timeline fields
+      if ((o as any).planStatus === 'active' && !(o as any).activatedAt) {
+        (o as any).activatedAt = (o as any).validityStart || (o as any).updatedAt || (o as any).createdAt;
+      }
+      if ((o as any).paymentStatus === 'failed' && !(o as any).failedAt) {
+        (o as any).failedAt = (o as any).updatedAt || (o as any).createdAt;
+      }
     }
 
     // Group addons under their respective parent plan

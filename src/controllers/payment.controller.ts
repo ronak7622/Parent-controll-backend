@@ -246,7 +246,7 @@ export const verifyRazorpayPayment = async (req: Request, res: Response) => {
     if (!isValid) {
       if (internalOrderId) {
         await Order.findByIdAndUpdate(internalOrderId, {
-          $set: { status: 'failed', paymentStatus: 'failed', planStatus: 'in_active', failureReason: 'Invalid Razorpay signature' },
+          $set: { status: 'failed', paymentStatus: 'failed', planStatus: 'in_active', failedAt: new Date(), failureReason: 'Invalid Razorpay signature' },
         });
       }
       return res.status(400).json({
@@ -301,6 +301,7 @@ export const verifyRazorpayPayment = async (req: Request, res: Response) => {
             $set: {
               paymentStatus: 'paid',
               planStatus: planStatusVal,
+              activatedAt: new Date(),
               ...(activatesOnVal ? { activatesOn: activatesOnVal } : {}),
             },
           });
@@ -328,7 +329,7 @@ export const verifyRazorpayPayment = async (req: Request, res: Response) => {
           order.status = 'refunded';
           order.paymentStatus = 'refunded';
           order.planStatus = 'in_active';
-          order.refundInfo = { amount: order.amount, at: new Date(), reason: 'Entitlement grant failure (auto-refund)' };
+          order.refundInfo = { amount: order.amount, startedAt: new Date(), at: new Date(), reason: 'Payment received but activation failed - auto-refund initiated', status: 'created' };
           order.failureReason = `Entitlement grant failed: ${grantErr?.message || 'Unknown error'}. Auto-refunded.`;
           await order.save();
         }
@@ -412,6 +413,7 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
               const whActivatesOn = (whResult && (whResult as any).isQueued) ? (whResult as any).subscription?.expireAt : undefined;
               order.paymentStatus = 'paid';
               order.planStatus = whPlanStatus as any;
+              order.activatedAt = new Date();
               if (whActivatesOn) order.activatesOn = whActivatesOn;
               if (paymentEntity?.method) order.paymentMethod = paymentEntity.method;
               await order.save();
@@ -424,7 +426,7 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
                 order.status = 'refunded';
                 order.paymentStatus = 'refunded';
                 order.planStatus = 'in_active';
-                order.refundInfo = { amount: order.amount, at: new Date(), reason: 'Webhook entitlement grant failure (auto-refund)' };
+                order.refundInfo = { amount: order.amount, startedAt: new Date(), at: new Date(), reason: 'Payment received but activation failed - auto-refund initiated', status: 'created' };
                 order.failureReason = `Webhook entitlement grant failed: ${grantErr?.message || 'Unknown error'}. Auto-refunded.`;
                 await order.save();
               } catch (rfErr: any) {
@@ -452,6 +454,7 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
               status: 'failed',
               paymentStatus: 'failed',
               planStatus: 'in_active',
+              failedAt: new Date(),
               failureReason: errorDesc,
             },
           }
@@ -462,7 +465,7 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
     // ─────────────────────────────────────────────────────────────
     // EVENT 3: refund.created / refund.processed
     // ─────────────────────────────────────────────────────────────
-    else if (event === 'refund.created' || event === 'refund.processed') {
+    else if (event === 'refund.created') {
       const refundEntity = payload.refund?.entity;
       const paymentId = refundEntity?.payment_id;
       const refundId = refundEntity?.id;
@@ -475,7 +478,30 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
               status: 'refunded',
               paymentStatus: 'refunded',
               planStatus: 'in_active',
-              refundInfo: { refundId, amount: refundAmt, at: new Date(), reason: 'Razorpay refund webhook', status: 'processed' },
+              'refundInfo.refundId': refundId,
+              'refundInfo.amount': refundAmt,
+              'refundInfo.startedAt': new Date(),
+              'refundInfo.status': 'created',
+              'refundInfo.reason': 'Refund initiated at gateway',
+            },
+          }
+        );
+      }
+    } else if (event === 'refund.processed') {
+      const refundEntity = payload.refund?.entity;
+      const paymentId = refundEntity?.payment_id;
+      const refundId = refundEntity?.id;
+      if (paymentId) {
+        await Order.updateOne(
+          { providerPaymentId: paymentId },
+          {
+            $set: {
+              status: 'refunded',
+              paymentStatus: 'refunded',
+              planStatus: 'in_active',
+              'refundInfo.refundId': refundId,
+              'refundInfo.completedAt': new Date(),
+              'refundInfo.status': 'processed',
             },
           }
         );
@@ -496,14 +522,12 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
           { providerPaymentId: paymentId },
           {
             $set: {
-              refundInfo: {
-                refundId,
-                amount: refundAmt,
-                at: new Date(),
-                reason,
-                status: 'failed',
-                expectedBy: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-              },
+              'refundInfo.refundId': refundId,
+              'refundInfo.amount': refundAmt,
+              'refundInfo.at': new Date(),
+              'refundInfo.reason': reason,
+              'refundInfo.status': 'failed',
+              'refundInfo.expectedBy': new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
             },
           }
         );

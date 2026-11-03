@@ -339,6 +339,9 @@ export class SubscriptionJob {
         {
           $set: {
             status: 'failed',
+            paymentStatus: 'failed',
+            planStatus: 'in_active',
+            failedAt: new Date(),
             failureReason: 'Checkout not completed',
           },
         }
@@ -391,6 +394,7 @@ export class SubscriptionJob {
               const ao = (result as any).isQueued ? (result as any).subscription?.expireAt : undefined;
               order.paymentStatus = 'paid';
               order.planStatus = ps as any;
+              order.activatedAt = new Date();
               if (ao) order.activatesOn = ao;
               if ((captured as any).method) order.paymentMethod = (captured as any).method;
               await order.save();
@@ -400,7 +404,7 @@ export class SubscriptionJob {
               order.status = 'refunded';
               order.paymentStatus = 'refunded';
               order.planStatus = 'in_active';
-              order.refundInfo = { amount: order.amount, at: new Date(), reason: 'Reconcile grant failure (auto-refund)' };
+              order.refundInfo = { amount: order.amount, startedAt: new Date(), at: new Date(), reason: 'Payment received but activation failed - auto-refund initiated', status: 'created' };
               await order.save();
               console.warn(`[PAYMENT-RECONCILE] Captured but grant failed, refunded order ${order._id}`);
             }
@@ -410,6 +414,7 @@ export class SubscriptionJob {
               order.status = 'failed';
               order.paymentStatus = 'failed';
               order.planStatus = 'in_active';
+              order.failedAt = new Date();
               order.failureReason = 'Payment authorized but not captured in time; auto-refunded by gateway.';
               await order.save();
             } else {
@@ -420,6 +425,7 @@ export class SubscriptionJob {
             order.status = 'failed';
             order.paymentStatus = 'failed';
             order.planStatus = 'in_active';
+            order.failedAt = new Date();
             order.failureReason = 'Payment not received by gateway; any debit is auto-reversed by the bank.';
             await order.save();
           }
@@ -439,6 +445,7 @@ export class SubscriptionJob {
           g.status = 'failed';
           g.paymentStatus = 'failed';
           g.planStatus = 'in_active';
+          g.failedAt = new Date();
           g.failureReason = 'Google Play pending purchase did not complete in time.';
           await g.save();
         } catch (ge: any) {

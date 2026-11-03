@@ -143,17 +143,24 @@ export const startRecording = async (req: Request, res: Response) => {
     });
 
     if (activeSession) {
-      return res.status(409).json({
-        success: false,
-        code: 'RECORDING_IN_PROGRESS',
-        message: 'A recording is already in progress on this device',
-        activeSession: {
-          sessionId: activeSession.sessionId,
-          recordingType: activeSession.recordingType,
-          startedAt: activeSession.startedAt,
-          durationSeconds: activeSession.durationSeconds,
-        },
-      });
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - activeSession.startedAt.getTime()) / 1000));
+      if (elapsedSeconds > activeSession.durationSeconds + 15) {
+        console.log(`[RECORDING-STALE-AUTO-CLEAR] Auto-expiring stale session ${activeSession.sessionId} on new recording attempt`);
+        activeSession.status = 'failed';
+        await activeSession.save();
+      } else {
+        return res.status(409).json({
+          success: false,
+          code: 'RECORDING_IN_PROGRESS',
+          message: 'A recording is already in progress on this device',
+          activeSession: {
+            sessionId: activeSession.sessionId,
+            recordingType: activeSession.recordingType,
+            startedAt: activeSession.startedAt,
+            durationSeconds: activeSession.durationSeconds,
+          },
+        });
+      }
     }
 
     // 2. Device Connectivity Check

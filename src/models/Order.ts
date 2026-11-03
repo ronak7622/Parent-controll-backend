@@ -21,8 +21,10 @@ export interface IOrder extends Document {
   paymentStatus?: 'processing' | 'paid' | 'failed' | 'refunded';
   planStatus?: 'in_active' | 'active' | 'processing' | 'pending_to_active';
   activatesOn?: Date;
-  refundInfo?: { refundId?: string; amount?: number; at?: Date; reason?: string; status?: 'processed' | 'failed' | 'pending'; expectedBy?: Date };
+  refundInfo?: { refundId?: string; amount?: number; at?: Date; startedAt?: Date; completedAt?: Date; reason?: string; status?: 'created' | 'processed' | 'failed' | 'pending'; expectedBy?: Date };
   paymentMethod?: string;
+  activatedAt?: Date;
+  failedAt?: Date;
   reconcileBy?: Date;
   autoRenew: boolean;
   baseAmount?: number;
@@ -78,11 +80,15 @@ const OrderSchema: Schema = new Schema(
       refundId: { type: String },
       amount: { type: Number },
       at: { type: Date },
+      startedAt: { type: Date },
+      completedAt: { type: Date },
       reason: { type: String },
       status: { type: String },
       expectedBy: { type: Date },
     },
     paymentMethod: { type: String },
+    activatedAt: { type: Date },
+    failedAt: { type: Date },
     reconcileBy: { type: Date },
     autoRenew: { type: Boolean, default: false },
     baseAmount: { type: Number },
