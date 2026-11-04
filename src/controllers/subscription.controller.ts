@@ -36,7 +36,7 @@ import { config } from '../config/env';
  * Permanently records a parent user, phone number, and/or device ID into TrialLedger
  * so that a Free Trial can never be offered or claimed again once any plan or trial is consumed.
  */
-async function recordTrialOrPlanUsage(parentUserId?: string, phoneInput?: string, deviceIdInput?: string, emailInput?: string) {
+export async function recordTrialOrPlanUsage(parentUserId?: string, phoneInput?: string, deviceIdInput?: string, emailInput?: string) {
   try {
     let phoneNumber = (phoneInput || '').trim();
     let rawEmail = (emailInput || '').trim().toLowerCase();

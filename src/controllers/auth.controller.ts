@@ -10,6 +10,8 @@ import { isDisposableEmail } from '../utils/disposableEmail';
 import { normalizeEmail } from '../utils/normalizeEmail';
 import { cacheService } from '../services/cache.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { TrialLedger } from '../models/TrialLedger';
+import { recordTrialOrPlanUsage } from './subscription.controller';
 
 /**
  * IP-based Rate Limiter for Authentication Gateway (Protection against brute force & flooding)
@@ -79,6 +81,10 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
       deviceName: clientDeviceName,
       forceLogoutOthers,
     } = req.body;
+
+    const rawDevId = req.headers['x-device-id'] || req.headers['device-id'] || req.headers['x-device-uuid'] || req.body?.deviceId || '';
+    const deviceId = (typeof rawDevId === 'string' ? rawDevId : Array.isArray(rawDevId) ? rawDevId[0] : '').trim();
+
     if (!idToken || typeof idToken !== 'string') {
       return res.status(400).json({ success: false, message: 'Firebase authentication token is required.' });
     }
@@ -212,6 +218,17 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         lastLoginAt: new Date(),
       });
       await user.save();
+    }
+
+    // Anti-Abuse Link: If this physical device / browser previously consumed a trial,
+    // permanently link this account so trial cannot be re-claimed with a new email.
+    if (deviceId) {
+      try {
+        const existingTrial = await TrialLedger.findOne({ deviceId });
+        if (existingTrial) {
+          recordTrialOrPlanUsage(user._id.toString(), user.phoneNumber, deviceId, user.email).catch(() => {});
+        }
+      } catch (_) {}
     }
 
     await cacheService.set(`user_session_${user._id.toString()}`, newSessionId, 365 * 86400);
