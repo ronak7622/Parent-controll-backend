@@ -1304,11 +1304,19 @@ export const getPurchaseHistory = async (req: Request, res: Response) => {
       const d = deriveStatuses(o.status as any);
       if (!(o as any).paymentStatus) (o as any).paymentStatus = d.paymentStatus;
       if (!(o as any).planStatus) (o as any).planStatus = d.planStatus;
+
+      // Sanitization: If payment is cancelled or failed, plan NEVER activated and has NO validity period
+      if ((o as any).paymentStatus === 'cancelled' || (o as any).paymentStatus === 'failed') {
+        (o as any).activatedAt = null;
+        (o as any).validityStart = null;
+        (o as any).validityEnd = null;
+      }
+
       // Display-only timestamp backfill for legacy orders that pre-date timeline fields
       if ((o as any).planStatus === 'active' && !(o as any).activatedAt) {
         (o as any).activatedAt = (o as any).validityStart || (o as any).updatedAt || (o as any).createdAt;
       }
-      if ((o as any).paymentStatus === 'failed' && !(o as any).failedAt) {
+      if (((o as any).paymentStatus === 'failed' || (o as any).paymentStatus === 'cancelled') && !(o as any).failedAt) {
         (o as any).failedAt = (o as any).updatedAt || (o as any).createdAt;
       }
     }

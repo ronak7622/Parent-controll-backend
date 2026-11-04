@@ -1887,23 +1887,51 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
       const rawRoute = Array.isArray(item.routePoints) ? item.routePoints : [];
       const cleanRoute = rawRoute.filter((p: any) => p && typeof p.latitude === 'number' && typeof p.longitude === 'number');
 
+      const startLatNum = Number(item.startLat) || 0;
+      const startLngNum = Number(item.startLng) || 0;
+      const endLatNum = Number(item.endLat) || 0;
+      const endLngNum = Number(item.endLng) || 0;
+
+      const calcDistMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+        if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+        const R = 6371000;
+        const dLat = ((lat2 - lat1) * Math.PI) / 180;
+        const dLon = ((lon2 - lon1) * Math.PI) / 180;
+        const a =
+          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos((lat1 * Math.PI) / 180) *
+            Math.cos((lat2 * Math.PI) / 180) *
+            Math.sin(dLon / 2) *
+            Math.sin(dLon / 2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      };
+
       const rawStops = Array.isArray(item.stops) ? item.stops : [];
-      const cleanStops = rawStops.filter((s: any) => s && typeof s.latitude === 'number' && typeof s.longitude === 'number').map((s: any) => ({
-        latitude: Number(s.latitude),
-        longitude: Number(s.longitude),
-        startTime: s.startTime ? new Date(s.startTime) : new Date(),
-        endTime: s.endTime ? new Date(s.endTime) : new Date(),
-        durationSeconds: Number(s.durationSeconds) || 0,
-        durationText: s.durationText || '0m00s',
-        address: s.address || '',
-        hasWalking: s.hasWalking === true || s.hasWalking === 'true',
-        startWalkTime: s.startWalkTime ? new Date(s.startWalkTime) : undefined,
-        endWalkTime: s.endWalkTime ? new Date(s.endWalkTime) : undefined,
-        walkDurationSeconds: Number(s.walkDurationSeconds) || 0,
-        walkDurationText: s.walkDurationText || '0m00s',
-        walkDistanceMeters: Number(s.walkDistanceMeters) || 0,
-        walkRadiusMeters: Number(s.walkRadiusMeters) || 0,
-      }));
+      const cleanStops = rawStops
+        .filter((s: any) => {
+          if (!s || typeof s.latitude !== 'number' || typeof s.longitude !== 'number') return false;
+          const sLat = Number(s.latitude);
+          const sLng = Number(s.longitude);
+          if (startLatNum && startLngNum && calcDistMeters(sLat, sLng, startLatNum, startLngNum) <= 100) return false;
+          if (endLatNum && endLngNum && calcDistMeters(sLat, sLng, endLatNum, endLngNum) <= 100) return false;
+          return true;
+        })
+        .map((s: any) => ({
+          latitude: Number(s.latitude),
+          longitude: Number(s.longitude),
+          startTime: s.startTime ? new Date(s.startTime) : new Date(),
+          endTime: s.endTime ? new Date(s.endTime) : new Date(),
+          durationSeconds: Number(s.durationSeconds) || 0,
+          durationText: s.durationText || '0m00s',
+          address: s.address || '',
+          hasWalking: s.hasWalking === true || s.hasWalking === 'true',
+          startWalkTime: s.startWalkTime ? new Date(s.startWalkTime) : undefined,
+          endWalkTime: s.endWalkTime ? new Date(s.endWalkTime) : undefined,
+          walkDurationSeconds: Number(s.walkDurationSeconds) || 0,
+          walkDurationText: s.walkDurationText || '0m00s',
+          walkDistanceMeters: Number(s.walkDistanceMeters) || 0,
+          walkRadiusMeters: Number(s.walkRadiusMeters) || 0,
+        }));
 
       const docData: any = {
         deviceId,

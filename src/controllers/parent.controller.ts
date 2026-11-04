@@ -2961,9 +2961,47 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
 
     const filteredTrips = (dbTrips || []).filter((dt) => (dt.distanceKm >= 0.05 || dt.durationSeconds >= 30));
 
+    const calculateDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+      if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+      const R = 6371000;
+      const dLat = ((lat2 - lat1) * Math.PI) / 180;
+      const dLon = ((lon2 - lon1) * Math.PI) / 180;
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos((lat1 * Math.PI) / 180) *
+          Math.cos((lat2 * Math.PI) / 180) *
+          Math.sin(dLon / 2) *
+          Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    };
+
     const finalTrips = filteredTrips.map((dt) => {
       const rawMode = String(dt.activityMode || '').toUpperCase();
       const mode = (rawMode === 'RUNNING' || rawMode === 'WALKING' || (dt.avgSpeedKmH || 0) <= 15) ? 'WALKING' : 'DRIVING';
+
+      const startLat = Number(dt.startLat) || 0;
+      const startLng = Number(dt.startLng) || 0;
+      const endLat = Number(dt.endLat) || 0;
+      const endLng = Number(dt.endLng) || 0;
+
+      // Filter out redundant/bogus stops that sit right at Departure (< 100m) or Destination (< 100m)
+      const rawStops = Array.isArray(dt.stops) ? dt.stops : [];
+      const cleanStops = rawStops.filter((s: any) => {
+        const sLat = Number(s?.latitude) || 0;
+        const sLng = Number(s?.longitude) || 0;
+        if (!sLat || !sLng) return false;
+        if (startLat && startLng) {
+          const distFromStart = calculateDistanceMeters(sLat, sLng, startLat, startLng);
+          if (distFromStart <= 100) return false;
+        }
+        if (endLat && endLng) {
+          const distFromEnd = calculateDistanceMeters(sLat, sLng, endLat, endLng);
+          if (distFromEnd <= 100) return false;
+        }
+        return true;
+      });
+
       return {
         id: dt._id.toString(),
         tripId: dt.tripId,
@@ -2983,7 +3021,7 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
         endLat: dt.endLat,
         endLng: dt.endLng,
         routePoints: Array.isArray(dt.routePoints) ? dt.routePoints : [],
-        stops: Array.isArray(dt.stops) ? dt.stops : [],
+        stops: cleanStops,
         date: dt.date,
       };
     });
