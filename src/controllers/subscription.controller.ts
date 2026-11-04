@@ -30,6 +30,7 @@ import { cacheService } from '../services/cache.service';
 import { toMs, DurationUnit } from '../utils/duration';
 // plansI18n imported ONLY for seeding/migration – NOT used in request response path
 import { PLAN_NAMES_I18N, ADDON_NAMES_I18N, localizeFeatureItem } from '../config/plansI18n';
+import { config } from '../config/env';
 
 /**
  * Permanently records a parent user, phone number, and/or device ID into TrialLedger
@@ -256,6 +257,29 @@ export const getPlans = async (req: Request, res: Response) => {
           sortOrder: 3,
           isAllowSocialAppChatHistory: true,
         },
+        {
+          planId: 'plan_3_days_test',
+          name: '3 Days QA Test Plan',
+          type: 'test',
+          webPriceByRegion: { IN_INR: 5, OTHER_USD: 0.99 },
+          appPriceByRegion: { IN_INR: 5, OTHER_USD: 0.99 },
+          discountCompareToApp: 0,
+          storageBytes: 10737418240, // 10 GB
+          planDurationValueInMinute: 4320, // 3 days (3 * 1440 min)
+          planDurationUnit: 'minutes',
+          graceTimeInMinute: 1440, // 1 day grace
+          planPriceDiscountPercen: 0,
+          liveLimitTotalInMinute: 180, // 3 hours total
+          liveLimitPerDayInMinutes: 60,
+          deviceLimit: 5,
+          features: makeFeatures('5 devices connect', '10 gb storage'),
+          ...buildI18n('plan_3_days_test', makeFeatures('5 devices connect', '10 gb storage')),
+          isActive: true,
+          isTestPlan: true, // Only visible to whitelisted tester emails
+          isRecommended: false,
+          sortOrder: 99,
+          isAllowSocialAppChatHistory: true,
+        },
       ];
 
       for (const p of defaultPlans) {
@@ -396,7 +420,9 @@ export const getPlans = async (req: Request, res: Response) => {
       }
     }
 
-    const canSeeTest = ((options as any).testPlanPhones || []).includes(phone) || ((options as any).testPlanEmails || []).includes(email);
+    const testerEmails = config.testerEmails || [];
+    const isTesterUser = (email && testerEmails.includes(email)) || (normEmail && testerEmails.includes(normEmail));
+    const canSeeTest = isTesterUser || ((options as any).testPlanPhones || []).includes(phone) || ((options as any).testPlanEmails || []).includes(email);
     const visiblePlans = plans.filter((p) => (canSeeTest || !(p as any).isTestPlan) && (!trialUsed || p.type !== 'trial'));
 
     // Compute monthly vs yearly savings dynamically from the plan data

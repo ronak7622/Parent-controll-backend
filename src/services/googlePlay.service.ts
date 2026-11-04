@@ -21,12 +21,14 @@ export const GOOGLE_PLAY_PRODUCT_MAP: Record<string, { type: 'plan' | 'addon'; i
   'com.parentprotect.plan.quarterly': { type: 'plan', internalId: 'plan_3_months' },
   'com.parentprotect.plan.halfyearly': { type: 'plan', internalId: 'plan_6_months' },
   'com.parentprotect.plan.yearly': { type: 'plan', internalId: 'plan_1_year' },
+  'com.parentprotect.plan.test': { type: 'plan', internalId: 'plan_3_days_test' },
 
   // Direct ID matching if Play Console uses matching planId
   'plan_1_month': { type: 'plan', internalId: 'plan_1_month' },
   'plan_3_months': { type: 'plan', internalId: 'plan_3_months' },
   'plan_6_months': { type: 'plan', internalId: 'plan_6_months' },
   'plan_1_year': { type: 'plan', internalId: 'plan_1_year' },
+  'plan_3_days_test': { type: 'plan', internalId: 'plan_3_days_test' },
 
   // In-App One-Time Consumables (Add-on Boosters)
   'com.parentprotect.addon.storage.20gb': { type: 'addon', internalId: 'addon_storage_20gb' },

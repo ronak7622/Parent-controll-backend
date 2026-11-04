@@ -58,4 +58,10 @@ export const config = {
     serviceAccountJson: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || '',
     pubsubVerificationToken: process.env.GOOGLE_PLAY_PUBSUB_VERIFICATION_TOKEN || '',
   },
+
+  // Whitelisted emails that can see and purchase the 3-day test plan (₹5) in production
+  testerEmails: (process.env.TESTER_EMAILS || 'ronakshekhaliya111@gmail.com,ronakshekhaliya11111@gmail.com,ronakpatel.delogico@gmail.com,ronakvora47@gmail.com')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
 };

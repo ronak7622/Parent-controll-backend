@@ -3,6 +3,7 @@ import { Plan } from '../models/Plan';
 import { AddonPlan } from '../models/AddonPlan';
 import { Order } from '../models/Order';
 import { Subscription } from '../models/Subscription';
+import { User } from '../models/User';
 import { config } from '../config/env';
 import {
   isRazorpayConfigured,
@@ -117,6 +118,20 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
     // ─────────────────────────────────────────────────────────────
     const plan = await Plan.findOne({ planId, isActive: true });
     if (!plan) return res.status(404).json({ success: false, message: 'Plan not found' });
+
+    // Security Gate: If plan is a test plan, verify user is in whitelist
+    if ((plan as any).isTestPlan) {
+      const user = await User.findById(parentUserId).lean();
+      const userEmail = (user?.email || (req as any).user?.email || '').trim().toLowerCase();
+      const testerEmails = config.testerEmails || [];
+      if (!userEmail || !testerEmails.includes(userEmail)) {
+        return res.status(403).json({
+          success: false,
+          code: 'FORBIDDEN_TEST_PLAN',
+          message: 'This test plan is restricted to authorized testing accounts.',
+        });
+      }
+    }
 
     // Check Single Advance Queue limit
     const currentSub = await Subscription.findOne({ parentUserId });

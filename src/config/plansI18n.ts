@@ -27,6 +27,13 @@ export const PLAN_NAMES_I18N: Record<string, Record<string, string>> = {
     es: 'Plan de 1 año',
     fr: 'Forfait 1 an',
   },
+  plan_3_days_test: {
+    en: '3 Days QA Test Plan',
+    hi: '3 दिन का टेस्ट प्लान',
+    gu: '3 દિવસ ટેસ્ટ પ્લાન',
+    es: 'Plan de prueba de 3 días',
+    fr: 'Plan test de 3 jours',
+  },
 };
 
 export const ADDON_NAMES_I18N: Record<string, Record<string, string>> = {
