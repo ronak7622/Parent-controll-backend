@@ -28,6 +28,7 @@ import { cacheService } from '../services/cache.service';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { Subscription } from '../models/Subscription';
 import { checkQuotaBlocked } from './ingest.controller';
+import { config } from '../config/env';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC+5:30
 
@@ -376,14 +377,34 @@ export const getCapturedMedia = async (req: AuthRequest, res: Response) => {
 
     const host = req.get('host') || 'localhost:5000';
     const baseUrl = `${req.protocol}://${host}`;
+    const cdnBase = (config.cdnPublicDomain || config.r2.publicDomain || 'https://media.childprotect.info').replace(/\/+$/, '');
+
+    const normalizeUrl = (raw: string): string => {
+      if (!raw) return raw;
+      let u = raw.trim();
+      if (u.includes('media.childprotect.app')) {
+        u = u.replace('media.childprotect.app', 'media.childprotect.info');
+      }
+      if (u.includes('.r2.cloudflarestorage.com/')) {
+        u = u.replace(/https:\/\/[^/]+\.r2\.cloudflarestorage\.com\//, `${cdnBase}/`);
+      }
+      if (u.startsWith('/uploads')) {
+        return `${baseUrl}${u}`;
+      }
+      if (u.startsWith('captures/') || u.startsWith('/captures/')) {
+        const clean = u.replace(/^\/+/, '');
+        return `${cdnBase}/${clean}`;
+      }
+      return u;
+    };
 
     const formattedItems = items.map((doc) => {
       const obj = doc.toObject ? doc.toObject() : doc;
-      if (obj.mediaUrl && obj.mediaUrl.startsWith('/uploads')) {
-        obj.mediaUrl = `${baseUrl}${obj.mediaUrl}`;
+      if (obj.mediaUrl) {
+        obj.mediaUrl = normalizeUrl(obj.mediaUrl);
       }
-      if (obj.thumbnailUrl && obj.thumbnailUrl.startsWith('/uploads')) {
-        obj.thumbnailUrl = `${baseUrl}${obj.thumbnailUrl}`;
+      if (obj.thumbnailUrl) {
+        obj.thumbnailUrl = normalizeUrl(obj.thumbnailUrl);
       }
       if (!obj.thumbnailUrl) {
         obj.thumbnailUrl = obj.mediaUrl;
@@ -2962,6 +2983,7 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
         endLat: dt.endLat,
         endLng: dt.endLng,
         routePoints: Array.isArray(dt.routePoints) ? dt.routePoints : [],
+        stops: Array.isArray(dt.stops) ? dt.stops : [],
         date: dt.date,
       };
     });

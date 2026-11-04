@@ -53,11 +53,12 @@ export const generatePairingCode = async (req: any, res: Response) => {
     const parentUserId = req.user?.userId || req.body.parentUserId;
 
     const code = customCode || Math.floor(100000 + Math.random() * 900000).toString();
-    const isRealDeviceId = deviceId && !deviceId.startsWith('session_');
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const isRealDeviceId = (deviceId && !deviceId.startsWith('session_')) || isObjId;
 
     if (isRealDeviceId) {
       await Device.findOneAndUpdate(
-        { deviceId },
+        { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
         {
           pairingCode: code,
           isPaired: false,
@@ -245,8 +246,13 @@ export const checkSetupStatus = async (req: any, res: Response) => {
     const { code } = req.params;
     const parentUserId = req.user?.userId;
 
+    const isObjId = mongoose.isValidObjectId(code);
     const devices = await Device.find({
-      $or: [{ pairingCode: code }, { deviceId: code }],
+      $or: [
+        { pairingCode: code },
+        { deviceId: code },
+        ...(isObjId ? [{ _id: code }] : []),
+      ],
     });
 
     if (devices && devices.length > 0) {
@@ -695,7 +701,7 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
 export const sendRemoteCommand = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
-    const { command, actionType } = req.body;
+    const { command, actionType } = req.body || {};
     const targetCommand = command || actionType || 'TAKE_SCREENSHOT';
 
     const isObjId = mongoose.isValidObjectId(deviceId);
@@ -705,10 +711,10 @@ export const sendRemoteCommand = async (req: AuthRequest, res: Response) => {
     }
 
     // Emit via Socket.io signaling
-    getSignalingIo()?.to(device.deviceId).emit('remote-command', { command: targetCommand, deviceId: device.deviceId });
+    getSignalingIo()?.to(device.deviceId).emit('remote-command', { command: targetCommand, deviceId: device.deviceId, ...(req.body || {}) });
 
     if (device.fcmToken) {
-      await sendFcmDataCommand(device.fcmToken, targetCommand, { action: targetCommand });
+      await sendFcmDataCommand(device.fcmToken, targetCommand, { action: targetCommand, ...(req.body || {}) });
     }
 
     return res.json({

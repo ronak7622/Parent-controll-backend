@@ -658,6 +658,19 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
 
     console.log(`[MEDIA-UPLOAD] Captured ${type} uploaded for device ${deviceId}: ${mediaUrl}`);
 
+    try {
+      getSignalingIo()?.to(deviceId).emit('media-captured', {
+        captureId: capture._id,
+        deviceId,
+        mediaUrl: capture.mediaUrl,
+        thumbnailUrl: capture.thumbnailUrl,
+        appName: capture.appName,
+        packageName: capture.packageName,
+        type: capture.type,
+        timestamp: capture.timestamp,
+      });
+    } catch (_) {}
+
     return res.json({
       success: true,
       mediaUrl,

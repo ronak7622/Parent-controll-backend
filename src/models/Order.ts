@@ -11,14 +11,14 @@ export interface IOrder extends Document {
   validityStart: Date;
   validityEnd: Date;
   txnId: string;
-  status: 'pending' | 'processing' | 'success' | 'failed' | 'completed' | 'queued' | 'refunded';
+  status: 'pending' | 'processing' | 'success' | 'failed' | 'completed' | 'queued' | 'refunded' | 'cancelled';
   paymentProvider?: 'razorpay' | 'google_play' | 'trial' | 'none';
   providerOrderId?: string;
   providerPaymentId?: string;
   providerSubscriptionId?: string;
   providerPurchaseToken?: string;
   failureReason?: string;
-  paymentStatus?: 'processing' | 'paid' | 'failed' | 'refunded';
+  paymentStatus?: 'processing' | 'paid' | 'failed' | 'refunded' | 'cancelled';
   planStatus?: 'in_active' | 'active' | 'processing' | 'pending_to_active';
   activatesOn?: Date;
   refundInfo?: { refundId?: string; amount?: number; at?: Date; startedAt?: Date; completedAt?: Date; reason?: string; status?: 'created' | 'processed' | 'failed' | 'pending'; expectedBy?: Date };
@@ -50,7 +50,7 @@ const OrderSchema: Schema = new Schema(
     txnId: { type: String, required: true, unique: true, index: true },
     status: {
       type: String,
-      enum: ['pending', 'processing', 'success', 'failed', 'completed', 'queued', 'refunded'],
+      enum: ['pending', 'processing', 'success', 'failed', 'completed', 'queued', 'refunded', 'cancelled'],
       default: 'pending',
       index: true,
     },
@@ -67,7 +67,7 @@ const OrderSchema: Schema = new Schema(
     failureReason: { type: String },
     paymentStatus: {
       type: String,
-      enum: ['processing', 'paid', 'failed', 'refunded'],
+      enum: ['processing', 'paid', 'failed', 'refunded', 'cancelled'],
       index: true,
     },
     planStatus: {

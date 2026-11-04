@@ -1268,6 +1268,7 @@ export const getPurchaseHistory = async (req: Request, res: Response) => {
         case 'completed':
         case 'success': return { paymentStatus: 'paid', planStatus: 'active' };
         case 'queued': return { paymentStatus: 'paid', planStatus: 'pending_to_active' };
+        case 'cancelled': return { paymentStatus: 'cancelled', planStatus: 'in_active' };
         case 'failed': return { paymentStatus: 'failed', planStatus: 'in_active' };
         case 'refunded': return { paymentStatus: 'refunded', planStatus: 'in_active' };
         default: return { paymentStatus: 'processing', planStatus: 'processing' };
@@ -1300,8 +1301,11 @@ export const getPurchaseHistory = async (req: Request, res: Response) => {
     for (const order of rawOrders) {
       if (order.type === 'storage_addon' || order.type === 'live_addon') {
         const parentTxnId = order.metadata?.parentTxnId;
+        const parentOrderId = order.metadata?.parentOrderId;
         const matchingPlan = planOrders.find((p) => {
+          if (parentOrderId && String(p._id) === String(parentOrderId)) return true;
           if (parentTxnId && p.txnId === parentTxnId) return true;
+          if (p.providerOrderId && order.providerOrderId && p.providerOrderId === order.providerOrderId) return true;
           if (p.txnId && order.txnId && order.txnId.startsWith(p.txnId)) return true;
           if (p.validityEnd && order.validityEnd && new Date(p.validityEnd).getTime() === new Date(order.validityEnd).getTime()) return true;
           return false;

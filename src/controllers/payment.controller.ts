@@ -40,7 +40,7 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       });
     }
 
-    const { planId, addonId, region = 'HIGH_USD', allowStorageTrim = false } = req.body;
+    const { planId, addonId, storageAddonId, liveAddonId, region = 'HIGH_USD', allowStorageTrim = false } = req.body;
 
     if (!planId && !addonId) {
       return res.status(400).json({ success: false, message: 'Either planId or addonId is required' });
@@ -131,10 +131,34 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
     }
 
     const { durationMs, price, currency } = await buildPlanSnapshot(plan, region);
-    const receipt = `rcpt_plan_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const { amount, currency: rzpCurrency } = getAmountInSmallestUnit(price, region);
+    const normRegion = region === 'IN_INR' || region === 'IN' ? 'IN_INR' : 'OTHER_USD';
 
-    // Create a one-time Razorpay Order (MANUAL renewal / one-time purchase)
+    // Check if user selected bundled add-ons alongside base plan
+    let storageAddon: any = null;
+    let storagePrice = 0;
+    if (storageAddonId) {
+      storageAddon = await AddonPlan.findOne({ addonId: storageAddonId, isActive: true });
+      if (storageAddon) {
+        const sSource = (storageAddon as any).webPriceByRegion || (storageAddon as any).priceByRegion || {};
+        storagePrice = normRegion === 'IN_INR' ? (sSource.IN_INR ?? 99) : (sSource.OTHER_USD ?? sSource.HIGH_USD ?? 3.99);
+      }
+    }
+
+    let liveAddon: any = null;
+    let livePrice = 0;
+    if (liveAddonId) {
+      liveAddon = await AddonPlan.findOne({ addonId: liveAddonId, isActive: true });
+      if (liveAddon) {
+        const lSource = (liveAddon as any).webPriceByRegion || (liveAddon as any).priceByRegion || {};
+        livePrice = normRegion === 'IN_INR' ? (lSource.IN_INR ?? 99) : (lSource.OTHER_USD ?? lSource.HIGH_USD ?? 3.99);
+      }
+    }
+
+    const totalCombinedPrice = price + storagePrice + livePrice;
+    const receipt = `rcpt_plan_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const { amount, currency: rzpCurrency } = getAmountInSmallestUnit(totalCombinedPrice, region);
+
+    // Create a one-time Razorpay Order (MANUAL renewal / one-time purchase with bundled addons)
     const rzpOrder = await createRazorpayOrder({
       amount,
       currency: rzpCurrency,
@@ -142,12 +166,17 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       notes: {
         parentUserId,
         planId: plan.planId,
+        storageAddonId: storageAddon?.addonId || '',
+        liveAddonId: liveAddon?.addonId || '',
         region,
         allowStorageTrim: String(allowStorageTrim),
       },
     });
 
-    // Create a 'pending' internal Order
+    const validityStartDt = isRealPlanActive ? currentSub.expireAt : now;
+    const validityEndDt = new Date((isRealPlanActive ? currentSub.expireAt.getTime() : now.getTime()) + durationMs);
+
+    // Create a 'pending' internal Order for the primary plan
     const internalOrder = await Order.create({
       parentUserId,
       type: 'plan',
@@ -155,8 +184,8 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       planLabel: isRealPlanActive ? `${plan.name} (Advance Queued)` : plan.name,
       amount: price,
       currency,
-      validityStart: isRealPlanActive ? currentSub.expireAt : now,
-      validityEnd: new Date((isRealPlanActive ? currentSub.expireAt.getTime() : now.getTime()) + durationMs),
+      validityStart: validityStartDt,
+      validityEnd: validityEndDt,
       txnId: `txn_rzp_${rzpOrder.orderId}`,
       status: 'pending',
       paymentStatus: 'processing',
@@ -165,8 +194,72 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       paymentProvider: 'razorpay',
       providerOrderId: rzpOrder.orderId,
       autoRenew: false,
-      metadata: { region, allowStorageTrim, rzpAmount: rzpOrder.amount, hadActivePlan: isRealPlanActive },
+      metadata: {
+        region,
+        allowStorageTrim,
+        rzpAmount: rzpOrder.amount,
+        hadActivePlan: isRealPlanActive,
+        totalCombinedPrice,
+        bundledStorageAddonId: storageAddon?.addonId,
+        bundledLiveAddonId: liveAddon?.addonId,
+      },
     });
+
+    // If storage addon was bundled, create its pending internal Order
+    if (storageAddon) {
+      await Order.create({
+        parentUserId,
+        type: 'storage_addon',
+        addonId: storageAddon.addonId,
+        planLabel: storageAddon.name,
+        amount: storagePrice,
+        currency,
+        validityStart: validityStartDt,
+        validityEnd: validityEndDt,
+        txnId: `txn_rzp_${rzpOrder.orderId}_storage`,
+        status: 'pending',
+        paymentStatus: 'processing',
+        planStatus: 'processing',
+        reconcileBy: new Date(Date.now() + 15 * 60 * 1000),
+        paymentProvider: 'razorpay',
+        providerOrderId: rzpOrder.orderId,
+        autoRenew: false,
+        metadata: {
+          region,
+          parentTxnId: `txn_rzp_${rzpOrder.orderId}`,
+          parentOrderId: internalOrder._id,
+          isBundledWithPlan: true,
+        },
+      });
+    }
+
+    // If live minutes addon was bundled, create its pending internal Order
+    if (liveAddon) {
+      await Order.create({
+        parentUserId,
+        type: 'live_addon',
+        addonId: liveAddon.addonId,
+        planLabel: liveAddon.name,
+        amount: livePrice,
+        currency,
+        validityStart: validityStartDt,
+        validityEnd: validityEndDt,
+        txnId: `txn_rzp_${rzpOrder.orderId}_live`,
+        status: 'pending',
+        paymentStatus: 'processing',
+        planStatus: 'processing',
+        reconcileBy: new Date(Date.now() + 15 * 60 * 1000),
+        paymentProvider: 'razorpay',
+        providerOrderId: rzpOrder.orderId,
+        autoRenew: false,
+        metadata: {
+          region,
+          parentTxnId: `txn_rzp_${rzpOrder.orderId}`,
+          parentOrderId: internalOrder._id,
+          isBundledWithPlan: true,
+        },
+      });
+    }
 
     return res.json({
       success: true,
@@ -176,6 +269,7 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       currency: rzpOrder.currency,
       keyId: config.razorpay.keyId,
       internalOrderId: internalOrder._id,
+      totalAmount: totalCombinedPrice,
     });
   } catch (err: any) {
     console.error('[Payment] Error creating Razorpay checkout:', err);
@@ -310,6 +404,43 @@ export const verifyRazorpayPayment = async (req: Request, res: Response) => {
         (result.order as any).planStatus = planStatusVal;
         if (activatesOnVal) (result.order as any).activatesOn = activatesOnVal;
       } catch {}
+
+      // Also apply entitlement and update any linked bundled add-on orders sharing this providerOrderId
+      if (razorpay_order_id) {
+        try {
+          const linkedAddons = await Order.find({
+            parentUserId,
+            providerOrderId: razorpay_order_id,
+            type: { $in: ['storage_addon', 'live_addon'] },
+            status: { $ne: 'completed' },
+          });
+          for (const addonOrd of linkedAddons) {
+            try {
+              await applyEntitlement({
+                parentUserId,
+                type: addonOrd.type,
+                addonId: addonOrd.addonId,
+                region: addonOrd.metadata?.region || 'IN_INR',
+                platform: 'web',
+                paymentProvider: 'razorpay',
+                providerOrderId: razorpay_order_id,
+                providerPaymentId: razorpay_payment_id,
+                existingOrderId: addonOrd._id.toString(),
+              });
+              addonOrd.status = 'completed';
+              addonOrd.paymentStatus = 'paid';
+              addonOrd.planStatus = 'active';
+              addonOrd.activatedAt = new Date();
+              await addonOrd.save();
+            } catch (aErr: any) {
+              console.error('[Payment] Linked addon applyEntitlement failed:', aErr?.message);
+            }
+          }
+        } catch (lErr: any) {
+          console.error('[Payment] Error resolving linked addon orders:', lErr?.message);
+        }
+      }
+
       return res.json({
         success: true,
         message: 'Payment verified successfully and entitlement applied.',
@@ -345,6 +476,58 @@ export const verifyRazorpayPayment = async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Payment] Error verifying Razorpay payment:', err);
     return res.status(500).json({ success: false, message: err?.message || 'Payment verification failed' });
+  }
+};
+
+/**
+ * POST /payment/razorpay/cancel
+ * Client invokes this when user closes/cancels Razorpay checkout modal without completing payment.
+ * Immediately transitions the pending order(s) to 'cancelled' so user is not shown 15m 'processing'.
+ */
+export const cancelRazorpayPayment = async (req: Request, res: Response) => {
+  try {
+    const parentUserId = (req as any).user?.userId || (req as any).user?.id || (req as any).user?._id;
+    if (!parentUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const { internalOrderId, providerOrderId } = req.body;
+    if (!internalOrderId && !providerOrderId) {
+      return res.status(400).json({ success: false, message: 'OrderId required to cancel' });
+    }
+
+    const query: any = { parentUserId };
+    if (internalOrderId) query._id = internalOrderId;
+    else if (providerOrderId) query.providerOrderId = providerOrderId;
+
+    const primaryOrder = await Order.findOne(query);
+    if (!primaryOrder) {
+      return res.json({ success: true, message: 'No pending order found or already resolved' });
+    }
+
+    const targetProviderOrderId = primaryOrder.providerOrderId || providerOrderId;
+    const ordersToCancel = targetProviderOrderId
+      ? await Order.find({
+          parentUserId,
+          $or: [
+            { providerOrderId: targetProviderOrderId },
+            { _id: primaryOrder._id },
+          ],
+          paymentStatus: { $in: ['processing', 'pending'] },
+        })
+      : [primaryOrder];
+
+    for (const ord of ordersToCancel) {
+      ord.status = 'cancelled';
+      ord.paymentStatus = 'cancelled';
+      ord.planStatus = 'in_active';
+      ord.failedAt = new Date();
+      ord.failureReason = 'Payment was cancelled before completion. No amount was charged.';
+      await ord.save();
+    }
+
+    return res.json({ success: true, message: 'Payment cancelled successfully' });
+  } catch (err: any) {
+    console.error('[Payment] Error cancelling Razorpay order:', err);
+    return res.status(500).json({ success: false, message: err?.message || 'Failed to cancel order' });
   }
 };
 
@@ -418,6 +601,42 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
               if (paymentEntity?.method) order.paymentMethod = paymentEntity.method;
               await order.save();
             } catch {}
+
+            // Also activate any linked bundled addon orders for this providerOrderId
+            try {
+              const linkedAddonOrders = await Order.find({
+                parentUserId: order.parentUserId,
+                providerOrderId: orderId,
+                type: { $in: ['storage_addon', 'live_addon'] },
+                status: { $ne: 'completed' },
+              });
+              for (const aOrd of linkedAddonOrders) {
+                try {
+                  await applyEntitlement({
+                    parentUserId: aOrd.parentUserId,
+                    type: aOrd.type,
+                    addonId: aOrd.addonId,
+                    region: aOrd.metadata?.region || 'OTHER_USD',
+                    platform: 'web',
+                    paymentProvider: 'razorpay',
+                    providerOrderId: orderId,
+                    providerPaymentId: paymentId,
+                    autoRenew: false,
+                    existingOrderId: aOrd._id.toString(),
+                  });
+                  aOrd.status = 'completed';
+                  aOrd.paymentStatus = 'paid';
+                  aOrd.planStatus = 'active';
+                  aOrd.activatedAt = new Date();
+                  if (paymentEntity?.method) aOrd.paymentMethod = paymentEntity.method;
+                  await aOrd.save();
+                } catch (aErr: any) {
+                  console.error('[Razorpay Webhook] Failed applying bundled addon entitlement:', aErr?.message);
+                }
+              }
+            } catch (linkErr: any) {
+              console.error('[Razorpay Webhook] Error processing linked addon orders:', linkErr?.message);
+            }
           } catch (grantErr: any) {
             console.error('[Razorpay Webhook] applyEntitlement failed for order:', orderId, grantErr?.message);
             if (paymentId) {
@@ -447,7 +666,7 @@ export const handleRazorpayWebhook = async (req: Request, res: Response) => {
       const errorDesc = paymentEntity?.error_description || 'Payment failed';
 
       if (orderId) {
-        await Order.updateOne(
+        await Order.updateMany(
           { providerOrderId: orderId, status: { $ne: 'completed' } },
           {
             $set: {

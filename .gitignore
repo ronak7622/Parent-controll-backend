@@ -9,3 +9,6 @@ scratch/
 
 *.env.txt
 scratch_inspect.js
+
+server.env
+*.env

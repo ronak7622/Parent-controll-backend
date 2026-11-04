@@ -182,10 +182,12 @@ export async function applyEntitlement(params: ApplyEntitlementParams): Promise<
   // GUARD #3: DEDUPLICATION / IDEMPOTENCY CHECK
   // Prevent duplicate double-apply if webhook and /verify arrive together
   // ══════════════════════════════════════════════════════════════════════
-  // Deduplication / Idempotency check across payment ID, purchase token, or gateway order ID
+  // Deduplication / Idempotency check across payment ID, purchase token, or gateway order ID (scoped by type)
   if (providerPaymentId || providerPurchaseToken || providerOrderId) {
     const existingCompleted = await Order.findOne({
       parentUserId,
+      type,
+      ...(addonId ? { addonId } : {}),
       $or: [
         ...(providerPaymentId ? [{ providerPaymentId, status: 'completed' }] : []),
         ...(providerPurchaseToken ? [{ providerPurchaseToken, status: 'completed' }] : []),

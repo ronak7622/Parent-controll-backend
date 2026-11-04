@@ -9,6 +9,7 @@ import {
 import {
   createRazorpayPayment,
   verifyRazorpayPayment,
+  cancelRazorpayPayment,
   handleRazorpayWebhook,
   verifyGooglePayment,
   recordGooglePendingPurchase,
@@ -197,6 +198,7 @@ router.get('/config/permission-catalog', getPermissionCatalog);
 // Online Payment Routes (Razorpay for Web, Google Play for App)
 router.post('/payment/razorpay/create', authenticateJwt, createRazorpayPayment);
 router.post('/payment/razorpay/verify', authenticateJwt, verifyRazorpayPayment);
+router.post('/payment/razorpay/cancel', authenticateJwt, cancelRazorpayPayment);
 router.post('/payment/razorpay/webhook', handleRazorpayWebhook);
 router.post('/payment/google/verify', authenticateJwt, verifyGooglePayment);
 router.post('/payment/google/pending', authenticateJwt, recordGooglePendingPurchase);
@@ -251,6 +253,9 @@ router.put('/parent/device/:deviceId/restrictions', authenticateJwt, verifyDevic
 router.post('/parent/device/:deviceId/restrictions', authenticateJwt, verifyDeviceOwnership, updateDeviceSettings);
 router.post('/device/:deviceId/settings', authenticateJwt, verifyDeviceOwnership, updateDeviceSettings);
 router.post('/device/:deviceId/command', authenticateJwt, verifyDeviceOwnership, sendRemoteCommand);
+router.post('/parent/device/:deviceId/command', authenticateJwt, verifyDeviceOwnership, sendRemoteCommand);
+router.post('/parent/device/:deviceId/request-screenshot', authenticateJwt, verifyDeviceOwnership, sendRemoteCommand);
+router.post('/device/:deviceId/request-screenshot', authenticateJwt, verifyDeviceOwnership, sendRemoteCommand);
 router.put('/parent/device/:deviceId/protection', authenticateJwt, verifyDeviceOwnership, updateDeviceProtection);
 router.post('/parent/device/:deviceId/protection', authenticateJwt, verifyDeviceOwnership, updateDeviceProtection);
 router.post('/device/verify-secret-code', verifyChildSecretCode);
