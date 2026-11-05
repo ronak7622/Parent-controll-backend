@@ -114,7 +114,9 @@ export const getRecordingConfig = async (req: Request, res: Response) => {
  */
 export const startRecording = async (req: Request, res: Response) => {
   try {
-    const { deviceId: inputDeviceId, recordingType, durationSeconds = 60, cameraPosition = 'back', triggerSource = 'schedule', quality = 'medium' } = req.body;
+    const { deviceId: inputDeviceId, recordingType, durationSeconds = 60, triggerSource = 'schedule', quality = 'medium' } = req.body;
+    const rawCamPos = req.body.cameraPosition || req.body.camera || 'back';
+    const cameraPosition = String(rawCamPos).toLowerCase() === 'front' ? 'front' : 'back';
 
     if (!inputDeviceId || !recordingType || !['audio', 'video', 'screen'].includes(recordingType)) {
       return res.status(400).json({ success: false, message: 'Invalid deviceId or recordingType' });
@@ -211,6 +213,7 @@ export const startRecording = async (req: Request, res: Response) => {
         recordingType,
         durationSeconds: String(durationSeconds),
         cameraPosition: String(cameraPosition),
+        camera: String(cameraPosition),
         triggerSource,
         quality: String(quality),
       });
@@ -224,6 +227,7 @@ export const startRecording = async (req: Request, res: Response) => {
         recordingType,
         durationSeconds: String(durationSeconds),
         cameraPosition: String(cameraPosition),
+        camera: String(cameraPosition),
         triggerSource,
         quality: String(quality),
       });

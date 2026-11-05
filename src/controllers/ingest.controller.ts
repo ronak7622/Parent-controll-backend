@@ -1912,8 +1912,8 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
           if (!s || typeof s.latitude !== 'number' || typeof s.longitude !== 'number') return false;
           const sLat = Number(s.latitude);
           const sLng = Number(s.longitude);
-          if (startLatNum && startLngNum && calcDistMeters(sLat, sLng, startLatNum, startLngNum) <= 100) return false;
-          if (endLatNum && endLngNum && calcDistMeters(sLat, sLng, endLatNum, endLngNum) <= 100) return false;
+          if (startLatNum && startLngNum && calcDistMeters(sLat, sLng, startLatNum, startLngNum) <= 150) return false;
+          if (endLatNum && endLngNum && calcDistMeters(sLat, sLng, endLatNum, endLngNum) <= 150) return false;
           return true;
         })
         .map((s: any) => ({

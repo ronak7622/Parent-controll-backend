@@ -504,41 +504,20 @@ export const getParentDevices = async (req: AuthRequest, res: Response) => {
     const thresholdSec = Number(options?.onlineThresholdSeconds) || 150;
 
     if (!parentUserId) {
-      const allDevices = await Device.find({
-        isPaired: true,
-        deviceId: { $not: /^session_/ }
-      })
-      .select('-installedApps')
-      .sort({ updatedAt: -1 });
-
-      const enriched = allDevices.map((d: any) => {
-        const devObj = typeof d.toObject === 'function' ? d.toObject() : { ...d };
-        return enrichDeviceWithOnlineStatus(devObj, thresholdSec);
-      });
-
-      return res.json({
-        success: true,
-        devices: enriched,
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized. Parent authentication required to access devices.',
       });
     }
 
-    let rawDevices = await Device.find({
-      $or: [
-        { parentUserId },
-        { isPaired: true, parentUserId: null, deviceId: { $not: /^session_/ } }
-      ]
+    const rawDevices = await Device.find({
+      parentUserId,
+      deviceId: { $not: /^session_/ }
     })
     .select('-installedApps')
     .sort({ updatedAt: -1 });
 
     const realDevices = rawDevices.filter(d => !d.deviceId.startsWith('session_'));
-
-    for (const dev of realDevices) {
-      if (!dev.parentUserId) {
-        dev.parentUserId = parentUserId as any;
-        await dev.save();
-      }
-    }
 
     const enriched = realDevices.map((d: any) => {
       const devObj = typeof d.toObject === 'function' ? d.toObject() : { ...d };

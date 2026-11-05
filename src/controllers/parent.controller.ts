@@ -26,6 +26,7 @@ import { sendFcmDataCommand } from '../services/fcm.service';
 import { getReadQuery, buildShardFilter, clampPaginationLimit } from '../dal/db.dal';
 import { cacheService } from '../services/cache.service';
 import { StorageAccountingService } from '../services/StorageAccountingService';
+import { bulkDeleteMediaFromR2, deleteMediaFromR2 } from '../services/r2.service';
 import { Subscription } from '../models/Subscription';
 import { checkQuotaBlocked } from './ingest.controller';
 import { config } from '../config/env';
@@ -491,8 +492,24 @@ export const deleteCapturedMedia = async (req: AuthRequest, res: Response) => {
       query.type = type.trim();
     }
 
+    // Clean up R2 media & storage accounting before/alongside Mongo doc deletion
+    const docs = await MediaCapture.find(query).select('_id mediaUrl thumbnailUrl fileSizeBytes type deviceId');
+    if (docs.length > 0) {
+      const mediaUrls = docs.flatMap((d) => [d.mediaUrl, d.thumbnailUrl]).filter(Boolean) as string[];
+      if (mediaUrls.length > 0) {
+        bulkDeleteMediaFromR2(Array.from(new Set(mediaUrls))).catch((err) =>
+          console.warn('[MEDIA-CAPTURE-DELETE-R2-ERROR]', err?.message)
+        );
+      }
+      const totalBytes = docs.reduce((acc, d) => acc + ((d as any).fileSizeBytes || 50000), 0);
+      const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+      if (parentUserId && totalBytes > 0) {
+        StorageAccountingService.updateStorage(parentUserId, deviceId, 'photo', -Math.abs(totalBytes)).catch(() => {});
+      }
+    }
+
     const result = await MediaCapture.deleteMany(query);
-    return res.json({ success: true, deletedCount: result.deletedCount });
+    return res.json({ success: true, deletedCount: result.deletedCount || docs.length });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -1667,7 +1684,26 @@ export const streamCallRecording = async (req: AuthRequest, res: Response) => {
 export const deleteCallRecording = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const doc = await CallRecording.findById(id);
+    if (!doc) {
+      return res.status(404).json({ success: false, message: 'Call recording not found' });
+    }
+
+    const mediaUrl = (doc as any).mediaUrl || (doc as any).audioUrl || '';
+    const bytes = (doc as any).fileSizeBytes || 100000;
+    const deviceId = doc.deviceId;
+
     await CallRecording.findByIdAndDelete(id);
+
+    if (mediaUrl) {
+      deleteMediaFromR2(mediaUrl).catch((err) => console.warn('[CALL-REC-DELETE-R2-ERROR]', err?.message));
+    }
+
+    const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+    if (parentUserId && bytes > 0) {
+      StorageAccountingService.updateStorage(parentUserId, deviceId, 'audio', -Math.abs(bytes)).catch(() => {});
+    }
+
     return res.json({ success: true, message: 'Call recording deleted successfully' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -1714,6 +1750,21 @@ export const deleteCallRecordingsForDay = async (req: AuthRequest, res: Response
       ];
     }
 
+    const docs = await CallRecording.find(query).select('_id mediaUrl audioUrl fileSizeBytes deviceId');
+    if (docs.length > 0) {
+      const mediaUrls = docs.map((d: any) => d.mediaUrl || d.audioUrl || '').filter(Boolean);
+      if (mediaUrls.length > 0) {
+        bulkDeleteMediaFromR2(Array.from(new Set(mediaUrls))).catch((err) =>
+          console.warn('[CALL-REC-DAY-DELETE-R2-ERROR]', err?.message)
+        );
+      }
+      const totalBytes = docs.reduce((acc, d: any) => acc + (d.fileSizeBytes || 100000), 0);
+      const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+      if (parentUserId && totalBytes > 0) {
+        StorageAccountingService.updateStorage(parentUserId, deviceId, 'audio', -Math.abs(totalBytes)).catch(() => {});
+      }
+    }
+
     const result = await CallRecording.deleteMany(query);
     return res.json({
       success: true,
@@ -1755,6 +1806,21 @@ export const deleteAllCallRecordings = async (req: AuthRequest, res: Response) =
       ];
     }
 
+    const docs = await CallRecording.find(query).select('_id mediaUrl audioUrl fileSizeBytes deviceId');
+    if (docs.length > 0) {
+      const mediaUrls = docs.map((d: any) => d.mediaUrl || d.audioUrl || '').filter(Boolean);
+      if (mediaUrls.length > 0) {
+        bulkDeleteMediaFromR2(Array.from(new Set(mediaUrls))).catch((err) =>
+          console.warn('[CALL-REC-ALL-DELETE-R2-ERROR]', err?.message)
+        );
+      }
+      const totalBytes = docs.reduce((acc, d: any) => acc + (d.fileSizeBytes || 100000), 0);
+      const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+      if (parentUserId && totalBytes > 0) {
+        StorageAccountingService.updateStorage(parentUserId, deviceId, 'audio', -Math.abs(totalBytes)).catch(() => {});
+      }
+    }
+
     const result = await CallRecording.deleteMany(query);
     return res.json({
       success: true,
@@ -1765,7 +1831,6 @@ export const deleteAllCallRecordings = async (req: AuthRequest, res: Response) =
     return res.status(500).json({ success: false, message: error.message });
   }
 };
-
 
 const IGNORED_SYSTEM_PACKAGES = new Set([
   'com.android.launcher',
@@ -2993,11 +3058,11 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
         if (!sLat || !sLng) return false;
         if (startLat && startLng) {
           const distFromStart = calculateDistanceMeters(sLat, sLng, startLat, startLng);
-          if (distFromStart <= 100) return false;
+          if (distFromStart <= 150) return false;
         }
         if (endLat && endLng) {
           const distFromEnd = calculateDistanceMeters(sLat, sLng, endLat, endLng);
-          if (distFromEnd <= 100) return false;
+          if (distFromEnd <= 150) return false;
         }
         return true;
       });
