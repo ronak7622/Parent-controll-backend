@@ -29,6 +29,7 @@ function loadDisposableDomains(): Set<string> {
   // Fallback initial list
   cachedSet = new Set<string>([
     'boffweb.com',
+    'ooynib.com',
     'mailinator.com',
     'tempmail.com',
     'temp-mail.org',
