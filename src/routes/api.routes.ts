@@ -5,6 +5,7 @@ import {
   updateUserLanguage,
   updateParentFcmToken,
   logout,
+  validateEmailAddress,
 } from '../controllers/auth.controller';
 import {
   createRazorpayPayment,
@@ -228,6 +229,7 @@ router.post('/parent/auto-delete-settings', authenticateJwt, updateAutoDeleteCon
 // 1. Auth Routes (Parent App & Web - Unified Firebase Gateway)
 // ===================================
 router.post('/auth/firebase', authRateLimiter, authenticateFirebase);
+router.post('/auth/validate-email', authRateLimiter, validateEmailAddress);
 router.post('/auth/logout', authenticateJwt, logout);
 router.post('/user/language', authenticateJwt, updateUserLanguage);
 router.put('/user/language', authenticateJwt, updateUserLanguage);

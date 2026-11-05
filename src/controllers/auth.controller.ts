@@ -6,7 +6,7 @@ import { User } from '../models/User';
 import { config } from '../config/env';
 import { connectDatabase } from '../config/database';
 import { verifyFirebaseToken, normalizeProvider } from '../services/firebaseAuth.service';
-import { isDisposableEmail } from '../utils/disposableEmail';
+import { isDisposableEmail, validateEmailDomainStrict } from '../utils/disposableEmail';
 import { normalizeEmail } from '../utils/normalizeEmail';
 import { cacheService } from '../services/cache.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
@@ -325,4 +325,26 @@ export const logout = async (req: any, res: Response) => {
     }
   } catch (_) {}
   return res.status(200).json({ success: true });
+};
+
+/**
+ * Standalone Email Validation Endpoint (Pre-signup check for Web & Flutter)
+ */
+export const validateEmailAddress = async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body || {};
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ valid: false, message: 'Please enter a valid email address.' });
+    }
+    const result = await validateEmailDomainStrict(email);
+    if (!result.valid) {
+      return res.status(400).json({
+        valid: false,
+        message: result.reason || 'Disposable or temporary email addresses are not allowed. Please use a valid personal email.',
+      });
+    }
+    return res.json({ valid: true });
+  } catch (err: any) {
+    return res.json({ valid: true });
+  }
 };
