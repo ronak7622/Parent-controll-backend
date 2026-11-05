@@ -114,12 +114,15 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
     // Google accounts are auto-verified by Google; password accounts require email verification
     const emailVerified = provider === 'google' ? true : Boolean(decoded.email_verified);
 
-    // Reject disposable emails on password auth (Google accounts exempt)
+    // Reject unverified/disposable emails on password auth (Google accounts exempt)
     if (normEmail && provider === 'password') {
-      if (isDisposableEmail(normEmail) || isDisposableEmail(email || '')) {
+      const emailCheck = await validateEmailDomainStrict(normEmail || email || '');
+      if (!emailCheck.valid) {
         return res.status(400).json({
           success: false,
-          message: 'Disposable or temporary email addresses are not allowed. Please use a valid personal email.',
+          message:
+            emailCheck.reason ||
+            'For child safety and account recovery, please use your genuine personal email (Gmail, Outlook, Yahoo, or Apple).',
         });
       }
     }
