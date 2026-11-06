@@ -1873,8 +1873,20 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
         continue;
       }
 
-      const startTime = item.startTime ? new Date(item.startTime) : new Date();
-      const endTime = item.endTime ? new Date(item.endTime) : new Date();
+      const parseTripDate = (rawStr?: any, rawMs?: any): Date => {
+        if (typeof rawMs === 'number' && rawMs > 0) {
+          return new Date(rawMs < 1e11 ? rawMs * 1000 : rawMs);
+        }
+        if (!rawStr) return new Date();
+        const str = String(rawStr).trim();
+        if (/^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?$/.test(str)) {
+          return new Date(`${str.replace(' ', 'T')}+05:30`);
+        }
+        return new Date(str);
+      };
+
+      const startTime = parseTripDate(item.startTime, item.startTimeMs);
+      const endTime = parseTripDate(item.endTime, item.endTimeMs);
       const dateStr = item.date || getLocalDateString(startTime);
 
       const avgSpd = Math.min(120, Number(item.avgSpeedKmH) || 0);
