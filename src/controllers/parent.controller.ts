@@ -1833,11 +1833,15 @@ export const deleteAllCallRecordings = async (req: AuthRequest, res: Response) =
 };
 
 const IGNORED_SYSTEM_PACKAGES = new Set([
+  'com.childprotect.childapp',
+  'com.parentprotect.childapp',
   'com.android.launcher',
   'com.sec.android.app.launcher',
   'com.miui.home',
   'com.oppo.launcher',
   'com.bbk.launcher2',
+  'com.vivo.launcher',
+  'com.huawei.android.launcher',
   'com.google.android.apps.nexuslauncher',
   'com.android.systemui',
   'com.google.android.permissioncontroller',
@@ -1870,20 +1874,8 @@ export function isIgnoredSystemPackage(pkg: string): boolean {
   if (!pkg) return true;
   const lower = pkg.toLowerCase().trim();
 
-  // Explicitly allow Camera and Settings apps
-  if (
-    lower.includes('camera') ||
-    lower.includes('settings') ||
-    lower.includes('calculator') ||
-    lower.includes('weather') ||
-    lower.includes('gallery') ||
-    lower.includes('photos') ||
-    lower.includes('clock')
-  ) {
-    if (!lower.includes('wirelesssettings') && !lower.includes('permissioncontroller')) {
-      return false;
-    }
-  }
+  // Child app itself
+  if (lower === 'com.childprotect.childapp' || lower === 'com.parentprotect.childapp') return true;
 
   if (IGNORED_SYSTEM_PACKAGES.has(lower)) return true;
   if (
@@ -1897,8 +1889,17 @@ export function isIgnoredSystemPackage(pkg: string): boolean {
     lower.includes('magazine') ||
     lower.includes('server.telecom') ||
     lower.includes('incallui') ||
+    lower.includes('wirelesssettings') ||
     lower.includes('permissioncontroller') ||
-    lower.includes('packageinstaller')
+    lower.includes('packageinstaller') ||
+    lower.includes('securitycenter') ||
+    lower.includes('securityadd') ||
+    lower.includes('guardprovider') ||
+    lower.includes('cleanmaster') ||
+    lower === 'com.google.android.gms' ||
+    lower === 'com.google.android.gsf' ||
+    lower.endsWith('.launcher') ||
+    lower.endsWith('.home')
   ) {
     return true;
   }
@@ -1906,10 +1907,7 @@ export function isIgnoredSystemPackage(pkg: string): boolean {
     lower.startsWith('com.android.internal') ||
     lower.startsWith('com.google.android.overlay') ||
     lower.startsWith('com.android.providers.') ||
-    lower.startsWith('com.google.android.providers.') ||
-    lower.startsWith('com.heytap.') ||
-    (lower.startsWith('com.oplus.') && !lower.includes('camera') && !lower.includes('settings') && !lower.includes('calculator') && !lower.includes('weather') && !lower.includes('soundrecorder') && !lower.includes('compass')) ||
-    (lower.startsWith('com.coloros.') && !lower.includes('camera') && !lower.includes('settings') && !lower.includes('calculator') && !lower.includes('weather') && !lower.includes('soundrecorder') && !lower.includes('compass'))
+    lower.startsWith('com.google.android.providers.')
   ) {
     return true;
   }
@@ -1961,6 +1959,7 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
     }
 
     let items = Array.from(dedupMap.values());
+    items = items.filter((item) => (item.usageDurationSeconds || 0) > 0);
     items.sort((a, b) => (b.usageDurationSeconds || 0) - (a.usageDurationSeconds || 0));
 
     const totalScreenTimeSeconds = items.reduce((acc, curr) => acc + (curr.usageDurationSeconds || 0), 0);
@@ -1972,7 +1971,20 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
 
     // Check device details & installed apps
     const dev = await Device.findOne({ deviceId }).select('isSyncingPastUsage pastUsageSynced lastUsageSyncTime installedApps');
-    const filteredInstalled = (dev?.installedApps || []).filter((a: any) => !isIgnoredSystemPackage(a.packageName));
+    const filteredInstalled = (dev?.installedApps || [])
+      .filter((a: any) => a && a.packageName && !isIgnoredSystemPackage(a.packageName))
+      .map((a: any) => ({
+        packageName: a.packageName,
+        appName: a.appName?.trim() || a.packageName,
+        appIcon: a.appIcon,
+        category: a.category || 'General',
+        isSystemApp: a.isSystemApp ?? false,
+      }))
+      .sort((a: any, b: any) => {
+        const nameA = (a.appName?.trim() || a.packageName || '').toLowerCase();
+        const nameB = (b.appName?.trim() || b.packageName || '').toLowerCase();
+        return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+      });
 
     return res.json({
       success: true,
@@ -2700,24 +2712,33 @@ export const getInstalledApps = async (req: AuthRequest, res: Response) => {
     if (!device) {
       return res.status(404).json({ success: false, message: 'Device not found', apps: [] });
     }
-    const apps = (device.installedApps || []).map((a: any) => ({
-      packageName: a.packageName,
-      appName: a.appName || a.packageName,
-      appIcon: a.appIcon || null,
-      isSystemApp: a.isSystemApp || false,
-      versionName: a.versionName || '',
-      versionCode: a.versionCode || null,
-      firstInstallTime: a.firstInstallTime || null,
-      lastUpdateTime: a.lastUpdateTime || null,
-      permissions: a.permissions || [],
-      grantedPermissions: a.grantedPermissions || [],
-      category: a.category || '',
-      targetSdkVersion: a.targetSdkVersion || null,
-      minSdkVersion: a.minSdkVersion || null,
-      apkSizeBytes: a.apkSizeBytes || null,
-      apkDownloadSizeBytes: a.apkDownloadSizeBytes || null,
-      isEnabled: a.isEnabled !== false,
-    }));
+
+    const apps = (device.installedApps || [])
+      .filter((a: any) => a && a.packageName && !isIgnoredSystemPackage(a.packageName))
+      .map((a: any) => ({
+        packageName: a.packageName,
+        appName: a.appName?.trim() || a.packageName,
+        appIcon: a.appIcon || null,
+        isSystemApp: a.isSystemApp || false,
+        versionName: a.versionName || '',
+        versionCode: a.versionCode || null,
+        firstInstallTime: a.firstInstallTime || null,
+        lastUpdateTime: a.lastUpdateTime || null,
+        permissions: a.permissions || [],
+        grantedPermissions: a.grantedPermissions || [],
+        category: a.category || '',
+        targetSdkVersion: a.targetSdkVersion || null,
+        minSdkVersion: a.minSdkVersion || null,
+        apkSizeBytes: a.apkSizeBytes || null,
+        apkDownloadSizeBytes: a.apkDownloadSizeBytes || null,
+        isEnabled: a.isEnabled !== false,
+      }))
+      .sort((a: any, b: any) => {
+      const nameA = (a.appName?.trim() || a.packageName || '').toLowerCase();
+      const nameB = (b.appName?.trim() || b.packageName || '').toLowerCase();
+      return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+    });
+
     return res.json({ success: true, apps, lastSyncedAt: device.updatedAt || device.lastUsageSyncTime || null });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message, apps: [] });
@@ -2726,7 +2747,6 @@ export const getInstalledApps = async (req: AuthRequest, res: Response) => {
 
 /**
  * Notifications for one app on one day (defaults to today, IST).
-
  */
 export const getNotificationsForApp = async (req: AuthRequest, res: Response) => {
   try {
