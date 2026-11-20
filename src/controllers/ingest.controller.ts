@@ -1894,7 +1894,14 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
       const maxSpd = Math.min(120, Math.max(avgSpd, rawMaxSpd));
 
       const rawMode = String(item.activityMode || '').toUpperCase();
-      const activityMode = (rawMode === 'RUNNING' || rawMode === 'WALKING' || avgSpd <= 15) ? 'WALKING' : 'DRIVING';
+      // Classify by the trip's PEAK speed, not just the average. A real drive through city traffic or
+      // a short hop can have avg <= 15 km/h yet clearly be a vehicle - the old avg-only rule wrongly
+      // forced those to WALKING. Nobody walks/runs faster than ~25 km/h, and we also trust the child's
+      // own DRIVING call when it saw a vehicle-speed spike (max > 18). Only then fall back to avg speed.
+      const activityMode =
+        (maxSpd > 25 || (rawMode === 'DRIVING' && maxSpd > 18)) ? 'DRIVING'
+        : (rawMode === 'WALKING' || rawMode === 'RUNNING' || avgSpd <= 15) ? 'WALKING'
+        : 'DRIVING';
 
       const rawRoute = Array.isArray(item.routePoints) ? item.routePoints : [];
       const cleanRoute = rawRoute.filter((p: any) => p && typeof p.latitude === 'number' && typeof p.longitude === 'number');
