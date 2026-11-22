@@ -66,7 +66,9 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       const receipt = `rcpt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const normRegion = region === 'IN_INR' || region === 'IN' ? 'IN_INR' : 'OTHER_USD';
       const priceSource = (addon as any).webPriceByRegion || (addon as any).priceByRegion || {};
-      const price = normRegion === 'IN_INR' ? (priceSource.IN_INR ?? 99) : (priceSource.OTHER_USD ?? priceSource.HIGH_USD ?? 3.99);
+      const basePrice = normRegion === 'IN_INR' ? (priceSource.IN_INR ?? 99) : (priceSource.OTHER_USD ?? priceSource.HIGH_USD ?? 3.99);
+      const discount = typeof (addon as any).planPriceDiscountPercen === 'number' ? (addon as any).planPriceDiscountPercen : 0;
+      const price = discount > 0 ? Math.round((basePrice * (1 - discount / 100)) * 100) / 100 : basePrice;
       const currency = normRegion === 'IN_INR' ? '₹' : '$';
 
       const { amount, currency: rzpCurrency } = getAmountInSmallestUnit(price, normRegion);
@@ -148,6 +150,9 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
     const { durationMs, price, currency } = await buildPlanSnapshot(plan, region);
     const normRegion = region === 'IN_INR' || region === 'IN' ? 'IN_INR' : 'OTHER_USD';
 
+    const planDiscount = typeof (plan as any).planPriceDiscountPercen === 'number' ? (plan as any).planPriceDiscountPercen : 0;
+    const effectivePlanPrice = planDiscount > 0 ? Math.round((price * (1 - planDiscount / 100)) * 100) / 100 : price;
+
     // Check if user selected bundled add-ons alongside base plan
     let storageAddon: any = null;
     let storagePrice = 0;
@@ -155,7 +160,9 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       storageAddon = await AddonPlan.findOne({ addonId: storageAddonId, isActive: true });
       if (storageAddon) {
         const sSource = (storageAddon as any).webPriceByRegion || (storageAddon as any).priceByRegion || {};
-        storagePrice = normRegion === 'IN_INR' ? (sSource.IN_INR ?? 99) : (sSource.OTHER_USD ?? sSource.HIGH_USD ?? 3.99);
+        const sBase = normRegion === 'IN_INR' ? (sSource.IN_INR ?? 99) : (sSource.OTHER_USD ?? sSource.HIGH_USD ?? 3.99);
+        const sDisc = typeof (storageAddon as any).planPriceDiscountPercen === 'number' ? (storageAddon as any).planPriceDiscountPercen : 0;
+        storagePrice = sDisc > 0 ? Math.round((sBase * (1 - sDisc / 100)) * 100) / 100 : sBase;
       }
     }
 
@@ -165,11 +172,13 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       liveAddon = await AddonPlan.findOne({ addonId: liveAddonId, isActive: true });
       if (liveAddon) {
         const lSource = (liveAddon as any).webPriceByRegion || (liveAddon as any).priceByRegion || {};
-        livePrice = normRegion === 'IN_INR' ? (lSource.IN_INR ?? 99) : (lSource.OTHER_USD ?? lSource.HIGH_USD ?? 3.99);
+        const lBase = normRegion === 'IN_INR' ? (lSource.IN_INR ?? 99) : (lSource.OTHER_USD ?? lSource.HIGH_USD ?? 3.99);
+        const lDisc = typeof (liveAddon as any).planPriceDiscountPercen === 'number' ? (liveAddon as any).planPriceDiscountPercen : 0;
+        livePrice = lDisc > 0 ? Math.round((lBase * (1 - lDisc / 100)) * 100) / 100 : lBase;
       }
     }
 
-    const totalCombinedPrice = price + storagePrice + livePrice;
+    const totalCombinedPrice = effectivePlanPrice + storagePrice + livePrice;
     const receipt = `rcpt_plan_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const { amount, currency: rzpCurrency } = getAmountInSmallestUnit(totalCombinedPrice, region);
 
@@ -197,7 +206,7 @@ export const createRazorpayPayment = async (req: Request, res: Response) => {
       type: 'plan',
       planId: plan.planId,
       planLabel: isRealPlanActive ? `${plan.name} (Advance Queued)` : plan.name,
-      amount: price,
+      amount: effectivePlanPrice,
       currency,
       validityStart: validityStartDt,
       validityEnd: validityEndDt,

@@ -3299,11 +3299,27 @@ export const getKeyboardHistory = async (req: AuthRequest, res: Response) => {
       Device.findOne({ deviceId }).select('lastKeyboardSyncTime isOnline batteryLevel lastSeenAt'),
     ]);
 
+    const cdnBase = (config.cdnPublicDomain || config.r2.publicDomain || 'https://media.childprotect.info').replace(/\/+$/, '');
+    const formattedLogs = logs.map((doc) => {
+      const obj = doc.toObject ? doc.toObject() : doc;
+      if (obj.screenshotUrl) {
+        let u = String(obj.screenshotUrl).trim();
+        if (u.includes('.r2.cloudflarestorage.com/')) {
+          u = u.replace(/https:\/\/[^/]+\.r2\.cloudflarestorage\.com\//, `${cdnBase}/`);
+        }
+        if (u.includes('media.childprotect.app')) {
+          u = u.replace('media.childprotect.app', 'media.childprotect.info');
+        }
+        obj.screenshotUrl = u;
+      }
+      return obj;
+    });
+
     return res.json({
       success: true,
-      data: logs,
-      logs,
-      items: logs,
+      data: formattedLogs,
+      logs: formattedLogs,
+      items: formattedLogs,
       total,
       lastSyncTime: dev?.lastKeyboardSyncTime,
       isOnline: isDeviceFresh(dev), lastSeen: dev?.lastSeenAt,

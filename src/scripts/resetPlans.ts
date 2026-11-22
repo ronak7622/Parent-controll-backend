@@ -124,6 +124,7 @@ async function resetPlans() {
         ...buildPlanI18n('plan_6_months', paidFeats),
         isActive: true,
         isRecommended: false,
+        isDefaultSelection: true,
         sortOrder: 2,
         isAllowSocialAppChatHistory: true,
       },

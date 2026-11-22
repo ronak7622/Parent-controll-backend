@@ -57,8 +57,9 @@ export const uploadMediaToR2 = async (
 
     await s3Client.send(command);
 
-    if (config.r2.publicDomain && !config.r2.publicDomain.startsWith('http://your_') && !config.r2.publicDomain.startsWith('https://media.childprotect')) {
-      return `${config.r2.publicDomain}/${filename}`;
+    const cdnBase = (config.cdnPublicDomain || config.r2.publicDomain || 'https://media.childprotect.info').replace(/\/+$/, '');
+    if (cdnBase && !cdnBase.startsWith('http://your_')) {
+      return `${cdnBase}/${filename}`;
     }
     return `https://${config.r2.bucketName}.${config.r2.accountId}.r2.cloudflarestorage.com/${filename}`;
   } catch (error: any) {
@@ -92,8 +93,9 @@ export const generatePresignedPutUrl = async (
     });
 
     const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
-    const cdnUrl = config.cdnPublicDomain
-      ? `${config.cdnPublicDomain}/${objectKey}`
+    const cdnBase = (config.cdnPublicDomain || config.r2.publicDomain || 'https://media.childprotect.info').replace(/\/+$/, '');
+    const cdnUrl = cdnBase && !cdnBase.startsWith('http://your_')
+      ? `${cdnBase}/${objectKey}`
       : `https://${config.r2.bucketName}.${config.r2.accountId}.r2.cloudflarestorage.com/${objectKey}`;
 
     return {

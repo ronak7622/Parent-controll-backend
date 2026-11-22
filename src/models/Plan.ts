@@ -49,6 +49,7 @@ export interface IPlan extends Document {
   };
   isActive: boolean;
   isRecommended: boolean;
+  isDefaultSelection?: boolean;
   sortOrder: number;
   isAllowSocialAppChatHistory?: boolean;
 }
@@ -99,6 +100,7 @@ const PlanSchema: Schema = new Schema(
     },
     isActive: { type: Boolean, default: true, index: true },
     isRecommended: { type: Boolean, default: false },
+    isDefaultSelection: { type: Boolean, default: false },
     sortOrder: { type: Number, default: 0 },
     isAllowSocialAppChatHistory: { type: Boolean, default: false },
   },

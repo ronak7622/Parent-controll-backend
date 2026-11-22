@@ -23,6 +23,7 @@ export interface IAddonPlan extends Document {
   };
   storageBytes: number;
   liveMinutes: number;
+  planPriceDiscountPercen?: number;
   isActive: boolean;
 }
 
@@ -55,6 +56,7 @@ const AddonPlanSchema: Schema = new Schema(
     },
     storageBytes: { type: Number, default: 0 },
     liveMinutes: { type: Number, default: 0 },
+    planPriceDiscountPercen: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true, index: true },
   },
   { timestamps: true }

@@ -232,6 +232,7 @@ export const getPlans = async (req: Request, res: Response) => {
           ...buildI18n('plan_6_months', paidFeatures),
           isActive: true,
           isRecommended: false,
+          isDefaultSelection: true,
           sortOrder: 2,
           isAllowSocialAppChatHistory: true,
         },
@@ -423,7 +424,15 @@ export const getPlans = async (req: Request, res: Response) => {
     const testerEmails = config.testerEmails || [];
     const isTesterUser = (email && testerEmails.includes(email)) || (normEmail && testerEmails.includes(normEmail));
     const canSeeTest = isTesterUser || ((options as any).testPlanPhones || []).includes(phone) || ((options as any).testPlanEmails || []).includes(email);
-    const visiblePlans = plans.filter((p) => (canSeeTest || !(p as any).isTestPlan) && (!trialUsed || p.type !== 'trial'));
+    const visiblePlans = plans.filter((p) => {
+      if ((p as any).isTestPlan) {
+        return canSeeTest;
+      }
+      if (p.type === 'trial') {
+        return !canSeeTest && !trialUsed;
+      }
+      return true;
+    });
 
     // Compute monthly vs yearly savings dynamically from the plan data
     const monthlyPlan = visiblePlans.find((p) => p.type === 'monthly' && p.isRecommended) || visiblePlans.find((p) => p.type === 'monthly');
@@ -507,6 +516,7 @@ export const getPlans = async (req: Request, res: Response) => {
         deviceLimitText: isUnlimitedDevices ? 'Unlimited' : `${p.deviceLimit} Connected Device${p.deviceLimit > 1 ? 's' : ''}`,
         liveMinutesText: `${livePerDay} Mins Daily Live`,
         dayLimit: days,
+        isDefaultSelection: Boolean(p.isDefaultSelection),
         region: resolvedRegion,
         billingCycleText,
         dynamicSavePercent: discountPercen,
@@ -533,6 +543,7 @@ export const getPlans = async (req: Request, res: Response) => {
         resolvedPrice: price,
         currency,
         storageGB,
+        planPriceDiscountPercen: typeof a.planPriceDiscountPercen === 'number' ? a.planPriceDiscountPercen : 0,
         region: resolvedRegion,
         webPriceByRegion: a.webPriceByRegion,
         appPriceByRegion: a.appPriceByRegion,
