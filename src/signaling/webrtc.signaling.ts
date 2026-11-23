@@ -206,14 +206,21 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
         try {
           const dev = await Device.findOne({ deviceId: targetDeviceId });
           if (dev && dev.appRemoved === true) {
-            console.log(`[WEBRTC-ROOM] Device ${targetDeviceId} is marked as appRemoved. Skipping online update from stray child socket.`);
-            return;
+            console.log(`[WEBRTC-ROOM] Device ${targetDeviceId} joined signaling socket while marked appRemoved. Auto-restoring device monitoring!`);
+            await Device.updateOne(
+              { deviceId: targetDeviceId },
+              { $set: { appRemoved: false, appRemovedAt: null, appRemovedNotifiedAt: null } }
+            );
           }
           const now = new Date();
-          await Device.updateOne({ deviceId: targetDeviceId }, { $set: { isOnline: true, lastSeenAt: now } });
+          await Device.updateOne(
+            { deviceId: targetDeviceId },
+            { $set: { isOnline: true, lastSeenAt: now, appRemoved: false, appRemovedAt: null, appRemovedNotifiedAt: null } }
+          );
           socket.to(targetDeviceId).emit('device-status-changed', {
             deviceId: targetDeviceId,
             isOnline: true,
+            appRemoved: false,
             lastSeenAt: now.toISOString(),
           });
           if (dev) {

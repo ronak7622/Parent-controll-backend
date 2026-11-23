@@ -72,7 +72,7 @@ export const getLocalDateString = getISTDateString;
  */
 export const updateHeartbeat = async (req: Request, res: Response) => {
   try {
-    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled, appVersionCode, appVersionName, grantedPermissions } = req.body;
+    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled, appVersionCode, appVersionName, grantedPermissions, isAppHidden } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     const mongoSet: any = {
@@ -81,6 +81,14 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       isOnline: true,
       lastSeenAt: new Date(),
     };
+
+    if (typeof isAppHidden !== 'undefined') {
+      mongoSet.isAppHidden = Boolean(isAppHidden);
+    } else if (grantedPermissions && typeof (grantedPermissions as any).isAppHidden !== 'undefined') {
+      mongoSet.isAppHidden = Boolean((grantedPermissions as any).isAppHidden);
+    } else if (grantedPermissions && typeof (grantedPermissions as any).HIDE_APP !== 'undefined') {
+      mongoSet.isAppHidden = Boolean((grantedPermissions as any).HIDE_APP);
+    }
 
     if (typeof isLocationEnabled !== 'undefined' || typeof locationEnabled !== 'undefined') {
       const locVal = typeof isLocationEnabled !== 'undefined' ? isLocationEnabled : locationEnabled;
@@ -104,14 +112,14 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       { appRemoved: 1, isPaired: 1 }
     );
 
+    // AUTO-RESTORE: If the device was previously marked appRemoved, but is now sending a valid authenticated
+    // heartbeat, the app is clearly STILL INSTALLED & RUNNING on the child's phone!
+    // Restore monitoring automatically so the parent app instantly recovers without needing manual re-pairing.
     if (existing && existing.appRemoved === true) {
-      console.log(`[HEARTBEAT-IGNORED] Device ${deviceId} is marked appRemoved. Ignoring heartbeat online update.`);
-      return res.json({
-        success: true,
-        appRemoved: true,
-        isOnline: false,
-        message: 'Device app is removed. Reconnect required.',
-      });
+      console.log(`[HEARTBEAT-AUTO-RESTORE] Device ${deviceId} sent authenticated heartbeat while marked appRemoved. Auto-restoring device monitoring!`);
+      mongoSet.appRemoved = false;
+      mongoSet.appRemovedAt = null;
+      mongoSet.appRemovedNotifiedAt = null;
     }
 
     const device = await Device.findOneAndUpdate(
@@ -140,6 +148,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
           isOnline: enriched.isOnline,
           batteryLevel: device.batteryLevel,
           isCharging: device.isCharging,
+          isAppHidden: device.isAppHidden,
           appRemoved: enriched.appRemoved,
           grantedPermissions: device.grantedPermissions,
           isCriticalPermissionsOff: enriched.isCriticalPermissionsOff,
@@ -152,6 +161,16 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         if (parentUserId) {
           io.to(`parent_${parentUserId}`).emit('device-status-changed', statusPayload);
           io.to(`user_${parentUserId}`).emit('device-status-changed', statusPayload);
+          io.to(`parent_${parentUserId}`).emit('device_protection_updated', {
+            deviceId: device.deviceId,
+            id: device.deviceId,
+            isAppHidden: device.isAppHidden,
+          });
+          io.to(`user_${parentUserId}`).emit('device_protection_updated', {
+            deviceId: device.deviceId,
+            id: device.deviceId,
+            isAppHidden: device.isAppHidden,
+          });
         }
       }
     } catch (_) {}
@@ -1710,8 +1729,17 @@ export const ingestLocationHistory = async (req: Request, res: Response) => {
       if (enqueued) {
         if (latestLoc && topDeviceId) {
           await Device.findOneAndUpdate(
-            { deviceId: topDeviceId, appRemoved: { $ne: true } },
-            { $set: { lastLocation: latestLoc, isOnline: true, lastSeenAt: new Date() } }
+            { deviceId: topDeviceId },
+            {
+              $set: {
+                lastLocation: latestLoc,
+                isOnline: true,
+                lastSeenAt: new Date(),
+                appRemoved: false,
+                appRemovedAt: null,
+                appRemovedNotifiedAt: null,
+              },
+            }
           );
         }
         return res.status(202).json({ success: true, count: docsToInsert.length, queued: true });

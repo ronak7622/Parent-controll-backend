@@ -176,7 +176,7 @@ const DeviceSchema = new Schema<IDevice>(
 
     secretCode: { type: String, default: '' },
     secureOurChildApp: { type: Boolean, default: true },
-    isAppHidden: { type: Boolean, default: true },
+    isAppHidden: { type: Boolean, default: false },
     failedSecretCodeAttempts: { type: Number, default: 0 },
     secretCodeBlockedUntil: { type: Date, default: null },
 
@@ -345,8 +345,18 @@ export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
     }
   }
 
+  // Auto-fallback for secretCode: if missing or blank, fallback to pairingCode
+  const secCode = (dev.secretCode && String(dev.secretCode).trim().length > 0)
+    ? String(dev.secretCode).trim()
+    : ((dev.pairingCode && String(dev.pairingCode).trim().length > 0) ? String(dev.pairingCode).trim() : '');
+
+  if ((!dev.secretCode || String(dev.secretCode).trim().length === 0) && secCode.length > 0 && dev._id) {
+    Device.updateOne({ _id: dev._id }, { $set: { secretCode: secCode } }).catch(() => {});
+  }
+
   return {
     ...dev,
+    secretCode: secCode,
     isOnline: (isRemoved || dev.isOnline === false) ? false : isOnline,
     appRemoved: isRemoved,
     appRemovedAt: dev.appRemovedAt || null,

@@ -176,7 +176,11 @@ export const completeChildSetup = async (req: any, res: Response) => {
     if (initialDevice.deviceId) queryFilters.push({ deviceId: initialDevice.deviceId });
 
     const updateFields: any = { isSetupComplete: true, isPaired: true, appRemoved: false, appRemovedAt: null, appRemovedNotifiedAt: null };
-    if (secretCode) updateFields.secretCode = String(secretCode).trim();
+    if (secretCode) {
+      updateFields.secretCode = String(secretCode).trim();
+    } else if (!initialDevice.secretCode || initialDevice.secretCode.trim().length === 0) {
+      updateFields.secretCode = initialDevice.pairingCode || targetId || '000000';
+    }
     if (typeof secureOurChildApp !== 'undefined') updateFields.secureOurChildApp = Boolean(secureOurChildApp);
     if (typeof isAppHidden !== 'undefined') updateFields.isAppHidden = Boolean(isAppHidden);
     if (deviceName && String(deviceName).trim().length > 0) updateFields.deviceName = String(deviceName).trim();
@@ -350,6 +354,9 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
     device.appRemoved = false;
     device.appRemovedAt = null;
     device.appRemovedNotifiedAt = null;
+    if (!device.secretCode || device.secretCode.trim().length === 0) {
+      device.secretCode = code || device.pairingCode || '000000';
+    }
     await device.save();
 
     console.log(`[PAIRING-SUCCESS] Parent hash=${hashId(parentUserId)} paired with device hash=${hashId(device.deviceId)}`);
@@ -465,6 +472,10 @@ export const pairChildDevice = async (req: any, res: Response) => {
     if (typeof appVersionName !== 'undefined') device.appVersionName = String(appVersionName).trim();
     if (languageCode) device.languageCode = String(languageCode).trim().toLowerCase();
 
+    if (!device.secretCode || device.secretCode.trim().length === 0) {
+      device.secretCode = inputCode || device.pairingCode || '000000';
+    }
+
     await device.save();
     console.log(`[PAIRING-SUCCESS] Child device hash=${hashId(deviceId)} paired successfully`);
 
@@ -485,6 +496,7 @@ export const pairChildDevice = async (req: any, res: Response) => {
       deviceId: device.deviceId,
       deviceToken,
       device: deviceData,
+      secretCode: device.secretCode || inputCode || '000000',
       parentUid: device.parentUserId ? device.parentUserId.toString() : 'parent',
       allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
       allowDeveloperMode: Boolean(options.allowDeveloperModeOnChildApp),
@@ -918,7 +930,14 @@ export const reportLimitReached = async (req: any, res: Response) => {
       return res.json({ success: true, message: 'Limit reached push throttled (duplicate prevented).' });
     }
 
-    const device = await Device.findOne({ deviceId });
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const device = await Device.findOne({
+      $or: [
+        { deviceId },
+        { pairingCode: deviceId },
+        ...(isObjId ? [{ _id: deviceId }] : [])
+      ]
+    });
     const childName = device?.deviceName || 'Child Device';
     const name = appName || limit?.appName || packageName;
     const limitMinutes = Number(limitDurationMinutes || limit?.limitDurationMinutes || 0);
@@ -996,7 +1015,14 @@ export const reportBlockedAppAttempt = async (req: any, res: Response) => {
       return res.json({ success: true, message: 'Blocked attempt push throttled (duplicate prevented).' });
     }
 
-    const device = await Device.findOne({ deviceId });
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const device = await Device.findOne({
+      $or: [
+        { deviceId },
+        { pairingCode: deviceId },
+        ...(isObjId ? [{ _id: deviceId }] : [])
+      ]
+    });
     const childName = device?.deviceName || 'Child Device';
     const name = appName || rule?.appName || packageName;
     const eventTime = resolveEventTime(localTime);
@@ -1124,7 +1150,14 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
     const { secretCode, secureOurChildApp, isAppHidden, deviceName } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
-    const device = await Device.findOne({ deviceId });
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const device = await Device.findOne({
+      $or: [
+        { deviceId },
+        { pairingCode: deviceId },
+        ...(isObjId ? [{ _id: deviceId }] : [])
+      ]
+    });
     if (!device) return res.status(404).json({ success: false, message: 'Device not found' });
 
     if (secretCode) {
@@ -1137,7 +1170,28 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
       device.secureOurChildApp = Boolean(secureOurChildApp);
     }
     if (typeof isAppHidden !== 'undefined') {
-      device.isAppHidden = Boolean(isAppHidden);
+      const isHidingRequested = Boolean(isAppHidden);
+      const isCurrentHidden = Boolean(device.isAppHidden);
+
+      if (isHidingRequested !== isCurrentHidden) {
+        // Enforce online presence: cannot hide/unhide if child device is offline, shutdown, or disconnected
+        const options = await ConfigService.getMergedOptions();
+        const thresholdSec = Number(options?.onlineThresholdSeconds) || 150;
+        const isOnline = isDeviceFresh(device, thresholdSec);
+
+        if (!isOnline || device.appRemoved === true) {
+          return res.status(400).json({
+            success: false,
+            code: 'DEVICE_OFFLINE',
+            error: 'DEVICE_OFFLINE',
+            offline: true,
+            message: 'Child device is offline, powered off, or disconnected from the internet. App visibility cannot be changed until the device is online.',
+            isAppHidden: device.isAppHidden,
+          });
+        }
+
+        device.isAppHidden = isHidingRequested;
+      }
     }
     device.failedSecretCodeAttempts = 0;
     device.secretCodeBlockedUntil = null as any;
@@ -1168,6 +1222,13 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
       restrictions,
     });
 
+    if (device.parentUserId) {
+      getSignalingIo()?.to(`user_${device.parentUserId}`).emit('device-updated', {
+        deviceId: device.deviceId,
+        isAppHidden: device.isAppHidden,
+      });
+    }
+
     return res.json({
       success: true,
       message: 'Protection settings updated successfully',
@@ -1190,7 +1251,14 @@ export const verifyChildSecretCode = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, message: 'deviceId and secretCode are required' });
     }
 
-    const device = await Device.findOne({ deviceId });
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const device = await Device.findOne({
+      $or: [
+        { deviceId },
+        { pairingCode: deviceId },
+        ...(isObjId ? [{ _id: deviceId }] : [])
+      ]
+    });
     if (!device) return res.status(404).json({ success: false, message: 'Device not found' });
 
     const now = new Date();

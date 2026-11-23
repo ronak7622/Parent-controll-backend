@@ -24,6 +24,7 @@ export const verifyDeviceOwnership = async (req: AuthRequest, res: Response, nex
     const owned = await Device.exists({
       $or: [
         { deviceId },
+        { pairingCode: deviceId },
         ...(isObjId ? [{ _id: deviceId }] : [])
       ],
       parentUserId

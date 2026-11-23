@@ -185,22 +185,12 @@ export const CANONICAL_PERMISSION_CATALOG: PermissionCatalogItem[] = [
     androidOnly: true,
   },
   {
-    key: 'SECURE_OUR_APP',
-    label: 'Child App Tamper Protection',
-    description: 'Prevent unauthorized app stoppage or data clearing',
+    key: 'PLAY_PROTECT',
+    label: 'Google Play Protect Disabled',
+    description: 'Prevent Google Play Protect from blocking background protection',
     emoji: '🛡️',
     critical: false,
     androidOnly: true,
-    isProtectionToggle: true,
-  },
-  {
-    key: 'HIDE_APP',
-    label: 'Discreet App Icon',
-    description: 'Hide companion app icon from launcher',
-    emoji: '🕶️',
-    critical: false,
-    androidOnly: true,
-    isProtectionToggle: true,
   },
 ];
 
