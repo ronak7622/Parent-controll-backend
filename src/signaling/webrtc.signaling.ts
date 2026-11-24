@@ -678,14 +678,20 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
             } else if (typeof perms.SECURE_OUR_APP !== 'undefined') {
               updateSet.secureOurChildApp = Boolean(perms.SECURE_OUR_APP);
             }
-            const isCritOff = (perms.ACCESSIBILITY === false || perms.DEVICE_ADMIN === false);
+            const existingDev = await Device.findOne({ deviceId }, { criticalPermissionsOffAt: 1, isSetupComplete: 1 }).lean();
+            const isSetupComplete = existingDev?.isSetupComplete === true;
+            const isCritOff = isSetupComplete && (perms.ACCESSIBILITY === false || perms.DEVICE_ADMIN === false);
             if (isCritOff) {
               updateSet.criticalPermissionsOff = true;
-              const existingDev = await Device.findOne({ deviceId }, { criticalPermissionsOffAt: 1 }).lean();
               if (!existingDev?.criticalPermissionsOffAt) {
                 updateSet.criticalPermissionsOffAt = new Date();
               }
             } else if (perms.ACCESSIBILITY === true && perms.DEVICE_ADMIN === true) {
+              updateSet.criticalPermissionsOff = false;
+              updateSet.criticalPermissionsOffAt = null;
+              updateSet.criticalPermissionsNotifiedAt = null;
+            } else if (!isSetupComplete) {
+              // Onboarding in progress: never flag criticalPermissionsOff until setup completes
               updateSet.criticalPermissionsOff = false;
               updateSet.criticalPermissionsOffAt = null;
               updateSet.criticalPermissionsNotifiedAt = null;

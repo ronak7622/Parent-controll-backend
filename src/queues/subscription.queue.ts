@@ -219,6 +219,7 @@ const processSubscriptionJobs = async () => {
       ],
       parentUserId: { $exists: true, $ne: null },
       isPaired: { $ne: false },
+      isSetupComplete: true,
     });
 
     for (const dev of devicesNeedingAlert) {
@@ -263,9 +264,9 @@ const processSubscriptionJobs = async () => {
         }
       } else {
         // Critical Permissions Off Warning (Accessibility / Device Admin)
-        const isCritOff = dev.criticalPermissionsOff ||
+        const isCritOff = (dev.isSetupComplete === true) && (dev.criticalPermissionsOff ||
           dev.grantedPermissions?.ACCESSIBILITY === false ||
-          dev.grantedPermissions?.DEVICE_ADMIN === false;
+          dev.grantedPermissions?.DEVICE_ADMIN === false);
 
         if (isCritOff) {
           const offAt = dev.criticalPermissionsOffAt ? new Date(dev.criticalPermissionsOffAt).getTime() : now.getTime();
@@ -329,7 +330,8 @@ const processSubscriptionJobs = async () => {
       const updateIntervalMin = Number(options.childAppNeedToUpdateIntervalForNotification) || 1440;
       const outdatedDevices = await Device.find({
         parentUserId: { $exists: true, $ne: null },
-        isPaired: { $ne: false },
+      isPaired: { $ne: false },
+      isSetupComplete: true,
         appRemoved: { $ne: true },
         $or: [
           { appVersionCode: { $lt: targetVersion } },

@@ -335,11 +335,13 @@ export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
   // If either of these is explicitly false, critical permissions are OFF.
   const isAccessibilityOff = perms.ACCESSIBILITY === false;
   const isDeviceAdminOff = perms.DEVICE_ADMIN === false;
-  const isCriticalPermissionsOff = !isRemoved && (isAccessibilityOff || isDeviceAdminOff);
+  const isSetupComplete = dev.isSetupComplete === true;
+  const isCriticalPermissionsOff = !isRemoved && isSetupComplete && (isAccessibilityOff || isDeviceAdminOff);
 
   // Total disabled permissions (including critical & feature permissions)
+  // Only evaluate for devices that have finished initial setup
   const disabledPermissionsList: string[] = [];
-  if (!isRemoved) {
+  if (!isRemoved && isSetupComplete) {
     const nonMinorKeys = new Set([
 
 
