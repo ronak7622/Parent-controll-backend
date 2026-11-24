@@ -10,7 +10,7 @@ import { getSignalingIo, isChildOnline } from '../signaling/webrtc.signaling';
 import { getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { DeletedRecording } from '../models/DeletedRecording';
-import { deleteMediaFromR2, bulkDeleteMediaFromR2, generatePresignedPutUrl } from '../services/r2.service';
+import { deleteMediaFromR2, bulkDeleteMediaFromR2, generatePresignedPutUrl, headObjectSizeR2 } from '../services/r2.service';
 import { checkQuotaBlocked } from './ingest.controller';
 
 // Format duration helper
@@ -677,7 +677,19 @@ export const completeRecording = async (req: Request, res: Response) => {
       });
     }
 
-    const numSize = Number(fileSizeBytes) || 0;
+    let numSize = Number(fileSizeBytes) || 0;
+    // Authoritative size: HEAD the R2 object so the stored size equals the exact
+    // bytes in R2 (the child-reported value can drift or arrive as 0). Adds the
+    // thumbnail's real bytes too. Falls back to the reported size on HEAD failure.
+    if (mediaUrl && mediaUrl.trim().length > 0) {
+      const r2Size = await headObjectSizeR2(mediaUrl);
+      if (r2Size > 0) {
+        numSize = r2Size;
+        if (thumbnailUrl && thumbnailUrl.trim().length > 0 && thumbnailUrl !== mediaUrl) {
+          numSize += await headObjectSizeR2(thumbnailUrl);
+        }
+      }
+    }
     const isCompleted = Boolean(mediaUrl && mediaUrl.trim().length > 0 && numSize > 0);
     const finalStatus = isCompleted ? 'completed' : 'failed';
 

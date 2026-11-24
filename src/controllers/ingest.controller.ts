@@ -21,7 +21,7 @@ import { ChatMessage } from '../models/ChatMessage';
 import { Device, enrichDeviceWithOnlineStatus } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { shouldSendAlertShared } from './device.controller';
-import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl } from '../services/r2.service';
+import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl, headObjectSizeR2 } from '../services/r2.service';
 import { config } from '../config/env';
 import { enqueueIngestJob } from '../queues/ingest.queue';
 import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
@@ -656,8 +656,10 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
     const mediaUrl = await uploadMediaToR2(buffer, folderName, 'webp', 'image/webp');
 
     let thumbnailUrl: string | undefined;
+    let thumbBytes = 0;
     if (req.body.thumbnailBase64) {
       const thumbBuffer = Buffer.from(req.body.thumbnailBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+      thumbBytes = thumbBuffer.length;
       const thumbFolder = `captures/thumbs/${deviceId}`;
       thumbnailUrl = await uploadMediaToR2(thumbBuffer, thumbFolder, 'webp', 'image/webp');
     }
@@ -670,7 +672,7 @@ export const uploadCapturedMedia = async (req: Request, res: Response) => {
       thumbnailUrl: thumbnailUrl || mediaUrl,
       packageName,
       appName,
-      fileSizeBytes: buffer.length,
+      fileSizeBytes: buffer.length + thumbBytes,
       mimeType: 'image/webp',
       timestamp: timestamp ? new Date(timestamp) : new Date(),
     });
@@ -735,8 +737,10 @@ export const uploadBatchCapturedMedia = async (req: Request, res: Response) => {
       const mediaUrl = await uploadMediaToR2(buffer, folderName, 'webp', 'image/webp');
 
       let thumbnailUrl: string | undefined;
+      let thumbBytes = 0;
       if (item.thumbnailBase64) {
         const thumbBuffer = Buffer.from(item.thumbnailBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+        thumbBytes = thumbBuffer.length;
         const thumbFolder = `captures/thumbs/${deviceId}`;
         thumbnailUrl = await uploadMediaToR2(thumbBuffer, thumbFolder, 'webp', 'image/webp');
       }
@@ -749,7 +753,7 @@ export const uploadBatchCapturedMedia = async (req: Request, res: Response) => {
         thumbnailUrl: thumbnailUrl || mediaUrl,
         packageName: item.packageName || '',
         appName: item.appName || '',
-        fileSizeBytes: buffer.length,
+        fileSizeBytes: buffer.length + thumbBytes,
         mimeType: 'image/webp',
         timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
       });
@@ -843,6 +847,17 @@ export const registerMediaMetadata = async (req: Request, res: Response) => {
     const finalMediaUrl = mediaUrl || (config.cdnPublicDomain ? `${config.cdnPublicDomain}/${objectKey}` : objectKey);
     const finalThumbUrl = thumbnailUrl || finalMediaUrl;
 
+    // Authoritative size from R2 (direct presigned upload => client size can be
+    // wrong/0). HEAD the object so stored size == real R2 bytes; add thumbnail.
+    let finalSizeBytes = Number(fileSizeBytes) || 0;
+    const r2Size = await headObjectSizeR2(finalMediaUrl);
+    if (r2Size > 0) {
+      finalSizeBytes = r2Size;
+      if (finalThumbUrl && finalThumbUrl !== finalMediaUrl) {
+        finalSizeBytes += await headObjectSizeR2(finalThumbUrl);
+      }
+    }
+
     const capture = new MediaCapture({
       deviceId,
       type: type === 'front_photo' || type === 'back_photo' ? type : 'screenshot',
@@ -851,7 +866,7 @@ export const registerMediaMetadata = async (req: Request, res: Response) => {
       thumbnailUrl: finalThumbUrl,
       packageName,
       appName,
-      fileSizeBytes: fileSizeBytes || 0,
+      fileSizeBytes: finalSizeBytes,
       mimeType,
       timestamp: timestamp ? new Date(timestamp) : new Date(),
     });
@@ -2053,16 +2068,23 @@ export const ingestKeyboardLogs = async (req: Request, res: Response) => {
       if (!deviceId || !item.matchedKeyword) continue;
 
       let screenshotUrl = item.screenshotUrl || '';
+      let screenshotBytes = Number(item.fileSizeBytes) || 0; // real R2 bytes of the screenshot
       // If base64 screenshot provided, upload to Cloudflare R2
       if (!screenshotUrl && item.screenshotBase64) {
         try {
           const cleanBase64 = item.screenshotBase64.replace(/^data:image\/\w+;base64,/, '');
           const buffer = Buffer.from(cleanBase64, 'base64');
+          screenshotBytes = buffer.length; // exact bytes stored in R2
           const folderName = `keyboard-captures/${deviceId}`;
           screenshotUrl = await uploadMediaToR2(buffer, folderName, 'webp', 'image/webp');
         } catch (e: any) {
           console.warn('[INGEST-KEYBOARD] R2 image upload warning:', e?.message);
         }
+      }
+      // If the child uploaded the image directly (presigned) and only sent the URL,
+      // HEAD R2 for the authoritative size so accounting/display == real R2 bytes.
+      if (screenshotUrl && screenshotBytes <= 0) {
+        screenshotBytes = await headObjectSizeR2(screenshotUrl);
       }
 
       docsToInsert.push({
@@ -2074,6 +2096,7 @@ export const ingestKeyboardLogs = async (req: Request, res: Response) => {
         capturedText: item.capturedText || '',
         screenshotBase64: screenshotUrl ? '' : (item.screenshotBase64 ? String(item.screenshotBase64).slice(0, 5000) : ''),
         screenshotUrl: screenshotUrl || '',
+        fileSizeBytes: screenshotUrl ? screenshotBytes : 0,
         timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
       });
     }

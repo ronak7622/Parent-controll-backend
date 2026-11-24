@@ -10,6 +10,7 @@ export interface IKeyboardLog extends Document {
   capturedText?: string;
   screenshotBase64?: string;
   screenshotUrl?: string;
+  fileSizeBytes?: number; // real bytes of the R2 screenshot (webp); 0 if no image
   timestamp: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -25,6 +26,7 @@ const KeyboardLogSchema = new Schema<IKeyboardLog>(
     capturedText: { type: String },
     screenshotBase64: { type: String },
     screenshotUrl: { type: String },
+    fileSizeBytes: { type: Number, default: 0 },
     timestamp: { type: Date, required: true, index: true },
   },
   { timestamps: true }

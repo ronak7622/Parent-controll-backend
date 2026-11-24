@@ -136,6 +136,22 @@ export class StorageAccountingService {
         parentTotalPhoto += bytes;
       }
 
+      // 3b. Keyboard screenshots (keyword-tracker captures stored in R2 as webp images).
+      //     Counted at their REAL R2 bytes under photo so accounting == actual R2 size.
+      const keyboardImgAgg = await KeyboardLog.aggregate([
+        { $match: { deviceId: { $in: deviceIds }, fileSizeBytes: { $gt: 0 } } },
+        { $group: { _id: '$deviceId', totalBytes: { $sum: '$fileSizeBytes' } } },
+      ]);
+      for (const item of keyboardImgAgg) {
+        const dId = item._id;
+        const bytes = item.totalBytes || 0;
+        if (!perDeviceMap[dId]) {
+          perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, chatBytes: 0, totalBytes: 0 };
+        }
+        perDeviceMap[dId].photoBytes += bytes;
+        parentTotalPhoto += bytes;
+      }
+
       // 4. Text & Database Logs
       for (const dId of deviceIds) {
         const [
@@ -330,6 +346,7 @@ export class StorageAccountingService {
       keylogCount,
       locCount,
       drivingCount,
+      keylogImgAgg,
     ] = await Promise.all([
       BrowserHistory.countDocuments(queryFilter),
       InternetLog.countDocuments(queryFilter),
@@ -345,7 +362,14 @@ export class StorageAccountingService {
       KeyboardLog.countDocuments(queryFilter),
       LocationLog.countDocuments(queryFilter),
       DrivingTrip.countDocuments(queryFilter),
+      // Real R2 bytes of keyword-tracker screenshots for this scope.
+      KeyboardLog.aggregate([
+        { $match: { ...queryFilter, fileSizeBytes: { $gt: 0 } } },
+        { $group: { _id: null, totalBytes: { $sum: '$fileSizeBytes' } } },
+      ]),
     ]);
+
+    const keylogImgBytes = (keylogImgAgg as any[])?.[0]?.totalBytes || 0;
 
     const categories = [
       {
@@ -415,7 +439,7 @@ export class StorageAccountingService {
         category: 'keyword_tracker_history',
         label: 'Keyword Tracker History',
         count: keylogCount,
-        bytes: keylogCount * 250,
+        bytes: keylogCount * 250 + keylogImgBytes, // row metadata estimate + real R2 screenshot bytes
         icon: 'keyboard',
       },
       {

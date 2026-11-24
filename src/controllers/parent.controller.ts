@@ -501,7 +501,7 @@ export const deleteCapturedMedia = async (req: AuthRequest, res: Response) => {
           console.warn('[MEDIA-CAPTURE-DELETE-R2-ERROR]', err?.message)
         );
       }
-      const totalBytes = docs.reduce((acc, d) => acc + ((d as any).fileSizeBytes || 50000), 0);
+      const totalBytes = docs.reduce((acc, d) => acc + ((d as any).fileSizeBytes || 0), 0);
       const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
       if (parentUserId && totalBytes > 0) {
         StorageAccountingService.updateStorage(parentUserId, deviceId, 'photo', -Math.abs(totalBytes)).catch(() => {});
@@ -1690,7 +1690,7 @@ export const deleteCallRecording = async (req: AuthRequest, res: Response) => {
     }
 
     const mediaUrl = (doc as any).mediaUrl || (doc as any).audioUrl || '';
-    const bytes = (doc as any).fileSizeBytes || 100000;
+    const bytes = (doc as any).fileSizeBytes || 0;
     const deviceId = doc.deviceId;
 
     await CallRecording.findByIdAndDelete(id);
@@ -1758,7 +1758,7 @@ export const deleteCallRecordingsForDay = async (req: AuthRequest, res: Response
           console.warn('[CALL-REC-DAY-DELETE-R2-ERROR]', err?.message)
         );
       }
-      const totalBytes = docs.reduce((acc, d: any) => acc + (d.fileSizeBytes || 100000), 0);
+      const totalBytes = docs.reduce((acc, d: any) => acc + (d.fileSizeBytes || 0), 0);
       const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
       if (parentUserId && totalBytes > 0) {
         StorageAccountingService.updateStorage(parentUserId, deviceId, 'audio', -Math.abs(totalBytes)).catch(() => {});
@@ -1814,7 +1814,7 @@ export const deleteAllCallRecordings = async (req: AuthRequest, res: Response) =
           console.warn('[CALL-REC-ALL-DELETE-R2-ERROR]', err?.message)
         );
       }
-      const totalBytes = docs.reduce((acc, d: any) => acc + (d.fileSizeBytes || 100000), 0);
+      const totalBytes = docs.reduce((acc, d: any) => acc + (d.fileSizeBytes || 0), 0);
       const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
       if (parentUserId && totalBytes > 0) {
         StorageAccountingService.updateStorage(parentUserId, deviceId, 'audio', -Math.abs(totalBytes)).catch(() => {});
@@ -3366,13 +3366,14 @@ export const deleteKeyboardHistoryForDay = async (req: AuthRequest, res: Respons
     );
 
     // Collect R2 screenshot keys before deleting so keyword-tracker images aren't orphaned.
-    const kbDocs = await KeyboardLog.find({ deviceId, ...dateFilter, screenshotUrl: { $exists: true, $nin: [null, ''] } }).select('_id screenshotUrl');
+    const kbDocs = await KeyboardLog.find({ deviceId, ...dateFilter, screenshotUrl: { $exists: true, $nin: [null, ''] } }).select('_id screenshotUrl fileSizeBytes');
     const result = await KeyboardLog.deleteMany({ deviceId, ...dateFilter });
     const kbUrls = kbDocs.map((d: any) => d.screenshotUrl).filter(Boolean);
+    const freedBytes = kbDocs.reduce((acc: number, d: any) => acc + (d.fileSizeBytes || 0), 0);
     if (kbUrls.length > 0) {
       bulkDeleteMediaFromR2(Array.from(new Set(kbUrls))).catch((err) => console.warn('[KEYBOARD-DELETE-R2-ERROR]', err?.message));
     }
-    return res.json({ success: true, deletedCount: result.deletedCount });
+    return res.json({ success: true, deletedCount: result.deletedCount, freedBytes });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -3385,13 +3386,14 @@ export const deleteAllKeyboardHistory = async (req: AuthRequest, res: Response) 
   try {
     const { deviceId } = req.params;
     // Collect R2 screenshot keys before deleting so keyword-tracker images aren't orphaned.
-    const kbDocs = await KeyboardLog.find({ deviceId, screenshotUrl: { $exists: true, $nin: [null, ''] } }).select('_id screenshotUrl');
+    const kbDocs = await KeyboardLog.find({ deviceId, screenshotUrl: { $exists: true, $nin: [null, ''] } }).select('_id screenshotUrl fileSizeBytes');
     const result = await KeyboardLog.deleteMany({ deviceId });
     const kbUrls = kbDocs.map((d: any) => d.screenshotUrl).filter(Boolean);
+    const freedBytes = kbDocs.reduce((acc: number, d: any) => acc + (d.fileSizeBytes || 0), 0);
     if (kbUrls.length > 0) {
       bulkDeleteMediaFromR2(Array.from(new Set(kbUrls))).catch((err) => console.warn('[KEYBOARD-DELETE-ALL-R2-ERROR]', err?.message));
     }
-    return res.json({ success: true, deletedCount: result.deletedCount });
+    return res.json({ success: true, deletedCount: result.deletedCount, freedBytes });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -3405,10 +3407,11 @@ export const deleteKeyboardLogItem = async (req: AuthRequest, res: Response) => 
     const { id } = req.params;
     const deleted = await KeyboardLog.findByIdAndDelete(id);
     const delUrl = deleted ? (deleted as any).screenshotUrl : null;
+    const freedBytes = deleted ? ((deleted as any).fileSizeBytes || 0) : 0;
     if (delUrl) {
       bulkDeleteMediaFromR2([delUrl]).catch((err) => console.warn('[KEYBOARD-ITEM-DELETE-R2-ERROR]', err?.message));
     }
-    return res.json({ success: true, message: 'Keyboard log entry deleted' });
+    return res.json({ success: true, message: 'Keyboard log entry deleted', freedBytes });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }

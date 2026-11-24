@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config/env';
 import { v4 as uuidv4 } from 'uuid';
@@ -149,6 +149,37 @@ export const generatePresignedGetUrl = async (
 /**
  * Delete a single object from R2 or local disk
  */
+/**
+ * Authoritative R2 object size: HEAD the object and return its real ContentLength
+ * (the exact number of bytes stored in R2). Returns 0 if the object/key is
+ * missing or on any error, so callers can fall back to a known-real value.
+ * This is what guarantees displayed/accounted size == actual R2 size.
+ */
+export const headObjectSizeR2 = async (mediaUrlOrKey: string): Promise<number> => {
+  if (!mediaUrlOrKey) return 0;
+  if (isDummyKey()) return 0;
+
+  // Extract key (same scheme as deleteMediaFromR2)
+  let key = mediaUrlOrKey;
+  if (key.includes('/uploads/')) {
+    key = key.substring(key.indexOf('/uploads/') + '/uploads/'.length);
+  } else if (key.startsWith('http://') || key.startsWith('https://')) {
+    try {
+      const parsed = new URL(key);
+      key = parsed.pathname.startsWith('/') ? parsed.pathname.substring(1) : parsed.pathname;
+    } catch (_e) { return 0; }
+  }
+
+  try {
+    const command = new HeadObjectCommand({ Bucket: config.r2.bucketName, Key: key });
+    const resp = await s3Client.send(command);
+    return Number(resp.ContentLength) || 0;
+  } catch (err: any) {
+    console.warn(`[R2-HEAD-WARN] Failed to HEAD object ${key}: ${err?.message}`);
+    return 0;
+  }
+};
+
 export const deleteMediaFromR2 = async (mediaUrlOrKey: string): Promise<boolean> => {
   if (!mediaUrlOrKey) return false;
 

@@ -38,7 +38,7 @@ export class StorageDeleteService {
 
       const deviceId = doc.deviceId;
       const mediaUrl = doc.mediaUrl || (doc as any).cdnUrl || '';
-      const bytes = doc.fileSizeBytes || 50000;
+      const bytes = doc.fileSizeBytes || 0;
       const type = doc.type || 'screenshot';
 
       const category = type.includes('video')
@@ -75,7 +75,7 @@ export class StorageDeleteService {
       if (docs.length === 0) return 0;
 
       const mediaUrls = docs.map((d: any) => d.mediaUrl || d.cdnUrl || '').filter(Boolean);
-      const totalBytes = docs.reduce((acc, d) => acc + (d.fileSizeBytes || 50000), 0);
+      const totalBytes = docs.reduce((acc, d) => acc + (d.fileSizeBytes || 0), 0);
 
       const sampleDoc = docs[0];
       const deviceId = sampleDoc.deviceId;
@@ -114,7 +114,7 @@ export class StorageDeleteService {
 
       const deviceId = doc.deviceId;
       const mediaUrl = (doc as any).mediaUrl || (doc as any).audioUrl || '';
-      const bytes = (doc as any).fileSizeBytes || 100000;
+      const bytes = (doc as any).fileSizeBytes || 0;
 
       const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
 
@@ -370,7 +370,7 @@ export class StorageDeleteService {
           if (doc.mediaUrl) mediaUrlsToDelete.push(doc.mediaUrl);
           if ((doc as any).cdnUrl) mediaUrlsToDelete.push((doc as any).cdnUrl);
           if (doc.thumbnailUrl) mediaUrlsToDelete.push(doc.thumbnailUrl);
-          totalBytesFreed += doc.fileSizeBytes || 50000;
+          totalBytesFreed += doc.fileSizeBytes || 0;
         }
         if (mediaDocs.length > 0) {
           await MediaCapture.deleteMany({ deviceId });
@@ -386,7 +386,7 @@ export class StorageDeleteService {
         for (const rec of recordingDocs) {
           if (rec.mediaUrl) mediaUrlsToDelete.push(rec.mediaUrl);
           if (rec.thumbnailUrl) mediaUrlsToDelete.push(rec.thumbnailUrl);
-          totalBytesFreed += (rec as any).fileSizeBytes || 150000;
+          totalBytesFreed += (rec as any).fileSizeBytes || 0;
         }
         if (recordingDocs.length > 0) {
           await Recording.deleteMany({ deviceId });
@@ -402,7 +402,7 @@ export class StorageDeleteService {
         for (const rec of callRecDocs) {
           if (rec.audioUrl) mediaUrlsToDelete.push(rec.audioUrl);
           if ((rec as any).mediaUrl) mediaUrlsToDelete.push((rec as any).mediaUrl);
-          totalBytesFreed += (rec as any).fileSizeBytes || 100000;
+          totalBytesFreed += (rec as any).fileSizeBytes || 0;
         }
         if (callRecDocs.length > 0) {
           await CallRecording.deleteMany({ deviceId });
@@ -419,10 +419,13 @@ export class StorageDeleteService {
         const kbDocs = await KeyboardLog.find({
           deviceId,
           screenshotUrl: { $exists: true, $nin: [null, ''] },
-        }).select('_id screenshotUrl');
+        }).select('_id screenshotUrl fileSizeBytes');
         for (const doc of kbDocs) {
           const url = (doc as any).screenshotUrl;
-          if (url) mediaUrlsToDelete.push(url);
+          if (url) {
+            mediaUrlsToDelete.push(url);
+            totalBytesFreed += (doc as any).fileSizeBytes || 0; // real R2 image bytes freed
+          }
         }
       } catch (err: any) {
         console.warn(`[ERASE-ALL-DEVICE-DATA] Error collecting KeyboardLog screenshots for ${deviceId}:`, err?.message);
@@ -570,7 +573,7 @@ export class StorageDeleteService {
         allMedia.push({
           model: 'MediaCapture',
           id: m._id,
-          bytes: m.fileSizeBytes || 50000,
+          bytes: m.fileSizeBytes || 0,
           urls,
           createdAt: (m as any).createdAt || (m as any).timestamp || new Date(0),
         });
@@ -583,7 +586,7 @@ export class StorageDeleteService {
         allMedia.push({
           model: 'Recording',
           id: r._id,
-          bytes: (r as any).fileSizeBytes || 150000,
+          bytes: (r as any).fileSizeBytes || 0,
           urls,
           createdAt: (r as any).createdAt || new Date(0),
         });
@@ -596,7 +599,7 @@ export class StorageDeleteService {
         allMedia.push({
           model: 'CallRecording',
           id: c._id,
-          bytes: (c as any).fileSizeBytes || 100000,
+          bytes: (c as any).fileSizeBytes || 0,
           urls,
           createdAt: (c as any).createdAt || new Date(0),
         });
