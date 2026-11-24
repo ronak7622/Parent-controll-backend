@@ -144,40 +144,10 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
       }
     }
 
-    // SINGLE ACTIVE SESSION CHECK
-    if (user && user.currentSessionId && user.currentSessionId !== 'revoked') {
-      const activeCachedSession = await cacheService.get(`user_session_${user._id.toString()}`);
-      const isOtherSessionActive = Boolean(
-        activeCachedSession &&
-        activeCachedSession !== 'revoked' &&
-        activeCachedSession === user.currentSessionId
-      );
-
-      if (isOtherSessionActive && !forceLogoutOthers) {
-        return res.status(200).json({
-          success: false,
-          requiresLogoutConfirm: true,
-          message: 'This account is currently active on another device or browser.',
-          activeSession: {
-            deviceName: user.currentDeviceName || 'Another device/browser',
-            platform: user.lastActivePlatform || 'device',
-            lastActive: user.lastLoginAt,
-          },
-        });
-      }
-    }
-
+    // SINGLE ACTIVE SESSION: Silent auto-takeover on new login.
+    // Generates a fresh sessionId for this device, immediately invalidating any prior session.
+    // The previous device is automatically logged out via 401 on its next request.
     const newSessionId = new mongoose.Types.ObjectId().toString();
-
-    // Revoke previous session if user already existed
-    if (user && user.currentSessionId && user.currentSessionId !== 'revoked') {
-      try {
-        getSignalingIo()?.to(`parent_${user._id.toString()}`).emit('session-revoked', {
-          reason: 'Your account was logged in from another device.',
-          newDevice: clientDeviceName || (clientPlatform === 'flutter_app' ? 'Mobile App' : 'Web Browser'),
-        });
-      } catch (_) {}
-    }
 
     if (user) {
       if (!user.linkedProviders) user.linkedProviders = [];
@@ -238,7 +208,7 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
       } catch (_) {}
     }
 
-    await cacheService.set(`user_session_${user._id.toString()}`, newSessionId, 90 * 86400);
+    await cacheService.set(`user_session_${user._id.toString()}`, newSessionId, 365 * 86400);
 
     const token = jwt.sign(
       {
@@ -252,7 +222,7 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         firebaseUid: user.firebaseUid || '',
       },
       config.jwtSecret,
-      { expiresIn: '90d' }
+      { expiresIn: '365d' }
     );
 
     return res.json({
@@ -329,7 +299,7 @@ export const logout = async (req: any, res: Response) => {
   try {
     const userId = req.user?.userId || req.user?.id || req.user?._id;
     if (userId) {
-      await cacheService.set(`user_session_${userId.toString()}`, 'revoked', 90 * 86400);
+      await cacheService.set(`user_session_${userId.toString()}`, 'revoked', 365 * 86400);
       await User.findByIdAndUpdate(userId, { $set: { currentSessionId: 'revoked' } });
     }
   } catch (_) {}
