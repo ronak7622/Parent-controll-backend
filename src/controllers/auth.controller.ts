@@ -145,7 +145,8 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
 
     // SINGLE ACTIVE SESSION: Silent auto-takeover on new login.
     // Generates a fresh sessionId for this device, immediately invalidating any prior session.
-    // The previous device is automatically logged out via 401 on its next request.
+    // The previous device is automatically and safely logged out via 401 (SESSION_REVOKED) on its next request,
+    // avoiding any socket broadcast race or self-revocation loops on same-device re-auth.
     const newSessionId = new mongoose.Types.ObjectId().toString();
 
     if (user) {
