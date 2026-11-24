@@ -145,9 +145,13 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
     }
 
     // SINGLE ACTIVE SESSION CHECK
-    if (user && user.currentSessionId) {
+    if (user && user.currentSessionId && user.currentSessionId !== 'revoked') {
       const activeCachedSession = await cacheService.get(`user_session_${user._id.toString()}`);
-      const isOtherSessionActive = Boolean(activeCachedSession && activeCachedSession === user.currentSessionId);
+      const isOtherSessionActive = Boolean(
+        activeCachedSession &&
+        activeCachedSession !== 'revoked' &&
+        activeCachedSession === user.currentSessionId
+      );
 
       if (isOtherSessionActive && !forceLogoutOthers) {
         return res.status(200).json({
@@ -166,7 +170,7 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
     const newSessionId = new mongoose.Types.ObjectId().toString();
 
     // Revoke previous session if user already existed
-    if (user && user.currentSessionId) {
+    if (user && user.currentSessionId && user.currentSessionId !== 'revoked') {
       try {
         getSignalingIo()?.to(`parent_${user._id.toString()}`).emit('session-revoked', {
           reason: 'Your account was logged in from another device.',
@@ -234,7 +238,7 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
       } catch (_) {}
     }
 
-    await cacheService.set(`user_session_${user._id.toString()}`, newSessionId, 365 * 86400);
+    await cacheService.set(`user_session_${user._id.toString()}`, newSessionId, 90 * 86400);
 
     const token = jwt.sign(
       {
@@ -248,7 +252,7 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         firebaseUid: user.firebaseUid || '',
       },
       config.jwtSecret,
-      { expiresIn: '365d' }
+      { expiresIn: '90d' }
     );
 
     return res.json({
@@ -319,12 +323,14 @@ export const updateParentFcmToken = async (req: any, res: Response) => {
 
 // Clears the single-active-session so the NEXT login (same email, any platform)
 // goes straight through without the "active elsewhere" popup — unless a real session is still active.
+// Uses a sentinel value ('revoked') so any subsequent request with the old JWT is rejected,
+// while cache misses remain fail-open so Redis eviction doesn't mass-logout active users.
 export const logout = async (req: any, res: Response) => {
   try {
     const userId = req.user?.userId || req.user?.id || req.user?._id;
     if (userId) {
-      await cacheService.del(`user_session_${userId.toString()}`);
-      await User.findByIdAndUpdate(userId, { $set: { currentSessionId: null } });
+      await cacheService.set(`user_session_${userId.toString()}`, 'revoked', 90 * 86400);
+      await User.findByIdAndUpdate(userId, { $set: { currentSessionId: 'revoked' } });
     }
   } catch (_) {}
   return res.status(200).json({ success: true });

@@ -35,10 +35,15 @@ export const authenticateJwt = async (req: AuthRequest, res: Response, next: Nex
       try {
         const activeSessionId = await cacheService.get(`user_session_${decoded.userId}`);
         if (activeSessionId && activeSessionId !== decoded.sessionId) {
+          const isRevoked = activeSessionId === 'revoked';
           return res.status(401).json({
             success: false,
+            code: 'SESSION_REVOKED',
             sessionRevoked: true,
-            message: 'Your account was signed in on another device or browser. You have been logged out.',
+            isRevoked,
+            message: isRevoked
+              ? 'Session has been logged out. Please sign in again.'
+              : 'Your account was signed in on another device or browser. You have been logged out.',
           });
         }
       } catch (_) {}
