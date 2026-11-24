@@ -79,7 +79,6 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
       provider: clientProvider,
       platform: clientPlatform,
       deviceName: clientDeviceName,
-      forceLogoutOthers,
     } = req.body;
 
     const rawDevId = req.headers['x-device-id'] || req.headers['device-id'] || req.headers['x-device-uuid'] || req.body?.deviceId || '';
