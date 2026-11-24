@@ -372,28 +372,46 @@ export const DEFAULT_OPTIONS = {
   childAppNeedToUpdateInterval: 1440,
   childAppNeedToUpdateIntervalForNotification: 1440,
 
-  // Feature Minimum Child App Version Gating (20 canonical features)
+  // Feature Minimum Child App Version Gating (30 canonical features)
+  // One key per clickable feature in the parent app dashboard / features tab.
+  // MUST stay in sync with Flutter FeatureKeys (core/constants/feature_keys.dart).
   featureMinChildAppVersion: {
+    // Calls & Messages
+    callHistory: 100,
     callRecording: 100,
-    socialCallRecording: 100,
-    ambientListening: 100,
+    contacts: 100,
+    smsMessages: 100,
+    // Social
+    socialApps: 100,
+    socialChatHistory: 100,
+    // Location & Driving
+    liveLocation: 100,
+    locationHistory: 100,
+    locationSetup: 100,
+    drivingDetection: 100,
+    // Net Monitoring
+    browserHistory: 100,
+    wifiLogger: 100,
+    internetLogger: 100,
+    websiteRestrictions: 100,
+    googleSearch: 100,
+    youtube: 100,
+    notifications: 100,
+    // Apps Monitoring
+    appUsageTimeline: 100,
+    installedApps: 100,
+    appBlock: 100,
+    appLimits: 100,
+    keywordTracker: 100,
+    // Live Features
     screenStreaming: 100,
     cameraStreaming: 100,
-    liveControl: 100,
-    recordVideo: 100,
+    ambientListening: 100,
     recordScreen: 100,
+    recordVideo: 100,
     recordAudio: 100,
     takeScreenshot: 100,
     scheduleScreenshot: 100,
-    keywordTracker: 100,
-    keylogger: 100,
-    installedApps: 100,
-    appUsageTimeline: 100,
-    deviceInfo: 100,
-    locationTracker: 100,
-    contacts: 100,
-    photos: 100,
-    autoDelete: 100,
   },
 
   // Developer Mode Restrictions

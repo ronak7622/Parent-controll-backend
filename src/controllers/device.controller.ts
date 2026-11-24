@@ -488,6 +488,10 @@ export const pairChildDevice = async (req: any, res: Response) => {
     device.appRemovedNotifiedAt = null;
     device.adminDisabledPendingRemoval = false;
     device.adminDisabledAt = null;
+    device.grantedPermissions = {};
+    device.criticalPermissionsOff = false;
+    device.criticalPermissionsOffAt = null;
+    device.criticalPermissionsNotifiedAt = null;
 
     if (typeof appVersionCode !== 'undefined') device.appVersionCode = Number(appVersionCode) || 0;
     if (typeof appVersionName !== 'undefined') device.appVersionName = String(appVersionName).trim();
