@@ -3365,7 +3365,13 @@ export const deleteKeyboardHistoryForDay = async (req: AuthRequest, res: Respons
       }
     );
 
+    // Collect R2 screenshot keys before deleting so keyword-tracker images aren't orphaned.
+    const kbDocs = await KeyboardLog.find({ deviceId, ...dateFilter, screenshotUrl: { $exists: true, $nin: [null, ''] } }).select('_id screenshotUrl');
     const result = await KeyboardLog.deleteMany({ deviceId, ...dateFilter });
+    const kbUrls = kbDocs.map((d: any) => d.screenshotUrl).filter(Boolean);
+    if (kbUrls.length > 0) {
+      bulkDeleteMediaFromR2(Array.from(new Set(kbUrls))).catch((err) => console.warn('[KEYBOARD-DELETE-R2-ERROR]', err?.message));
+    }
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -3378,7 +3384,13 @@ export const deleteKeyboardHistoryForDay = async (req: AuthRequest, res: Respons
 export const deleteAllKeyboardHistory = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
+    // Collect R2 screenshot keys before deleting so keyword-tracker images aren't orphaned.
+    const kbDocs = await KeyboardLog.find({ deviceId, screenshotUrl: { $exists: true, $nin: [null, ''] } }).select('_id screenshotUrl');
     const result = await KeyboardLog.deleteMany({ deviceId });
+    const kbUrls = kbDocs.map((d: any) => d.screenshotUrl).filter(Boolean);
+    if (kbUrls.length > 0) {
+      bulkDeleteMediaFromR2(Array.from(new Set(kbUrls))).catch((err) => console.warn('[KEYBOARD-DELETE-ALL-R2-ERROR]', err?.message));
+    }
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -3391,7 +3403,11 @@ export const deleteAllKeyboardHistory = async (req: AuthRequest, res: Response) 
 export const deleteKeyboardLogItem = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    await KeyboardLog.findByIdAndDelete(id);
+    const deleted = await KeyboardLog.findByIdAndDelete(id);
+    const delUrl = deleted ? (deleted as any).screenshotUrl : null;
+    if (delUrl) {
+      bulkDeleteMediaFromR2([delUrl]).catch((err) => console.warn('[KEYBOARD-ITEM-DELETE-R2-ERROR]', err?.message));
+    }
     return res.json({ success: true, message: 'Keyboard log entry deleted' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

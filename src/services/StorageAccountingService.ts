@@ -22,6 +22,7 @@ import { WifiLog } from '../models/wifi-log.model';
 import { InternetLog } from '../models/internet-log.model';
 import { ChildMessage } from '../models/ChildMessage';
 import { ChatMessage } from '../models/ChatMessage';
+import { bulkDeleteMediaFromR2 } from './r2.service';
 
 export class StorageAccountingService {
   private static CACHE_PREFIX = 'storage:usage:';
@@ -505,9 +506,13 @@ export class StorageAccountingService {
       case 'notification_history':
         await ChildNotification.deleteMany(f);
         break;
-      case 'keyword_tracker_history':
+      case 'keyword_tracker_history': {
+        const kbDocs = await KeyboardLog.find({ ...f, screenshotUrl: { $exists: true, $nin: [null, ''] } }).select('_id screenshotUrl');
+        const kbUrls = kbDocs.map((d: any) => d.screenshotUrl).filter(Boolean);
+        if (kbUrls.length > 0) { await bulkDeleteMediaFromR2(Array.from(new Set(kbUrls))).catch(() => {}); }
         await KeyboardLog.deleteMany(f);
         break;
+      }
       case 'location_history':
         await LocationLog.deleteMany(f);
         break;
@@ -516,7 +521,10 @@ export class StorageAccountingService {
         break;
       case 'all':
       case 'all_text':
-      default:
+      default: {
+        const kbDocs = await KeyboardLog.find({ ...f, screenshotUrl: { $exists: true, $nin: [null, ''] } }).select('_id screenshotUrl');
+        const kbUrls = kbDocs.map((d: any) => d.screenshotUrl).filter(Boolean);
+        if (kbUrls.length > 0) { await bulkDeleteMediaFromR2(Array.from(new Set(kbUrls))).catch(() => {}); }
         await Promise.all([
           BrowserHistory.deleteMany(f),
           InternetLog.deleteMany(f),
@@ -534,6 +542,7 @@ export class StorageAccountingService {
           DrivingTrip.deleteMany(f),
         ]);
         break;
+      }
     }
 
     const parentId = parentUserId || (await this.resolveParentUserId(deviceId));
