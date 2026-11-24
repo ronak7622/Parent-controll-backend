@@ -115,11 +115,13 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     // AUTO-RESTORE: If the device was previously marked appRemoved, but is now sending a valid authenticated
     // heartbeat, the app is clearly STILL INSTALLED & RUNNING on the child's phone!
     // Restore monitoring automatically so the parent app instantly recovers without needing manual re-pairing.
-    if (existing && existing.appRemoved === true) {
-      console.log(`[HEARTBEAT-AUTO-RESTORE] Device ${deviceId} sent authenticated heartbeat while marked appRemoved. Auto-restoring device monitoring!`);
+    if (existing && (existing.appRemoved === true || (existing as any).adminDisabledPendingRemoval === true)) {
+      console.log(`[HEARTBEAT-AUTO-RESTORE] Device ${deviceId} sent authenticated heartbeat while marked appRemoved or adminDisabledPendingRemoval. Auto-restoring device monitoring!`);
       mongoSet.appRemoved = false;
       mongoSet.appRemovedAt = null;
       mongoSet.appRemovedNotifiedAt = null;
+      mongoSet.adminDisabledPendingRemoval = false;
+      mongoSet.adminDisabledAt = null;
     }
 
     const device = await Device.findOneAndUpdate(

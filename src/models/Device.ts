@@ -43,6 +43,12 @@ export interface IDevice extends Document {
   appRemoved?: boolean;
   appRemovedAt?: Date | null;
   appRemovedNotifiedAt?: Date | null;
+  adminDisabledAt?: Date | null;
+  adminDisabledPendingRemoval?: boolean;
+  childAppUpdateNotifiedAt?: Date | null;
+  criticalPermissionsOff?: boolean;
+  criticalPermissionsOffAt?: Date | null;
+  criticalPermissionsNotifiedAt?: Date | null;
 
   browserRestrictionMode: 'unrestricted' | 'blacklist' | 'whitelist';
   browserRestrictionsMode?: 'unrestricted' | 'blacklist' | 'whitelist';
@@ -173,6 +179,12 @@ const DeviceSchema = new Schema<IDevice>(
     appRemoved: { type: Boolean, default: false },
     appRemovedAt: { type: Date, default: null },
     appRemovedNotifiedAt: { type: Date, default: null },
+    adminDisabledAt: { type: Date, default: null },
+    adminDisabledPendingRemoval: { type: Boolean, default: false },
+    childAppUpdateNotifiedAt: { type: Date, default: null },
+    criticalPermissionsOff: { type: Boolean, default: false },
+    criticalPermissionsOffAt: { type: Date, default: null },
+    criticalPermissionsNotifiedAt: { type: Date, default: null },
 
     secretCode: { type: String, default: '' },
     secureOurChildApp: { type: Boolean, default: true },
@@ -361,6 +373,7 @@ export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
     appRemoved: isRemoved,
     appRemovedAt: dev.appRemovedAt || null,
     isCriticalPermissionsOff,
+    criticalPermissionsOffAt: dev.criticalPermissionsOffAt || null,
     disabledPermissionsCount: disabledPermissionsList.length,
     disabledPermissionsList,
     lastSeen: rawDate,

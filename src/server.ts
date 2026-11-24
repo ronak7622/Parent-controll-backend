@@ -141,6 +141,16 @@ const startServer = async () => {
       console.error('[PAYMENT-RECONCILE-INTERVAL-ERROR]', err?.message);
     }
   }, 120000);
+
+  // Run verification for devices with admin disabled (confirms true uninstallation vs permission toggle) every 60 seconds
+  setInterval(async () => {
+    try {
+      const { processPendingAppRemovals } = require('./controllers/device.controller');
+      await processPendingAppRemovals();
+    } catch (err: any) {
+      console.error('[PROCESS-PENDING-REMOVALS-INTERVAL-ERROR]', err?.message);
+    }
+  }, 60000);
   // Run i18n migration for plans and addons
   await runPlanI18nMigration();
 

@@ -1,3 +1,18 @@
+
+const handleUnregisteredFcmToken = async (fcmToken: string) => {
+  try {
+    const { Device } = require('../models/Device');
+    const { confirmDeviceAppRemoved } = require('../controllers/device.controller');
+    const matchedDevice = await Device.findOne({ fcmToken });
+    if (matchedDevice && matchedDevice.appRemoved !== true) {
+      console.log(`[FCM-UNREGISTERED] Token for device ${matchedDevice.deviceId} is unregistered on FCM. Confirming app removal.`);
+      await confirmDeviceAppRemoved(matchedDevice.deviceId, 'FCM_UNREGISTERED');
+    }
+  } catch (err: any) {
+    console.warn('[FCM-UNREGISTERED-CHECK-WARN]', err?.message);
+  }
+};
+
 import admin from 'firebase-admin';
 import { config } from '../config/env';
 import { getLocalizedNotification } from '../config/notificationTemplates';
@@ -48,8 +63,11 @@ export const sendFcmDataCommand = async (
     await admin.messaging().send(message);
     console.log(`[FCM-SENT] High-priority command '${commandType}' sent via FCM.`);
     return true;
-  } catch (error) {
+  } catch (error: any) {
     console.error(`[FCM-ERROR] Failed to send FCM command '${commandType}':`, error);
+    if (error?.code === 'messaging/registration-token-not-registered' || error?.code === 'messaging/invalid-registration-token') {
+      handleUnregisteredFcmToken(fcmToken).catch(() => {});
+    }
     return false;
   }
 };
@@ -101,8 +119,11 @@ export const sendFcmDirectNotification = async (
     await admin.messaging().send(message);
     console.log(`[FCM-SENT] Direct notification sent to token ${fcmToken.substring(0, 10)}...: ${title}`);
     return true;
-  } catch (error) {
+  } catch (error: any) {
     console.error(`[FCM-ERROR] Failed to send direct notification to token:`, error);
+    if (error?.code === 'messaging/registration-token-not-registered' || error?.code === 'messaging/invalid-registration-token') {
+      handleUnregisteredFcmToken(fcmToken).catch(() => {});
+    }
     return false;
   }
 };

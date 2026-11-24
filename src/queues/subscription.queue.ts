@@ -1,7 +1,9 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { config } from '../config/env';
 import { Subscription } from '../models/Subscription';
+import { Device } from '../models/Device';
 import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
+import { formatRelativeDateTimeForNotification } from '../config/notificationTemplates';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { ConfigService } from '../services/ConfigService';
 import { SubscriptionJob } from '../jobs/SubscriptionJob';
@@ -201,6 +203,184 @@ const processSubscriptionJobs = async () => {
     }
   } catch (err: any) {
     console.error(`[SUBSCRIPTION-NOTIF-SCAN-ERROR] ${err?.message}`);
+  }
+
+  // -----------------------------------------------------------------
+  // 3. SCHEDULED BATCH DEVICE WARNINGS (App Removed & Critical Permissions Off)
+  // Periodic FCM push notifications for app removed and critical permissions off
+  // -----------------------------------------------------------------
+  try {
+    const devicesNeedingAlert = await Device.find({
+      $or: [
+        { appRemoved: true },
+        { criticalPermissionsOff: true },
+        { 'grantedPermissions.ACCESSIBILITY': false },
+        { 'grantedPermissions.DEVICE_ADMIN': false },
+      ],
+      parentUserId: { $exists: true, $ne: null },
+      isPaired: { $ne: false },
+    });
+
+    for (const dev of devicesNeedingAlert) {
+      if (!dev.parentUserId) continue;
+      try {
+        const parentTopic = `parent_${dev.parentUserId}`;
+        const devName = dev.deviceName || 'Child Device';
+        const lang = dev.languageCode || 'en';
+
+        if (dev.appRemoved) {
+        // App Removed Warning
+        const removedAt = dev.appRemovedAt ? new Date(dev.appRemovedAt).getTime() : now.getTime();
+        const minutesSinceRemoved = Math.floor((now.getTime() - removedAt) / (60 * 1000));
+        const afterMin = Number(options.appRemovedWarNotificationAfterTimeInMinute) || 4320;
+        const intervalMin = Number(options.appRemovedWarNotificationIntervalInMinute) || 1440;
+
+        if (minutesSinceRemoved >= 0 && minutesSinceRemoved <= afterMin) {
+          const lastNotif = dev.appRemovedNotifiedAt ? new Date(dev.appRemovedNotifiedAt).getTime() : 0;
+          if (now.getTime() - lastNotif >= intervalMin * 60 * 1000) {
+            const removedTime = dev.appRemovedAt ? new Date(dev.appRemovedAt) : now;
+            const timeText = formatRelativeDateTimeForNotification(removedTime, lang);
+            await sendLocalizedFcmTopicNotification(
+              parentTopic,
+              'DEVICE_APP_REMOVED',
+              {
+                deviceName: devName,
+                timeText,
+                timeInfo: timeText ? ` (${timeText})` : '',
+              },
+              lang,
+              {
+                type: 'APP_REMOVED',
+                deviceId: dev.deviceId,
+                deviceName: devName,
+                appRemovedAt: dev.appRemovedAt ? new Date(dev.appRemovedAt).toISOString() : '',
+                timeText,
+              }
+            );
+            await Device.updateOne({ _id: dev._id }, { $set: { appRemovedNotifiedAt: now } });
+            console.log(`[DEVICE-ALERT-QUEUE] Sent App Removed periodic FCM to parent_${dev.parentUserId} for device: ${devName}`);
+          }
+        }
+      } else {
+        // Critical Permissions Off Warning (Accessibility / Device Admin)
+        const isCritOff = dev.criticalPermissionsOff ||
+          dev.grantedPermissions?.ACCESSIBILITY === false ||
+          dev.grantedPermissions?.DEVICE_ADMIN === false;
+
+        if (isCritOff) {
+          const offAt = dev.criticalPermissionsOffAt ? new Date(dev.criticalPermissionsOffAt).getTime() : now.getTime();
+          const minutesSinceOff = Math.floor((now.getTime() - offAt) / (60 * 1000));
+          const afterMin = Number(options.permissionOffWarNotificationAfterTimeInMinute) || 4320;
+          const intervalMin = Number(options.permissionOffWarNotificationIntervalInMinute) || 1440;
+
+          if (minutesSinceOff >= 0 && minutesSinceOff <= afterMin) {
+            const lastNotif = dev.criticalPermissionsNotifiedAt ? new Date(dev.criticalPermissionsNotifiedAt).getTime() : 0;
+            if (now.getTime() - lastNotif >= intervalMin * 60 * 1000) {
+              const offTime = dev.criticalPermissionsOffAt ? new Date(dev.criticalPermissionsOffAt) : now;
+              const timeText = formatRelativeDateTimeForNotification(offTime, lang);
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'DEVICE_CRITICAL_PERM_OFF',
+                {
+                  deviceName: devName,
+                  timeText,
+                  timeInfo: timeText ? ` (${timeText})` : '',
+                },
+                lang,
+                {
+                  type: 'CRITICAL_PERMISSIONS_OFF',
+                  deviceId: dev.deviceId,
+                  deviceName: devName,
+                  criticalPermissionsOffAt: dev.criticalPermissionsOffAt ? new Date(dev.criticalPermissionsOffAt).toISOString() : '',
+                  timeText,
+                }
+              );
+              await Device.updateOne(
+                { _id: dev._id },
+                {
+                  $set: {
+                    criticalPermissionsNotifiedAt: now,
+                    criticalPermissionsOff: true,
+                    criticalPermissionsOffAt: dev.criticalPermissionsOffAt || now,
+                  },
+                }
+              );
+              console.log(`[DEVICE-ALERT-QUEUE] Sent Critical Perm Off periodic FCM to parent_${dev.parentUserId} for device: ${devName}`);
+            }
+          }
+        }
+      }
+    } catch (singleDevErr: any) {
+      console.error(`[DEVICE-ALERT-QUEUE] Error processing alert for device ${dev.deviceId || dev._id}:`, singleDevErr?.message);
+    }
+  }
+} catch (deviceAlertErr: any) {
+    console.error(`[DEVICE-ALERT-SCAN-ERROR] ${deviceAlertErr?.message}`);
+  }
+
+  // -----------------------------------------------------------------
+  // 4. SCHEDULED BATCH CHILD APP CRITICAL UPDATE FCM NOTIFICATIONS
+  // Fires periodically when childAppNeedToUpdate is true, parent has active plan,
+  // device is not appRemoved, and appVersionCode < childAppVersion.
+  // -----------------------------------------------------------------
+  if (options.childAppNeedToUpdate === true && Number(options.childAppVersion) > 0) {
+    try {
+      const targetVersion = Number(options.childAppVersion);
+      const updateIntervalMin = Number(options.childAppNeedToUpdateIntervalForNotification) || 1440;
+      const outdatedDevices = await Device.find({
+        parentUserId: { $exists: true, $ne: null },
+        isPaired: { $ne: false },
+        appRemoved: { $ne: true },
+        $or: [
+          { appVersionCode: { $lt: targetVersion } },
+          { appVersionCode: { $exists: false } },
+          { appVersionCode: null },
+        ],
+      });
+
+      if (outdatedDevices.length > 0) {
+        const activeSubscriptions = await Subscription.find({
+          status: { $in: ['active', 'trial', 'grace'] },
+        }).select('parentUserId').lean();
+        const activeParentIds = new Set(activeSubscriptions.map((s) => String(s.parentUserId)));
+
+        for (const dev of outdatedDevices) {
+          if (!dev.parentUserId || !activeParentIds.has(String(dev.parentUserId))) {
+            continue;
+          }
+          const lastNotif = dev.childAppUpdateNotifiedAt ? new Date(dev.childAppUpdateNotifiedAt).getTime() : 0;
+          if (now.getTime() - lastNotif >= updateIntervalMin * 60 * 1000) {
+            const parentTopic = `parent_${dev.parentUserId}`;
+            const devName = dev.deviceName || 'Child Device';
+            const lang = dev.languageCode || 'en';
+            const versionName = options.childAppVersionName || `v${targetVersion}`;
+
+            await sendLocalizedFcmTopicNotification(
+              parentTopic,
+              'CHILD_APP_UPDATE_REQUIRED',
+              {
+                childName: devName,
+                deviceName: devName,
+                versionName,
+              },
+              lang,
+              {
+                type: 'CHILD_APP_UPDATE_REQUIRED',
+                deviceId: dev.deviceId,
+                deviceName: devName,
+                versionCode: String(targetVersion),
+                versionName,
+              }
+            );
+
+            await Device.updateOne({ _id: dev._id }, { $set: { childAppUpdateNotifiedAt: now } });
+            console.log(`[DEVICE-ALERT-QUEUE] Sent Child App Update FCM to parent_${dev.parentUserId} for device: ${devName}`);
+          }
+        }
+      }
+    } catch (childUpdateErr: any) {
+      console.error(`[CHILD-UPDATE-ALERT-SCAN-ERROR] ${childUpdateErr?.message}`);
+    }
   }
 };
 

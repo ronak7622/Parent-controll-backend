@@ -365,16 +365,51 @@ export const NOTIFICATION_TEMPLATES: Record<string, NotificationTemplate> = {
       fr: 'Surveillance arrêtée — Application supprimée',
     },
     body: {
-      en: '{deviceName} removed the app or cleared its data. Reconnect to resume — your data is safe.',
-      hi: '{deviceName} ने ऐप को हटा दिया या डेटा साफ़ कर दिया। पुनः कनेक्ट करें — आपका डेटा सुरक्षित है।',
-      gu: '{deviceName} એ ઍપ કાઢી નાખી અથવા ડેટા ક્લિયર કર્યો. ફરીથી કનેક્ટ કરો — તમારો ડેટા સુરક્ષિત છે.',
-      es: '{deviceName} eliminó la app o borró sus datos. Reconecta para reanudar — tus datos están a salvo.',
-      fr: '{deviceName} a supprimé l’application ou effacé ses données. Reconnectez pour reprendre — vos données sont en sécurité.',
+      en: '{deviceName} removed the app{timeInfo}. Reconnect to resume — your data is safe.',
+      hi: '{deviceName} पर ऐप हटा दी गई{timeInfo}। पुनः कनेक्ट करें — आपका डेटा सुरक्षित है।',
+      gu: '{deviceName} પર ઍપ કાઢી નાખવામાં આવી{timeInfo}. ફરી કનેક્ટ કરો — તમારો ડેટા સુરક્ષિત છે.',
+      es: '{deviceName} eliminó la app{timeInfo}. Reconecta para reanudar — tus datos están a salvo.',
+      fr: '{deviceName} a supprimé l’application{timeInfo}. Reconnectez pour reprendre — vos données sont en sécurité.',
+    },
+  },
+  DEVICE_CRITICAL_PERM_OFF: {
+    title: {
+      en: 'Critical Permission Disabled — Action Needed',
+      hi: 'महत्वपूर्ण अनुमति बंद — कार्रवाई आवश्यक',
+      gu: 'મહત્વપૂર્ણ પરમિશન બંધ — તાત્કાલિક ધ્યાન આપો',
+      es: 'Permiso crítico desactivado — Acción requerida',
+      fr: 'Autorisation critique désactivée — Action requise',
+    },
+    body: {
+      en: 'Critical permission disabled on {deviceName}{timeInfo}. Turn it ON on child device to keep protection active.',
+      hi: '{deviceName} पर महत्वपूर्ण अनुमति बंद हुई{timeInfo}। सुरक्षा चालू रखने के लिए बच्चे के फोन पर इसे चालू करें।',
+      gu: '{deviceName} પર મહત્વપૂર્ણ પરમિશન બંધ થઈ{timeInfo}। સુરક્ષા ચાલુ રાખવા બાળકના ફોન પર ફરી ચાલુ કરો.',
+      es: 'Permiso crítico desactivado en {deviceName}{timeInfo}. Actívalo en el dispositivo del menor para mantener la protección.',
+      fr: 'Autorisation critique désactivée sur {deviceName}{timeInfo}. Réactivez-la sur l\'appareil pour maintenir la protection.',
+    },
+  },
+  CHILD_APP_UPDATE_REQUIRED: {
+    title: {
+      en: 'Action Required — Child App Update',
+      hi: 'कार्रवाई आवश्यक — चाइल्ड ऐप अपडेट',
+      gu: 'તાત્કાલિક ધ્યાન — ચાઇલ્ડ ઍપ અપડેટ',
+      es: 'Acción requerida — Actualización de app infantil',
+      fr: 'Action requise — Mise à jour de l’application enfant',
+    },
+    body: {
+      en: 'Please update Child Companion ({versionName}) on {deviceName} to keep monitoring active and unlock new features.',
+      hi: 'मॉनिटरिंग जारी रखने और नए फीचर्स पाने के लिए {deviceName} पर चाइल्ड ऐप ({versionName}) अपडेट करें।',
+      gu: 'મોનિટરિંગ ચાલુ રાખવા અને નવા ફીચર્સ મેળવવા {deviceName} પર ચાઇલ્ડ ઍપ ({versionName}) અપડેટ કરો.',
+      es: 'Actualiza Child Companion ({versionName}) en {deviceName} para mantener el monitoreo y desbloquear nuevas funciones.',
+      fr: 'Veuillez mettre à jour l’application enfant ({versionName}) sur {deviceName} pour continuer la surveillance.',
     },
   },
 };
 
 const TEMPLATE_KEY_ALIASES: Record<string, string> = {
+  CRITICAL_PERM_OFF: 'DEVICE_CRITICAL_PERM_OFF',
+  CRITICAL_PERMISSIONS_OFF: 'DEVICE_CRITICAL_PERM_OFF',
+  DEVICE_CRITICAL_PERM_OFF: 'DEVICE_CRITICAL_PERM_OFF',
   APP_LIMIT_REACHED: 'LIMIT_REACHED',
   APP_BLOCK_ATTEMPT: 'BLOCKED_APP_ATTEMPT',
   BLOCKED_URL_ACCESS: 'BLOCKED_URL_ATTEMPT',
@@ -390,6 +425,8 @@ const TEMPLATE_KEY_ALIASES: Record<string, string> = {
   RECORDING_COMPLETED: 'RECORDING_COMPLETED',
   APP_REMOVED: 'DEVICE_APP_REMOVED',
   DEVICE_APP_REMOVED: 'DEVICE_APP_REMOVED',
+  CHILD_APP_UPDATE_REQUIRED: 'CHILD_APP_UPDATE_REQUIRED',
+  CHILD_UPDATE_REQUIRED: 'CHILD_APP_UPDATE_REQUIRED',
 };
 
 export const getLocalizedNotification = (
@@ -418,4 +455,49 @@ export const getLocalizedNotification = (
   }
 
   return { title, body };
+};
+
+
+export const formatRelativeDateTimeForNotification = (
+  dateInput: Date | string | number | undefined | null,
+  lang: string = 'en'
+): string => {
+  if (!dateInput) return '';
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return '';
+
+  const now = new Date();
+  const timeFormatter = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+  const timeStr = timeFormatter.format(d);
+
+  const isSameDay = (d1: Date, d2: Date) =>
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate();
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+
+  const safeLang = ['en', 'hi', 'gu', 'es', 'fr'].includes(lang) ? lang : 'en';
+
+  const labels: Record<string, { today: string; yesterday: string }> = {
+    en: { today: 'Today', yesterday: 'Yesterday' },
+    hi: { today: 'आज', yesterday: 'कल' },
+    gu: { today: 'આજે', yesterday: 'ગઈકાલે' },
+    es: { today: 'Hoy', yesterday: 'Ayer' },
+    fr: { today: 'Aujourd’hui', yesterday: 'Hier' },
+  };
+
+  if (isSameDay(d, now)) {
+    return `${labels[safeLang].today}, ${timeStr}`;
+  } else if (isSameDay(d, yesterday)) {
+    return `${labels[safeLang].yesterday}, ${timeStr}`;
+  } else {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}, ${timeStr}`;
+  }
 };
