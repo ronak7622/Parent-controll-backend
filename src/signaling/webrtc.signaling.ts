@@ -757,7 +757,7 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
             const now = new Date();
             await Device.updateMany(
               { $or: [{ deviceId: devId }, ...(mongoose.isValidObjectId(devId) ? [{ _id: devId }] : [])] },
-              { $set: { isOnline: false, lastSeenAt: now } }
+              { $set: { isOnline: false } }
             );
             signalingNamespace.to(devId).emit('device-status-changed', {
               deviceId: devId,

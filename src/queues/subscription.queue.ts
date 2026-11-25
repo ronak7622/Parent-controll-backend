@@ -2,11 +2,13 @@ import { Queue, Worker, Job } from 'bullmq';
 import { config } from '../config/env';
 import { Subscription } from '../models/Subscription';
 import { Device } from '../models/Device';
+import { User } from '../models/User';
 import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
 import { formatRelativeDateTimeForNotification } from '../config/notificationTemplates';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { ConfigService } from '../services/ConfigService';
 import { SubscriptionJob } from '../jobs/SubscriptionJob';
+import { processPendingAppRemovals } from '../controllers/device.controller';
 
 let subscriptionQueue: Queue | null = null;
 let subscriptionWorker: Worker | null = null;
@@ -20,6 +22,15 @@ const connection = {
 const processSubscriptionJobs = async () => {
   const now = new Date();
   const options: Record<string, any> = await ConfigService.getMergedOptions().catch(() => ({}));
+
+  // -----------------------------------------------------------------
+  // 0. VERIFY PENDING APP REMOVALS (Admin disabled followed by silence -> App Removed)
+  // -----------------------------------------------------------------
+  try {
+    await processPendingAppRemovals();
+  } catch (err: any) {
+    console.error(`[PENDING-APP-REMOVALS-ERROR] ${err?.message}`);
+  }
 
   // -----------------------------------------------------------------
   // 1. UNIFIED SUBSCRIPTION LIFECYCLE (Active, Trial, Queued, Grace, Expired & Wipe)
@@ -206,8 +217,8 @@ const processSubscriptionJobs = async () => {
   }
 
   // -----------------------------------------------------------------
-  // 3. SCHEDULED BATCH DEVICE WARNINGS (App Removed & Critical Permissions Off)
-  // Periodic FCM push notifications for app removed and critical permissions off
+  // 3. SCHEDULED BATCH DEVICE WARNINGS (Combined Multi-Device: App Removed, Critical Perms Off, Location Off)
+  // Periodic FCM push notifications grouped per parent user so multiple affected devices produce ONE combined alert
   // -----------------------------------------------------------------
   try {
     const devicesNeedingAlert = await Device.find({
@@ -216,111 +227,271 @@ const processSubscriptionJobs = async () => {
         { criticalPermissionsOff: true },
         { 'grantedPermissions.ACCESSIBILITY': false },
         { 'grantedPermissions.DEVICE_ADMIN': false },
+        { isLocationEnabled: false },
+        { locationEnabled: false },
       ],
       parentUserId: { $exists: true, $ne: null },
       isPaired: { $ne: false },
       isSetupComplete: true,
     });
 
+    // Group devices by parentUserId
+    const devicesByParent = new Map<string, any[]>();
     for (const dev of devicesNeedingAlert) {
-      if (!dev.parentUserId) continue;
+      const pId = String(dev.parentUserId);
+      if (!devicesByParent.has(pId)) devicesByParent.set(pId, []);
+      devicesByParent.get(pId)!.push(dev);
+    }
+
+    for (const [parentUserId, pDevs] of devicesByParent.entries()) {
       try {
-        const parentTopic = `parent_${dev.parentUserId}`;
-        const devName = dev.deviceName || 'Child Device';
-        const lang = dev.languageCode || 'en';
+        const parentUser = await User.findById(parentUserId).select('languageCode timezone timeZone fcmToken').lean();
+        const lang = parentUser?.languageCode || 'en';
+        const parentTz = (parentUser as any)?.timezone || (parentUser as any)?.timeZone || 'Asia/Kolkata';
+        const parentTopic = `parent_${parentUserId}`;
 
-        if (dev.appRemoved) {
-        // App Removed Warning
-        const removedAt = dev.appRemovedAt ? new Date(dev.appRemovedAt).getTime() : now.getTime();
-        const minutesSinceRemoved = Math.floor((now.getTime() - removedAt) / (60 * 1000));
-        const afterMin = Number(options.appRemovedWarNotificationAfterTimeInMinute) || 4320;
-        const intervalMin = Number(options.appRemovedWarNotificationIntervalInMinute) || 1440;
+        // ─── 3A. APP REMOVED ALERT (Multi-Device Grouped) ───
+        const removedDevs = pDevs.filter((d) => d.appRemoved === true);
+        if (removedDevs.length > 0) {
+          const afterMin = Number(options.appRemovedWarNotificationAfterTimeInMinute) || 4320;
+          const intervalMin = Number(options.appRemovedWarNotificationIntervalInMinute) || 1440;
 
-        if (minutesSinceRemoved >= 0 && minutesSinceRemoved <= afterMin) {
-          const lastNotif = dev.appRemovedNotifiedAt ? new Date(dev.appRemovedNotifiedAt).getTime() : 0;
-          if (now.getTime() - lastNotif >= intervalMin * 60 * 1000) {
-            const removedTime = dev.appRemovedAt ? new Date(dev.appRemovedAt) : now;
-            const timeText = formatRelativeDateTimeForNotification(removedTime, lang);
-            await sendLocalizedFcmTopicNotification(
-              parentTopic,
-              'DEVICE_APP_REMOVED',
-              {
-                deviceName: devName,
+          const dueRemoved = removedDevs.filter((dev) => {
+            const removedAt = dev.appRemovedAt ? new Date(dev.appRemovedAt).getTime() : now.getTime();
+            const minutesSinceRemoved = Math.floor((now.getTime() - removedAt) / (60 * 1000));
+            if (minutesSinceRemoved < 0 || minutesSinceRemoved > afterMin) return false;
+            const lastNotif = dev.appRemovedNotifiedAt ? new Date(dev.appRemovedNotifiedAt).getTime() : 0;
+            return now.getTime() - lastNotif >= intervalMin * 60 * 1000;
+          });
+
+          if (dueRemoved.length > 0) {
+            const devPayloadList = removedDevs.map((d) => {
+              const devRemovedTime = d.appRemovedAt ? new Date(d.appRemovedAt) : now;
+              const timeText = formatRelativeDateTimeForNotification(devRemovedTime, lang, parentTz);
+              return {
+                deviceId: String(d.deviceId),
+                deviceName: d.deviceName || 'Child Device',
+                appRemovedAt: devRemovedTime.toISOString(),
                 timeText,
-                timeInfo: timeText ? ` (${timeText})` : '',
-              },
-              lang,
-              {
-                type: 'APP_REMOVED',
-                deviceId: dev.deviceId,
-                deviceName: devName,
-                appRemovedAt: dev.appRemovedAt ? new Date(dev.appRemovedAt).toISOString() : '',
-                timeText,
-              }
-            );
-            await Device.updateOne({ _id: dev._id }, { $set: { appRemovedNotifiedAt: now } });
-            console.log(`[DEVICE-ALERT-QUEUE] Sent App Removed periodic FCM to parent_${dev.parentUserId} for device: ${devName}`);
+              };
+            });
+
+            if (removedDevs.length === 1) {
+              const singleDev = devPayloadList[0];
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'DEVICE_APP_REMOVED',
+                {
+                  deviceName: singleDev.deviceName,
+                  timeText: singleDev.timeText,
+                  timeInfo: singleDev.timeText ? ` (${singleDev.timeText})` : '',
+                },
+                lang,
+                {
+                  type: 'APP_REMOVED',
+                  deviceId: singleDev.deviceId,
+                  deviceName: singleDev.deviceName,
+                  appRemovedAt: singleDev.appRemovedAt,
+                  timeText: singleDev.timeText,
+                  deviceCount: '1',
+                  devices: JSON.stringify(devPayloadList),
+                  timezone: parentTz,
+                }
+              );
+            } else {
+              const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'DEVICE_APP_REMOVED_MULTI',
+                {
+                  count: removedDevs.length,
+                  deviceList,
+                },
+                lang,
+                {
+                  type: 'APP_REMOVED',
+                  deviceCount: String(removedDevs.length),
+                  devices: JSON.stringify(devPayloadList),
+                  timezone: parentTz,
+                }
+              );
+            }
+
+            const dueIds = dueRemoved.map((d) => d._id);
+            await Device.updateMany({ _id: { $in: dueIds } }, { $set: { appRemovedNotifiedAt: now } });
+            console.log(`[DEVICE-ALERT-QUEUE] Sent App Removed FCM to parent_${parentUserId} for ${removedDevs.length} device(s)`);
           }
         }
-      } else {
-        // Critical Permissions Off Warning (Accessibility / Device Admin)
-        const isCritOff = (dev.isSetupComplete === true) && (dev.criticalPermissionsOff ||
-          dev.grantedPermissions?.ACCESSIBILITY === false ||
-          dev.grantedPermissions?.DEVICE_ADMIN === false);
 
-        if (isCritOff) {
-          const offAt = dev.criticalPermissionsOffAt ? new Date(dev.criticalPermissionsOffAt).getTime() : now.getTime();
-          const minutesSinceOff = Math.floor((now.getTime() - offAt) / (60 * 1000));
+        // ─── 3B. CRITICAL PERMISSIONS OFF ALERT (Multi-Device Grouped) ───
+        const permOffDevs = pDevs.filter(
+          (d) =>
+            !d.appRemoved &&
+            (d.criticalPermissionsOff ||
+              d.grantedPermissions?.ACCESSIBILITY === false ||
+              d.grantedPermissions?.DEVICE_ADMIN === false)
+        );
+
+        if (permOffDevs.length > 0) {
           const afterMin = Number(options.permissionOffWarNotificationAfterTimeInMinute) || 4320;
           const intervalMin = Number(options.permissionOffWarNotificationIntervalInMinute) || 1440;
 
-          if (minutesSinceOff >= 0 && minutesSinceOff <= afterMin) {
+          const duePermOff = permOffDevs.filter((dev) => {
+            const offAt = dev.criticalPermissionsOffAt ? new Date(dev.criticalPermissionsOffAt).getTime() : now.getTime();
+            const minutesSinceOff = Math.floor((now.getTime() - offAt) / (60 * 1000));
+            if (minutesSinceOff < 0 || minutesSinceOff > afterMin) return false;
             const lastNotif = dev.criticalPermissionsNotifiedAt ? new Date(dev.criticalPermissionsNotifiedAt).getTime() : 0;
-            if (now.getTime() - lastNotif >= intervalMin * 60 * 1000) {
-              const offTime = dev.criticalPermissionsOffAt ? new Date(dev.criticalPermissionsOffAt) : now;
-              const timeText = formatRelativeDateTimeForNotification(offTime, lang);
+            return now.getTime() - lastNotif >= intervalMin * 60 * 1000;
+          });
+
+          if (duePermOff.length > 0) {
+            const devPayloadList = permOffDevs.map((d) => {
+              const devOffTime = d.criticalPermissionsOffAt ? new Date(d.criticalPermissionsOffAt) : now;
+              const timeText = formatRelativeDateTimeForNotification(devOffTime, lang, parentTz);
+              return {
+                deviceId: String(d.deviceId),
+                deviceName: d.deviceName || 'Child Device',
+                criticalPermissionsOffAt: devOffTime.toISOString(),
+                timeText,
+                grantedPermissions: d.grantedPermissions || {},
+              };
+            });
+
+            if (permOffDevs.length === 1) {
+              const singleDev = devPayloadList[0];
               await sendLocalizedFcmTopicNotification(
                 parentTopic,
                 'DEVICE_CRITICAL_PERM_OFF',
                 {
-                  deviceName: devName,
-                  timeText,
-                  timeInfo: timeText ? ` (${timeText})` : '',
+                  deviceName: singleDev.deviceName,
+                  timeText: singleDev.timeText,
+                  timeInfo: singleDev.timeText ? ` (${singleDev.timeText})` : '',
                 },
                 lang,
                 {
                   type: 'CRITICAL_PERMISSIONS_OFF',
-                  deviceId: dev.deviceId,
-                  deviceName: devName,
-                  criticalPermissionsOffAt: dev.criticalPermissionsOffAt ? new Date(dev.criticalPermissionsOffAt).toISOString() : '',
-                  timeText,
+                  deviceId: singleDev.deviceId,
+                  deviceName: singleDev.deviceName,
+                  criticalPermissionsOffAt: singleDev.criticalPermissionsOffAt,
+                  timeText: singleDev.timeText,
+                  deviceCount: '1',
+                  devices: JSON.stringify(devPayloadList),
+                  timezone: parentTz,
                 }
               );
-              await Device.updateOne(
-                { _id: dev._id },
+            } else {
+              const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'DEVICE_CRITICAL_PERM_OFF_MULTI',
                 {
-                  $set: {
-                    criticalPermissionsNotifiedAt: now,
-                    criticalPermissionsOff: true,
-                    criticalPermissionsOffAt: dev.criticalPermissionsOffAt || now,
-                  },
+                  count: permOffDevs.length,
+                  deviceList,
+                },
+                lang,
+                {
+                  type: 'CRITICAL_PERMISSIONS_OFF',
+                  deviceCount: String(permOffDevs.length),
+                  devices: JSON.stringify(devPayloadList),
+                  timezone: parentTz,
                 }
               );
-              console.log(`[DEVICE-ALERT-QUEUE] Sent Critical Perm Off periodic FCM to parent_${dev.parentUserId} for device: ${devName}`);
             }
+
+            const dueIds = duePermOff.map((d) => d._id);
+            await Device.updateMany(
+              { _id: { $in: dueIds } },
+              {
+                $set: {
+                  criticalPermissionsNotifiedAt: now,
+                  criticalPermissionsOff: true,
+                },
+              }
+            );
+            console.log(`[DEVICE-ALERT-QUEUE] Sent Critical Perm Off FCM to parent_${parentUserId} for ${permOffDevs.length} device(s)`);
           }
         }
+
+        // ─── 3C. LOCATION DISABLED ALERT (Multi-Device Grouped) ───
+        const locOffDevs = pDevs.filter(
+          (d) => !d.appRemoved && (d.isLocationEnabled === false || d.locationEnabled === false)
+        );
+
+        if (locOffDevs.length > 0) {
+          const locIntervalMin = Number(options.permissionOffWarNotificationIntervalInMinute) || 1440;
+          const dueLocOff = locOffDevs.filter((dev) => {
+            const lastNotif = dev.locationDisabledNotifiedAt ? new Date(dev.locationDisabledNotifiedAt).getTime() : 0;
+            return now.getTime() - lastNotif >= locIntervalMin * 60 * 1000;
+          });
+
+          if (dueLocOff.length > 0) {
+            const devPayloadList = locOffDevs.map((d) => {
+              const devOffTime = d.locationDisabledAt ? new Date(d.locationDisabledAt) : now;
+              const timeText = formatRelativeDateTimeForNotification(devOffTime, lang, parentTz);
+              return {
+                deviceId: String(d.deviceId),
+                deviceName: d.deviceName || 'Child Device',
+                locationDisabledAt: devOffTime.toISOString(),
+                timeText,
+              };
+            });
+
+            if (locOffDevs.length === 1) {
+              const singleDev = devPayloadList[0];
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'DEVICE_LOCATION_OFF',
+                {
+                  deviceName: singleDev.deviceName,
+                  timeText: singleDev.timeText,
+                  timeInfo: singleDev.timeText ? ` (${singleDev.timeText})` : '',
+                },
+                lang,
+                {
+                  type: 'LOCATION_DISABLED',
+                  deviceId: singleDev.deviceId,
+                  deviceName: singleDev.deviceName,
+                  locationDisabledAt: singleDev.locationDisabledAt,
+                  timeText: singleDev.timeText,
+                  deviceCount: '1',
+                  devices: JSON.stringify(devPayloadList),
+                  timezone: parentTz,
+                }
+              );
+            } else {
+              const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'DEVICE_LOCATION_OFF_MULTI',
+                {
+                  count: locOffDevs.length,
+                  deviceList,
+                },
+                lang,
+                {
+                  type: 'LOCATION_DISABLED',
+                  deviceCount: String(locOffDevs.length),
+                  devices: JSON.stringify(devPayloadList),
+                  timezone: parentTz,
+                }
+              );
+            }
+
+            const dueIds = dueLocOff.map((d) => d._id);
+            await Device.updateMany({ _id: { $in: dueIds } }, { $set: { locationDisabledNotifiedAt: now } });
+            console.log(`[DEVICE-ALERT-QUEUE] Sent Location Off FCM to parent_${parentUserId} for ${locOffDevs.length} device(s)`);
+          }
+        }
+      } catch (parentDevErr: any) {
+        console.error(`[DEVICE-ALERT-QUEUE] Error processing alerts for parent ${parentUserId}:`, parentDevErr?.message);
       }
-    } catch (singleDevErr: any) {
-      console.error(`[DEVICE-ALERT-QUEUE] Error processing alert for device ${dev.deviceId || dev._id}:`, singleDevErr?.message);
     }
-  }
-} catch (deviceAlertErr: any) {
+  } catch (deviceAlertErr: any) {
     console.error(`[DEVICE-ALERT-SCAN-ERROR] ${deviceAlertErr?.message}`);
   }
 
   // -----------------------------------------------------------------
-  // 4. SCHEDULED BATCH CHILD APP CRITICAL UPDATE FCM NOTIFICATIONS
+  // 4. SCHEDULED BATCH CHILD APP CRITICAL UPDATE FCM NOTIFICATIONS (Multi-Device Grouped)
   // Fires periodically when childAppNeedToUpdate is true, parent has active plan,
   // device is not appRemoved, and appVersionCode < childAppVersion.
   // -----------------------------------------------------------------
@@ -330,8 +501,8 @@ const processSubscriptionJobs = async () => {
       const updateIntervalMin = Number(options.childAppNeedToUpdateIntervalForNotification) || 1440;
       const outdatedDevices = await Device.find({
         parentUserId: { $exists: true, $ne: null },
-      isPaired: { $ne: false },
-      isSetupComplete: true,
+        isPaired: { $ne: false },
+        isSetupComplete: true,
         appRemoved: { $ne: true },
         $or: [
           { appVersionCode: { $lt: targetVersion } },
@@ -346,37 +517,80 @@ const processSubscriptionJobs = async () => {
         }).select('parentUserId').lean();
         const activeParentIds = new Set(activeSubscriptions.map((s) => String(s.parentUserId)));
 
+        // Group outdated devices by parent
+        const outdatedByParent = new Map<string, any[]>();
         for (const dev of outdatedDevices) {
-          if (!dev.parentUserId || !activeParentIds.has(String(dev.parentUserId))) {
-            continue;
-          }
-          const lastNotif = dev.childAppUpdateNotifiedAt ? new Date(dev.childAppUpdateNotifiedAt).getTime() : 0;
-          if (now.getTime() - lastNotif >= updateIntervalMin * 60 * 1000) {
-            const parentTopic = `parent_${dev.parentUserId}`;
-            const devName = dev.deviceName || 'Child Device';
-            const lang = dev.languageCode || 'en';
+          const pId = String(dev.parentUserId);
+          if (!activeParentIds.has(pId)) continue;
+          if (!outdatedByParent.has(pId)) outdatedByParent.set(pId, []);
+          outdatedByParent.get(pId)!.push(dev);
+        }
+
+        for (const [parentUserId, pOutdatedList] of outdatedByParent.entries()) {
+          const dueOutdated = pOutdatedList.filter((dev) => {
+            const lastNotif = dev.childAppUpdateNotifiedAt ? new Date(dev.childAppUpdateNotifiedAt).getTime() : 0;
+            return now.getTime() - lastNotif >= updateIntervalMin * 60 * 1000;
+          });
+
+          if (dueOutdated.length > 0) {
+            const parentUser = await User.findById(parentUserId).select('languageCode timezone timeZone').lean();
+            const lang = parentUser?.languageCode || 'en';
+            const parentTopic = `parent_${parentUserId}`;
             const versionName = options.childAppVersionName || `v${targetVersion}`;
 
-            await sendLocalizedFcmTopicNotification(
-              parentTopic,
-              'CHILD_APP_UPDATE_REQUIRED',
-              {
-                childName: devName,
-                deviceName: devName,
-                versionName,
-              },
-              lang,
-              {
-                type: 'CHILD_APP_UPDATE_REQUIRED',
-                deviceId: dev.deviceId,
-                deviceName: devName,
-                versionCode: String(targetVersion),
-                versionName,
-              }
-            );
+            const devPayloadList = pOutdatedList.map((d) => ({
+              deviceId: String(d.deviceId),
+              deviceName: d.deviceName || 'Child Device',
+              appVersionCode: d.appVersionCode || 0,
+              appVersionName: d.appVersionName || '',
+            }));
 
-            await Device.updateOne({ _id: dev._id }, { $set: { childAppUpdateNotifiedAt: now } });
-            console.log(`[DEVICE-ALERT-QUEUE] Sent Child App Update FCM to parent_${dev.parentUserId} for device: ${devName}`);
+            if (pOutdatedList.length === 1) {
+              const dev = pOutdatedList[0];
+              const devName = dev.deviceName || 'Child Device';
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'CHILD_APP_UPDATE_REQUIRED',
+                {
+                  childName: devName,
+                  deviceName: devName,
+                  versionName,
+                },
+                lang,
+                {
+                  type: 'CHILD_APP_UPDATE_REQUIRED',
+                  deviceId: dev.deviceId,
+                  deviceName: devName,
+                  versionCode: String(targetVersion),
+                  versionName,
+                  deviceCount: '1',
+                  devices: JSON.stringify(devPayloadList),
+                }
+              );
+            } else {
+              const deviceList = pOutdatedList.map((d) => d.deviceName || 'Child Device').join(', ');
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'CHILD_APP_UPDATE_REQUIRED_MULTI',
+                {
+                  count: pOutdatedList.length,
+                  deviceList,
+                  versionName,
+                },
+                lang,
+                {
+                  type: 'CHILD_APP_UPDATE_REQUIRED',
+                  deviceCount: String(pOutdatedList.length),
+                  versionCode: String(targetVersion),
+                  versionName,
+                  devices: JSON.stringify(devPayloadList),
+                }
+              );
+            }
+
+            const dueIds = dueOutdated.map((d) => d._id);
+            await Device.updateMany({ _id: { $in: dueIds } }, { $set: { childAppUpdateNotifiedAt: now } });
+            console.log(`[DEVICE-ALERT-QUEUE] Sent Child App Update FCM to parent_${parentUserId} for ${pOutdatedList.length} device(s)`);
           }
         }
       }

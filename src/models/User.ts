@@ -27,6 +27,8 @@ export interface IUser extends Document {
   autoDeleteCategories?: string[];
   autoDeleteDeviceIds?: string[];
   languageCode?: string;
+  timezone?: string;
+  timeZone?: string;
   fcmToken?: string;
   currentSessionId?: string;
   currentDeviceName?: string;
@@ -64,6 +66,8 @@ const UserSchema = new Schema<IUser>(
     autoDeleteCategories: [{ type: String, default: ['all'] }],
     autoDeleteDeviceIds: [{ type: String }],
     languageCode: { type: String, default: 'en' },
+    timezone: { type: String, default: 'Asia/Kolkata' },
+    timeZone: { type: String, default: 'Asia/Kolkata' },
     fcmToken: { type: String },
     currentSessionId: { type: String },
     currentDeviceName: { type: String },

@@ -404,6 +404,86 @@ export const NOTIFICATION_TEMPLATES: Record<string, NotificationTemplate> = {
       fr: 'Veuillez mettre à jour l’application enfant ({versionName}) sur {deviceName} pour continuer la surveillance.',
     },
   },
+  DEVICE_APP_REMOVED_MULTI: {
+    title: {
+      en: '{count} Devices — App Removed',
+      hi: '{count} डिवाइस — ऐप हटा दी गई',
+      gu: '{count} ડિવાઇસ — ઍપ કાઢી નાખવામાં આવી',
+      es: '{count} dispositivos — App eliminada',
+      fr: '{count} appareils — Application supprimée',
+    },
+    body: {
+      en: 'App removed on {count} devices: {deviceList}. Reconnect to resume — your data is safe.',
+      hi: '{count} डिवाइस पर ऐप हटा दी गई: {deviceList}। पुनः कनेक्ट करें — डेटा सुरक्षित है।',
+      gu: '{count} ડિવાઇસ પર ઍપ કાઢી નાખવામાં આવી: {deviceList}. ફરી કનેક્ટ કરો — ડેટા સુરક્ષિત છે.',
+      es: 'App eliminada en {count} dispositivos: {deviceList}. Reconecta para reanudar.',
+      fr: 'Application supprimée sur {count} appareils: {deviceList}. Reconnectez pour reprendre.',
+    },
+  },
+  DEVICE_CRITICAL_PERM_OFF_MULTI: {
+    title: {
+      en: '{count} Devices — Critical Permissions Disabled',
+      hi: '{count} डिवाइस — महत्वपूर्ण अनुमति बंद',
+      gu: '{count} ડિવાઇસ — મહત્વપૂર્ણ પરમિશન બંધ',
+      es: '{count} dispositivos — Permiso crítico desactivado',
+      fr: '{count} appareils — Autorisation critique désactivée',
+    },
+    body: {
+      en: 'Critical permissions disabled on {count} devices: {deviceList}. Turn them ON on child devices to keep protection active.',
+      hi: '{count} डिवाइस पर महत्वपूर्ण अनुमति बंद हुई: {deviceList}। बाल डिवाइस पर इसे चालू करें।',
+      gu: '{count} ડિવાઇસ પર મહત્વપૂર્ણ પરમિશન બંધ થઈ: {deviceList}. ચાઇલ્ડ ડિવાઇસ પર ફરી ચાલુ કરો.',
+      es: 'Permisos críticos desactivados en {count} dispositivos: {deviceList}. Actívalos en los dispositivos.',
+      fr: 'Autorisations critiques désactivées sur {count} appareils: {deviceList}.',
+    },
+  },
+  DEVICE_LOCATION_OFF: {
+    title: {
+      en: 'Child Location Turned Off',
+      hi: 'चाइल्ड लोकेशन बंद हुई',
+      gu: 'ચાઇલ્ડ લોકેશન બંધ થઈ',
+      es: 'Ubicación infantil desactivada',
+      fr: 'Localisation enfant désactivée',
+    },
+    body: {
+      en: 'Location was turned off on {deviceName}{timeInfo}. Live tracking and location history are paused.',
+      hi: '{deviceName} पर लोकेशन बंद हुई{timeInfo}। लाइव ट्रैकिंग और लोकेशन इतिहास रोक दिया गया है।',
+      gu: '{deviceName} પર લોકેશન બંધ થઈ{timeInfo}। લાઇવ ટ્રેકિંગ અને લોકેશન ઇતિહાસ થોભાવી દેવામાં આવ્યો છે.',
+      es: 'Ubicación desactivada en {deviceName}{timeInfo}. El rastreo en vivo está pausado.',
+      fr: 'Localisation désactivée sur {deviceName}{timeInfo}. Le suivi en direct est suspendu.',
+    },
+  },
+  DEVICE_LOCATION_OFF_MULTI: {
+    title: {
+      en: '{count} Devices — Location Turned Off',
+      hi: '{count} डिवाइस — लोकेशन बंद हुई',
+      gu: '{count} ડિવાઇસ — લોકેશન બંધ થઈ',
+      es: '{count} dispositivos — Ubicación desactivada',
+      fr: '{count} appareils — Localisation désactivée',
+    },
+    body: {
+      en: 'Location turned off on {count} devices: {deviceList}. Turn ON location on child devices to resume tracking.',
+      hi: '{count} डिवाइस पर लोकेशन बंद हुई: {deviceList}। ट्रैकिंग फिर से शुरू करने के लिए लोकेशन चालू करें।',
+      gu: '{count} ડિવાઇસ પર લોકેશન બંધ થઈ: {deviceList}. ટ્રેકિંગ ફરી શરૂ કરવા બાળકના ડિવાઇસ પર લોકેશન ચાલુ કરો.',
+      es: 'Ubicación desactivada en {count} dispositivos: {deviceList}. Activa la ubicación para reanudar.',
+      fr: 'Localisation désactivée sur {count} appareils: {deviceList}. Réactivez la localisation.',
+    },
+  },
+  CHILD_APP_UPDATE_REQUIRED_MULTI: {
+    title: {
+      en: '{count} Devices — Child App Update Required',
+      hi: '{count} डिवाइस — चाइल्ड ऐप अपडेट आवश्यक है',
+      gu: '{count} ડિવાઇસ — ચાઇલ્ડ ઍપ અપડેટ જરૂરી છે',
+      es: '{count} dispositivos — Actualización requerida',
+      fr: '{count} appareils — Mise à jour requise',
+    },
+    body: {
+      en: 'Please update Child Companion ({versionName}) on {deviceList} to keep monitoring active.',
+      hi: 'मॉनिटरिंग चालू रखने के लिए {deviceList} पर चाइल्ड ऐप ({versionName}) अपडेट करें।',
+      gu: 'મોનિટરિંગ ચાલુ રાખવા {deviceList} પર ચાઇલ્ડ ઍપ ({versionName}) અપડેટ કરો.',
+      es: 'Actualiza Child Companion ({versionName}) en {deviceList} para mantener el monitoreo.',
+      fr: 'Mettez à jour l’application ({versionName}) sur {deviceList} pour continuer la surveillance.',
+    },
+  },
 };
 
 const TEMPLATE_KEY_ALIASES: Record<string, string> = {
@@ -427,6 +507,15 @@ const TEMPLATE_KEY_ALIASES: Record<string, string> = {
   DEVICE_APP_REMOVED: 'DEVICE_APP_REMOVED',
   CHILD_APP_UPDATE_REQUIRED: 'CHILD_APP_UPDATE_REQUIRED',
   CHILD_UPDATE_REQUIRED: 'CHILD_APP_UPDATE_REQUIRED',
+  LOCATION_OFF: 'DEVICE_LOCATION_OFF',
+  LOCATION_DISABLED: 'DEVICE_LOCATION_OFF',
+  DEVICE_LOCATION_OFF: 'DEVICE_LOCATION_OFF',
+  DEVICE_LOCATION_OFF_MULTI: 'DEVICE_LOCATION_OFF_MULTI',
+  DEVICE_APP_REMOVED_MULTI: 'DEVICE_APP_REMOVED_MULTI',
+  APP_REMOVED_MULTI: 'DEVICE_APP_REMOVED_MULTI',
+  DEVICE_CRITICAL_PERM_OFF_MULTI: 'DEVICE_CRITICAL_PERM_OFF_MULTI',
+  CRITICAL_PERMISSIONS_OFF_MULTI: 'DEVICE_CRITICAL_PERM_OFF_MULTI',
+  CHILD_APP_UPDATE_REQUIRED_MULTI: 'CHILD_APP_UPDATE_REQUIRED_MULTI',
 };
 
 export const getLocalizedNotification = (
@@ -460,27 +549,40 @@ export const getLocalizedNotification = (
 
 export const formatRelativeDateTimeForNotification = (
   dateInput: Date | string | number | undefined | null,
-  lang: string = 'en'
+  lang: string = 'en',
+  timeZone: string = 'Asia/Kolkata'
 ): string => {
   if (!dateInput) return '';
   const d = new Date(dateInput);
   if (isNaN(d.getTime())) return '';
 
+  let safeTz = (timeZone && typeof timeZone === 'string' && timeZone.trim().length > 0) ? timeZone.trim() : 'Asia/Kolkata';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: safeTz });
+  } catch {
+    safeTz = 'Asia/Kolkata';
+  }
+
   const now = new Date();
   const timeFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: safeTz,
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
   });
   const timeStr = timeFormatter.format(d);
 
-  const isSameDay = (d1: Date, d2: Date) =>
-    d1.getFullYear() === d2.getFullYear() &&
-    d1.getMonth() === d2.getMonth() &&
-    d1.getDate() === d2.getDate();
-
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
+  // Compare calendar days in the specified timezone
+  const dayFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: safeTz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const dDay = dayFormatter.format(d);
+  const nowDay = dayFormatter.format(now);
+  const yDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const yesterdayDay = dayFormatter.format(yDate);
 
   const safeLang = ['en', 'hi', 'gu', 'es', 'fr'].includes(lang) ? lang : 'en';
 
@@ -492,12 +594,17 @@ export const formatRelativeDateTimeForNotification = (
     fr: { today: 'Aujourd’hui', yesterday: 'Hier' },
   };
 
-  if (isSameDay(d, now)) {
+  if (dDay === nowDay) {
     return `${labels[safeLang].today}, ${timeStr}`;
-  } else if (isSameDay(d, yesterday)) {
+  } else if (dDay === yesterdayDay) {
     return `${labels[safeLang].yesterday}, ${timeStr}`;
   } else {
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}, ${timeStr}`;
+    const fullFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: safeTz,
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+    return `${fullFormatter.format(d)}, ${timeStr}`;
   }
 };

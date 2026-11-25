@@ -72,6 +72,38 @@ export const sendFcmDataCommand = async (
   }
 };
 
+/**
+ * Proactively check if a device's FCM token is still valid or unregistered (uninstalled).
+ * Uses dryRun = true: validates recipient token against Google FCM registry with zero data/battery on child phone!
+ * Returns true IF the token is confirmed UNREGISTERED (app uninstalled).
+ * Returns false IF the token is valid or cannot be determined.
+ */
+export const validateFcmTokenUnregistered = async (fcmToken: string): Promise<boolean> => {
+  if (!isFirebaseInitialized || !fcmToken) return false;
+  try {
+    const message: admin.messaging.Message = {
+      token: fcmToken,
+      data: {
+        command: 'VALIDATE_PRESENCE',
+        timestamp: Date.now().toString(),
+      },
+    };
+    await admin.messaging().send(message, true); // dryRun = true
+    return false;
+  } catch (error: any) {
+    const isUnregistered =
+      error?.code === 'messaging/registration-token-not-registered' ||
+      error?.code === 'messaging/invalid-registration-token' ||
+      error?.errorInfo?.code === 'messaging/registration-token-not-registered';
+    if (isUnregistered) {
+      console.log(`[FCM-VALIDATE] Token ${fcmToken.substring(0, 10)}... confirmed UNREGISTERED by Google FCM.`);
+      await handleUnregisteredFcmToken(fcmToken).catch(() => {});
+      return true;
+    }
+    return false;
+  }
+};
+
 export const sendFcmDirectNotification = async (
   fcmToken: string,
   title: string,

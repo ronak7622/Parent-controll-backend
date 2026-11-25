@@ -4,6 +4,7 @@ import { Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
 import { AuthRequest } from '../middleware/auth';
+import { User } from '../models/User';
 import { Device, enrichDeviceWithOnlineStatus, isDeviceFresh } from '../models/Device';
 import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
@@ -23,7 +24,7 @@ import { KeyboardLog } from '../models/KeyboardLog';
 import { WifiLog } from '../models/wifi-log.model';
 import { InternetLog } from '../models/internet-log.model';
 import { ScheduleConfig } from '../models/ScheduleConfig';
-import { sendFcmDataCommand, sendFcmDirectNotification, sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
+import { sendFcmDataCommand, sendFcmDirectNotification, sendFcmTopicNotification, sendLocalizedFcmTopicNotification, validateFcmTokenUnregistered } from '../services/fcm.service';
 import { formatRelativeDateTimeForNotification } from '../config/notificationTemplates';
 import { ConfigService } from '../services/ConfigService';
 import { getSignalingIo, isChildOnline } from '../signaling/webrtc.signaling';
@@ -669,6 +670,7 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       preventLocationTurnOff: device.preventLocationDisable ?? true,
       isLocationEnabled: device.isLocationEnabled ?? device.locationEnabled ?? true,
       locationEnabled: device.isLocationEnabled ?? device.locationEnabled ?? true,
+      locationDisabledAt: device.locationDisabledAt ?? null,
       notifyOnBlockedUrlAttempt: device.notifyOnBlockedUrlAttempt ?? true,
       browserRestrictionMode: device.browserRestrictionMode || device.browserRestrictionsMode || 'unrestricted',
       browserRestrictionsMode: device.browserRestrictionsMode || device.browserRestrictionMode || 'unrestricted',
@@ -1425,24 +1427,30 @@ export const archiveDeviceDataForPreviousParent = async (deviceId: string, previ
 export const confirmDeviceAppRemoved = async (targetDeviceId: string, reason: string = 'CONFIRMED_UNINSTALL') => {
   try {
     const stalePastDate = new Date(Date.now() - 600 * 1000); // 10 minutes in past -> guaranteed offline
-    const updatedDevice = await Device.findOneAndUpdate(
-      {
-        $and: [
-          { $or: [{ deviceId: targetDeviceId }, { pairingCode: targetDeviceId }] },
-          {
-            $or: [
-              { appRemovedNotifiedAt: null },
-              { appRemovedNotifiedAt: { $exists: false } },
-            ],
-          },
-        ],
-      },
+
+    // Check if device exists
+    const dev = await Device.findOne({
+      $or: [{ deviceId: targetDeviceId }, { pairingCode: targetDeviceId }],
+    });
+    if (!dev) return null;
+
+    // If device is ALREADY confirmed removed, return it without duplicate FCM blast
+    if (dev.appRemoved === true) {
+      return dev;
+    }
+
+    const now = new Date();
+    const activeDevice = await Device.findOneAndUpdate(
+      { _id: dev._id },
       {
         $set: {
           appRemoved: true,
-          appRemovedAt: new Date(),
-          appRemovedNotifiedAt: new Date(),
+          appRemovedAt: now,
+          appRemovedNotifiedAt: now,
           adminDisabledPendingRemoval: false,
+          criticalPermissionsOff: false,
+          criticalPermissionsOffAt: null,
+          criticalPermissionsNotifiedAt: null,
           isOnline: false,
           lastSeenAt: stalePastDate,
         },
@@ -1450,56 +1458,82 @@ export const confirmDeviceAppRemoved = async (targetDeviceId: string, reason: st
       { new: true }
     );
 
-    let activeDevice = updatedDevice;
-    const shouldSendPush = !!updatedDevice;
+    if (!activeDevice) return null;
 
-    if (!activeDevice) {
-      activeDevice = await Device.findOneAndUpdate(
-        { $or: [{ deviceId: targetDeviceId }, { pairingCode: targetDeviceId }] },
-        {
-          $set: {
-            appRemoved: true,
-            appRemovedAt: new Date(),
-            adminDisabledPendingRemoval: false,
-            isOnline: false,
-            lastSeenAt: stalePastDate,
-          },
-        },
-        { new: true }
-      );
-      if (!activeDevice) return null;
-    }
-
-    // Send localized FCM push notification if we claimed the lock
-    if (shouldSendPush && activeDevice.parentUserId) {
+    // Send localized FCM push notification
+    if (activeDevice.parentUserId) {
       const parentTopic = `parent_${activeDevice.parentUserId}`;
-      const devName = activeDevice.deviceName || 'Child Device';
       try {
-        const removedTime = activeDevice.appRemovedAt || new Date();
-        const timeText = formatRelativeDateTimeForNotification(removedTime, activeDevice.languageCode || 'en');
-        await sendLocalizedFcmTopicNotification(
-          parentTopic,
-          'DEVICE_APP_REMOVED',
-          {
-            deviceName: devName,
-            timeText,
-            timeInfo: timeText ? ` (${timeText})` : '',
-          },
-          activeDevice.languageCode || 'en',
-          {
-            type: 'APP_REMOVED',
-            deviceId: activeDevice.deviceId,
-            deviceName: devName,
-            appRemovedAt: removedTime.toISOString(),
-            timeText,
-          }
-        );
+        const parentUser = await User.findById(activeDevice.parentUserId).select('languageCode timezone timeZone').lean();
+        const lang = parentUser?.languageCode || activeDevice.languageCode || 'en';
+        const parentTz = (parentUser as any)?.timezone || (parentUser as any)?.timeZone || 'Asia/Kolkata';
+
+        // Check if multiple devices of this parent are appRemoved
+        const allRemoved = await Device.find({
+          parentUserId: activeDevice.parentUserId,
+          appRemoved: true,
+          isPaired: { $ne: false },
+        }).lean();
+
+        const devPayloadList = allRemoved.map((d) => {
+          const rTime = d.appRemovedAt ? new Date(d.appRemovedAt) : new Date();
+          const tText = formatRelativeDateTimeForNotification(rTime, lang, parentTz);
+          return {
+            deviceId: String(d.deviceId),
+            deviceName: d.deviceName || 'Child Device',
+            appRemovedAt: rTime.toISOString(),
+            timeText: tText,
+          };
+        });
+
+        if (allRemoved.length <= 1) {
+          const devName = activeDevice.deviceName || 'Child Device';
+          const removedTime = activeDevice.appRemovedAt || new Date();
+          const timeText = formatRelativeDateTimeForNotification(removedTime, lang, parentTz);
+          await sendLocalizedFcmTopicNotification(
+            parentTopic,
+            'DEVICE_APP_REMOVED',
+            {
+              deviceName: devName,
+              timeText,
+              timeInfo: timeText ? ` (${timeText})` : '',
+            },
+            lang,
+            {
+              type: 'APP_REMOVED',
+              deviceId: activeDevice.deviceId,
+              deviceName: devName,
+              appRemovedAt: removedTime.toISOString(),
+              timeText,
+              deviceCount: '1',
+              devices: JSON.stringify(devPayloadList),
+              timezone: parentTz,
+            }
+          );
+        } else {
+          const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
+          await sendLocalizedFcmTopicNotification(
+            parentTopic,
+            'DEVICE_APP_REMOVED_MULTI',
+            {
+              count: allRemoved.length,
+              deviceList,
+            },
+            lang,
+            {
+              type: 'APP_REMOVED',
+              deviceCount: String(allRemoved.length),
+              devices: JSON.stringify(devPayloadList),
+              timezone: parentTz,
+            }
+          );
+        }
       } catch (e: any) {
         console.error('[CONFIRM-REMOVED] FCM topic notification error:', e.message);
       }
     }
 
-    // Broadcast instant socket events
+    // Broadcast instant socket events to device and parent rooms
     try {
       const io = getSignalingIo();
       if (io) {
@@ -1509,29 +1543,33 @@ export const confirmDeviceAppRemoved = async (targetDeviceId: string, reason: st
           appRemoved: true,
           appRemovedAt: activeDevice.appRemovedAt,
           isOnline: false,
+          isCriticalPermissionsOff: false,
+          criticalPermissionsOff: false,
           lastSeenAt: stalePastDate.toISOString(),
         };
-        io.to(activeDevice.deviceId).emit('device-app-removed', payload);
-        io.to(activeDevice.deviceId).emit('device-status-changed', {
+        const statusPayload = {
           deviceId: activeDevice.deviceId,
           isOnline: false,
           lastSeenAt: stalePastDate.toISOString(),
           appRemoved: true,
-        });
+          isCriticalPermissionsOff: false,
+        };
+
+        io.to(activeDevice.deviceId).emit('device-app-removed', payload);
+        io.to(activeDevice.deviceId).emit('device-status-changed', statusPayload);
+
         if (activeDevice.parentUserId) {
           const parentTopic = `parent_${activeDevice.parentUserId}`;
+          const userTopic = `user_${activeDevice.parentUserId}`;
           io.to(parentTopic).emit('device-app-removed', payload);
-          io.to(parentTopic).emit('device-status-changed', {
-            deviceId: activeDevice.deviceId,
-            isOnline: false,
-            lastSeenAt: stalePastDate.toISOString(),
-            appRemoved: true,
-          });
+          io.to(parentTopic).emit('device-status-changed', statusPayload);
+          io.to(userTopic).emit('device-app-removed', payload);
+          io.to(userTopic).emit('device-status-changed', statusPayload);
         }
       }
     } catch (_) {}
 
-    console.log(`[APP-REMOVED] Confirmed removal for device ${activeDevice.deviceId} (reason: ${reason}, pushSent: ${shouldSendPush})`);
+    console.log(`[APP-REMOVED] Confirmed removal for device ${activeDevice.deviceId} (reason: ${reason})`);
     return activeDevice;
   } catch (err: any) {
     console.error('[CONFIRM-REMOVED-ERROR]', err?.message);
@@ -1540,38 +1578,92 @@ export const confirmDeviceAppRemoved = async (targetDeviceId: string, reason: st
 };
 
 /**
- * Periodically verify devices where admin was disabled:
- * - If child app sends heartbeat or connects socket, clear pending removal flag (app kept!).
- * - If 2.5 minutes elapse with zero heartbeat and no socket, confirm removal!
+ * Periodically verify devices where admin was disabled or reported pending removal:
+ * - If child app is currently connected to socket, keep app installed (do not confirm removal).
+ * - If child socket is disconnected and has sent zero heartbeat/activity for >= 60 seconds,
+ *   confirm app removal.
  */
 export const processPendingAppRemovals = async () => {
   try {
-    const twoAndHalfMinutesAgo = new Date(Date.now() - 150 * 1000); // 2.5 min window
-    const pendingDevices = await Device.find({
-      adminDisabledPendingRemoval: true,
+    // Find paired devices that are not marked removed yet,
+    // where either admin was deactivated, pending removal flag is set, or critical permissions are off.
+    const candidates = await Device.find({
       appRemoved: { $ne: true },
-      adminDisabledAt: { $lte: twoAndHalfMinutesAgo },
+      isPaired: { $ne: false },
+      $or: [
+        { 'grantedPermissions.DEVICE_ADMIN': false },
+        { adminDisabledPendingRemoval: true },
+        { criticalPermissionsOff: true },
+      ],
     });
 
-    for (const dev of pendingDevices) {
-      // 1. Check if child is actively connected via socket
+    const now = Date.now();
+
+    for (const dev of candidates) {
+      // If child device re-enabled Device Admin and Accessibility:
+      if (dev.grantedPermissions?.DEVICE_ADMIN === true && dev.grantedPermissions?.ACCESSIBILITY === true) {
+        if (dev.adminDisabledPendingRemoval || dev.criticalPermissionsOff) {
+          await Device.updateOne(
+            { _id: dev._id },
+            {
+              $set: {
+                adminDisabledPendingRemoval: false,
+                criticalPermissionsOff: false,
+                criticalPermissionsOffAt: null,
+                criticalPermissionsNotifiedAt: null,
+              },
+            }
+          );
+        }
+        continue;
+      }
+
+      // 1. Check if child is actively connected via signaling socket
       const isSocketLive = await isChildOnline(dev.deviceId, dev.pairingCode);
       if (isSocketLive) {
-        console.log(`[VERIFY-REMOVAL] Device ${dev.deviceId} is still active on socket. Clearing pending removal.`);
-        await Device.updateOne({ _id: dev._id }, { $set: { adminDisabledPendingRemoval: false } });
+        // Child app is actively connected right now on socket.
+        // It is STILL INSTALLED.
+        // DO NOT clear adminDisabledPendingRemoval while DEVICE_ADMIN is false!
+        // Parent continues to see Critical Permissions Disabled.
         continue;
       }
 
-      // 2. Check if a heartbeat / request arrived after admin was disabled
-      if (dev.lastSeenAt && dev.adminDisabledAt && new Date(dev.lastSeenAt).getTime() > new Date(dev.adminDisabledAt).getTime()) {
-        console.log(`[VERIFY-REMOVAL] Device ${dev.deviceId} sent heartbeat after admin disabled. Keeping app installed.`);
-        await Device.updateOne({ _id: dev._id }, { $set: { adminDisabledPendingRemoval: false } });
+      // 2. Check silence duration: how long has it been since socket disconnect or last activity?
+      const lastSeenMs = dev.lastSeenAt ? new Date(dev.lastSeenAt).getTime() : 0;
+      const adminOffMs = dev.adminDisabledAt ? new Date(dev.adminDisabledAt).getTime() : 0;
+      const lastActivityMs = Math.max(lastSeenMs, 0);
+      const silenceDurationSec = (now - lastActivityMs) / 1000;
+
+      // If active data arrived within the last 60 seconds, wait for next periodic scan
+      if (silenceDurationSec < 60) {
         continue;
       }
 
-      // 3. No socket and no heartbeat in 2.5+ minutes following admin disable -> confirm app removal
-      console.log(`[VERIFY-REMOVAL] Device ${dev.deviceId} went completely silent after admin disabled. Confirming APP REMOVAL!`);
-      await confirmDeviceAppRemoved(dev.deviceId, 'ADMIN_DISABLED_UNINSTALLED');
+      // 3. Proactively validate FCM token if token exists (dryRun check against Google FCM registry)
+      // If the app was uninstalled, Google FCM returns messaging/registration-token-not-registered.
+      if (dev.fcmToken) {
+        try {
+          const isFcmUnregistered = await validateFcmTokenUnregistered(dev.fcmToken);
+          if (isFcmUnregistered) {
+            console.log(`[VERIFY-REMOVAL] Device ${dev.deviceId} (${dev.deviceName}) confirmed UNINSTALLED via FCM token registry check.`);
+            await confirmDeviceAppRemoved(dev.deviceId, 'FCM_UNREGISTERED');
+            continue;
+          }
+        } catch (_) {}
+      }
+
+      // 4. If DEVICE_ADMIN is false (or adminDisabledPendingRemoval is true),
+      // socket is disconnected, and zero activity for >= 90 seconds -> confirm removal!
+      const adminDisabledDurationSec = adminOffMs > 0 ? (now - adminOffMs) / 1000 : silenceDurationSec;
+      if (
+        (dev.grantedPermissions?.DEVICE_ADMIN === false || dev.adminDisabledPendingRemoval) &&
+        (silenceDurationSec >= 90 || adminDisabledDurationSec >= 90)
+      ) {
+        console.log(
+          `[VERIFY-REMOVAL] Device ${dev.deviceId} (${dev.deviceName}) confirmed UNINSTALLED (Device Admin disabled & silent for ${Math.round(silenceDurationSec)}s).`
+        );
+        await confirmDeviceAppRemoved(dev.deviceId, 'ADMIN_DISABLED_UNINSTALLED');
+      }
     }
   } catch (err: any) {
     console.error('[PROCESS-PENDING-REMOVALS-ERROR]', err?.message);
@@ -1597,7 +1689,7 @@ export const reportAppRemoved = async (req: any, res: Response) => {
     // 2. Mark criticalPermissionsOff = true, criticalPermissionsOffAt = now.
     // 3. Mark adminDisabledPendingRemoval = true, adminDisabledAt = now.
     // 4. Broadcast live status so parent sees "Critical Permission Off (Device Admin is OFF)" immediately.
-    // 5. Verification job will confirm actual uninstallation after 2.5-3 minutes if heartbeats and socket stop.
+    // 5. Verification job will confirm actual uninstallation after 60-90 seconds if heartbeats and socket stop.
     if (reason === 'ADMIN_DISABLED') {
       const now = new Date();
       const updatedDevice = await Device.findOneAndUpdate(
@@ -1632,6 +1724,7 @@ export const reportAppRemoved = async (req: any, res: Response) => {
             appRemoved: false,
             grantedPermissions: updatedDevice.grantedPermissions,
             isCriticalPermissionsOff: true,
+            criticalPermissionsOffAt: updatedDevice.criticalPermissionsOffAt,
             disabledPermissionsCount: enriched.disabledPermissionsCount,
             disabledPermissionsList: enriched.disabledPermissionsList,
             lastSeen: enriched.lastSeen,
@@ -1644,6 +1737,13 @@ export const reportAppRemoved = async (req: any, res: Response) => {
           }
         }
       } catch (_) {}
+
+      // Schedule proactive removal verification check in 65 seconds
+      setTimeout(() => {
+        processPendingAppRemovals().catch((err: any) =>
+          console.error('[PROACTIVE-REMOVAL-VERIFY-ERROR]', err?.message)
+        );
+      }, 65000);
 
       console.log(`[ADMIN-DISABLED] Deactivated Device Admin for ${updatedDevice.deviceId}. Flagged criticalPermissionsOff. Awaiting removal verification.`);
       return res.json({

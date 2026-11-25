@@ -3,6 +3,7 @@ import {
   authenticateFirebase,
   authRateLimiter,
   updateUserLanguage,
+  updateUserTimezone,
   updateParentFcmToken,
   logout,
   validateEmailAddress,
@@ -233,6 +234,8 @@ router.post('/auth/validate-email', authRateLimiter, validateEmailAddress);
 router.post('/auth/logout', authenticateJwt, logout);
 router.post('/user/language', authenticateJwt, updateUserLanguage);
 router.put('/user/language', authenticateJwt, updateUserLanguage);
+router.post('/user/timezone', authenticateJwt, updateUserTimezone);
+router.put('/user/timezone', authenticateJwt, updateUserTimezone);
 router.post('/user/fcm-token', authenticateJwt, updateParentFcmToken);
 router.put('/user/fcm-token', authenticateJwt, updateParentFcmToken);
 

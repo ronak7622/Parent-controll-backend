@@ -24,7 +24,9 @@ import { shouldSendAlertShared } from './device.controller';
 import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl, headObjectSizeR2 } from '../services/r2.service';
 import { config } from '../config/env';
 import { enqueueIngestJob } from '../queues/ingest.queue';
-import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
+import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification, sendFcmDirectNotification } from '../services/fcm.service';
+import { User } from '../models/User';
+import { formatRelativeDateTimeForNotification } from '../config/notificationTemplates';
 import { isIgnoredSystemPackage, getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { Subscription } from '../models/Subscription';
@@ -90,10 +92,29 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       mongoSet.isAppHidden = Boolean((grantedPermissions as any).HIDE_APP);
     }
 
+    const isObjId = mongoose.isValidObjectId(deviceId);
+    const existing = await Device.findOne(
+      { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
+      { appRemoved: 1, isPaired: 1, isLocationEnabled: 1, locationEnabled: 1, locationDisabledAt: 1, locationDisabledNotifiedAt: 1, parentUserId: 1, name: 1, deviceName: 1, model: 1 }
+    );
+
+    let isLocationTurningOff = false;
     if (typeof isLocationEnabled !== 'undefined' || typeof locationEnabled !== 'undefined') {
-      const locVal = typeof isLocationEnabled !== 'undefined' ? isLocationEnabled : locationEnabled;
+      const locVal = Boolean(typeof isLocationEnabled !== 'undefined' ? isLocationEnabled : locationEnabled);
       mongoSet.isLocationEnabled = locVal;
       mongoSet.locationEnabled = locVal;
+
+      if (!locVal) {
+        if (!existing || existing.isLocationEnabled !== false) {
+          isLocationTurningOff = true;
+        }
+        if (!existing?.locationDisabledAt) {
+          mongoSet.locationDisabledAt = new Date();
+        }
+      } else {
+        mongoSet.locationDisabledAt = null;
+        mongoSet.locationDisabledNotifiedAt = null;
+      }
     }
 
     if (typeof appVersionCode !== 'undefined') {
@@ -105,12 +126,6 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     if (grantedPermissions && typeof grantedPermissions === 'object') {
       mongoSet.grantedPermissions = grantedPermissions;
     }
-
-    const isObjId = mongoose.isValidObjectId(deviceId);
-    const existing = await Device.findOne(
-      { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
-      { appRemoved: 1, isPaired: 1 }
-    );
 
     // AUTO-RESTORE: If the device was previously marked appRemoved, but is now sending a valid authenticated
     // heartbeat, the app is clearly STILL INSTALLED & RUNNING on the child's phone!
@@ -158,6 +173,9 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
           disabledPermissionsList: enriched.disabledPermissionsList,
           lastSeen: enriched.lastSeen,
           lastSeenAt: enriched.lastSeenAt,
+          isLocationEnabled: enriched.isLocationEnabled ?? device.isLocationEnabled ?? true,
+          locationEnabled: enriched.isLocationEnabled ?? device.isLocationEnabled ?? true,
+          locationDisabledAt: device.locationDisabledAt || null,
         };
         io.to(device.deviceId).emit('device-status-changed', statusPayload);
         if (parentUserId) {
@@ -176,6 +194,108 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         }
       }
     } catch (_) {}
+
+    // Send push notification to parent when location is turned off (combined if multiple devices)
+    if (device.isLocationEnabled === false && !device.locationDisabledNotifiedAt && parentUserId) {
+      try {
+        const parentUser = await User.findById(parentUserId);
+        const parentFcm = parentUser?.fcmToken;
+        const parentTopic = `parent_${parentUserId}`;
+        const lang = parentUser?.languageCode || 'en';
+        const parentTz = (parentUser as any)?.timezone || (parentUser as any)?.timeZone || 'Asia/Kolkata';
+
+        const allLocOff = await Device.find({
+          parentUserId,
+          isLocationEnabled: false,
+          appRemoved: { $ne: true },
+          isPaired: { $ne: false },
+        }).lean();
+
+        const devPayloadList = allLocOff.map((d) => {
+          const offTime = d.locationDisabledAt ? new Date(d.locationDisabledAt) : new Date();
+          const tText = formatRelativeDateTimeForNotification(offTime, lang, parentTz);
+          return {
+            deviceId: String(d.deviceId),
+            deviceName: d.deviceName || 'Child Device',
+            locationDisabledAt: offTime.toISOString(),
+            timeText: tText,
+          };
+        });
+
+        if (allLocOff.length <= 1) {
+          const devName = device.deviceName || (device as any).name || device.model || 'Child Device';
+          const timeText = formatRelativeDateTimeForNotification(device.locationDisabledAt || new Date(), lang, parentTz);
+          await sendLocalizedFcmTopicNotification(
+            parentTopic,
+            'DEVICE_LOCATION_OFF',
+            {
+              deviceName: devName,
+              timeText,
+              timeInfo: timeText ? ` (${timeText})` : '',
+            },
+            lang,
+            {
+              type: 'LOCATION_DISABLED',
+              deviceId: String(device.deviceId || device._id),
+              deviceName: devName,
+              timestamp: Date.now().toString(),
+              locationDisabledAt: (device.locationDisabledAt || new Date()).toISOString(),
+              timeText,
+              deviceCount: '1',
+              devices: JSON.stringify(devPayloadList),
+              timezone: parentTz,
+            }
+          );
+          if (parentFcm) {
+            await sendFcmDirectNotification(
+              parentFcm,
+              `⚠️ Location Turned Off (${devName})`,
+              `Location was turned off on ${devName} at ${timeText}. Live tracking and location history are paused. Please turn on location on child's device.`,
+              {
+                type: 'LOCATION_DISABLED',
+                deviceId: String(device.deviceId || device._id),
+                timestamp: Date.now().toString(),
+                devices: JSON.stringify(devPayloadList),
+                timezone: parentTz,
+              }
+            );
+          }
+        } else {
+          const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
+          await sendLocalizedFcmTopicNotification(
+            parentTopic,
+            'DEVICE_LOCATION_OFF_MULTI',
+            {
+              count: allLocOff.length,
+              deviceList,
+            },
+            lang,
+            {
+              type: 'LOCATION_DISABLED',
+              deviceCount: String(allLocOff.length),
+              devices: JSON.stringify(devPayloadList),
+              timezone: parentTz,
+            }
+          );
+          if (parentFcm) {
+            await sendFcmDirectNotification(
+              parentFcm,
+              `⚠️ ${allLocOff.length} Devices — Location Turned Off`,
+              `Location turned off on ${allLocOff.length} devices: ${deviceList}. Turn ON location on child devices to resume tracking.`,
+              {
+                type: 'LOCATION_DISABLED',
+                deviceCount: String(allLocOff.length),
+                devices: JSON.stringify(devPayloadList),
+                timezone: parentTz,
+              }
+            );
+          }
+        }
+        await Device.updateOne({ _id: device._id }, { $set: { locationDisabledNotifiedAt: new Date() } });
+      } catch (fcmErr: any) {
+        console.warn('[FCM-LOCATION-OFF-WARN]', fcmErr?.message);
+      }
+    }
     let uploadBlocked = false;
     let isExpired = false;
     let isGrace = false;

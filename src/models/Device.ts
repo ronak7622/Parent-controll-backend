@@ -19,6 +19,8 @@ export interface IDevice extends Document {
   appVersionCode?: number;
   appVersionName?: string;
   languageCode?: string;
+  timeZone?: string;
+  timezone?: string;
 
   // Settings & Restrictions
   youtubeBlocked: boolean;
@@ -49,6 +51,8 @@ export interface IDevice extends Document {
   criticalPermissionsOff?: boolean;
   criticalPermissionsOffAt?: Date | null;
   criticalPermissionsNotifiedAt?: Date | null;
+  locationDisabledAt?: Date | null;
+  locationDisabledNotifiedAt?: Date | null;
 
   browserRestrictionMode: 'unrestricted' | 'blacklist' | 'whitelist';
   browserRestrictionsMode?: 'unrestricted' | 'blacklist' | 'whitelist';
@@ -162,6 +166,8 @@ const DeviceSchema = new Schema<IDevice>(
     isOnline: { type: Boolean, default: false },
     lastSeenAt: { type: Date, default: Date.now },
     fcmToken: { type: String },
+    timeZone: { type: String, default: 'Asia/Kolkata' },
+    timezone: { type: String, default: 'Asia/Kolkata' },
 
     youtubeBlocked: { type: Boolean, default: false },
     youtubeShortsBlocked: { type: Boolean, default: false },
@@ -185,6 +191,8 @@ const DeviceSchema = new Schema<IDevice>(
     criticalPermissionsOff: { type: Boolean, default: false },
     criticalPermissionsOffAt: { type: Date, default: null },
     criticalPermissionsNotifiedAt: { type: Date, default: null },
+    locationDisabledAt: { type: Date, default: null },
+    locationDisabledNotifiedAt: { type: Date, default: null },
 
     secretCode: { type: String, default: '' },
     secureOurChildApp: { type: Boolean, default: true },

@@ -167,6 +167,11 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
       if (userLanguageCode && typeof userLanguageCode === 'string') {
         user.languageCode = userLanguageCode.toLowerCase();
       }
+      const clientTz = req.body.timezone || req.body.timeZone || (req.headers['x-timezone'] as string);
+      if (clientTz && typeof clientTz === 'string' && clientTz.trim().length > 0) {
+        user.timezone = clientTz.trim();
+        user.timeZone = clientTz.trim();
+      }
       if (req.body.fcmToken && typeof req.body.fcmToken === 'string') {
         user.fcmToken = req.body.fcmToken.trim();
       }
@@ -178,6 +183,13 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         'en'
       ).toLowerCase();
 
+      const clientTz = (
+        req.body.timezone ||
+        req.body.timeZone ||
+        (req.headers['x-timezone'] as string) ||
+        'Asia/Kolkata'
+      ).trim();
+
       user = new User({
         firebaseUid,
         email,
@@ -188,6 +200,8 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         linkedProviders: provider ? [provider] : ['google'],
         isVerified: true,
         languageCode: userLanguageCode,
+        timezone: clientTz,
+        timeZone: clientTz,
         fcmToken: req.body.fcmToken && typeof req.body.fcmToken === 'string' ? req.body.fcmToken.trim() : undefined,
         currentSessionId: newSessionId,
         currentDeviceName: clientDeviceName || (clientPlatform === 'flutter_app' ? 'Mobile App' : 'Web Browser'),
@@ -239,6 +253,7 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         name: formatCleanNameFromEmail(user.email, user.name),
         emailVerified: user.emailVerified ?? false,
         languageCode: user.languageCode || 'en',
+        timezone: user.timezone || user.timeZone || 'Asia/Kolkata',
         primaryProvider: user.primaryProvider,
         linkedProviders: user.linkedProviders || [],
       },
@@ -265,6 +280,27 @@ export const updateUserLanguage = async (req: any, res: Response) => {
     const cleanLang = String(rawLang).trim().toLowerCase();
     await User.findByIdAndUpdate(parentUserId, { languageCode: cleanLang });
     return res.json({ success: true, languageCode: cleanLang });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+};
+
+/**
+ * Update Timezone for Logged-in Parent User
+ */
+export const updateUserTimezone = async (req: any, res: Response) => {
+  try {
+    const parentUserId = req.user?.userId;
+    if (!parentUserId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    const rawTz = req.body.timezone || req.body.timeZone;
+    if (!rawTz) {
+      return res.status(400).json({ success: false, message: 'timezone is required.' });
+    }
+    const cleanTz = String(rawTz).trim();
+    await User.findByIdAndUpdate(parentUserId, { timezone: cleanTz, timeZone: cleanTz });
+    return res.json({ success: true, timezone: cleanTz });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
