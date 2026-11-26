@@ -182,10 +182,14 @@ export const completeChildSetup = async (req: any, res: Response) => {
     if (initialDevice.deviceId) queryFilters.push({ deviceId: initialDevice.deviceId });
 
     const updateFields: any = { isSetupComplete: true, isPaired: true, appRemoved: false, appRemovedAt: null, appRemovedNotifiedAt: null };
+    const effectiveDevId = targetId || initialDevice.deviceId;
     if (secretCode) {
-      updateFields.secretCode = hashSecret(String(secretCode).trim());
-    } else if (!initialDevice.secretCode || initialDevice.secretCode.trim().length === 0) {
-      updateFields.secretCode = hashSecret(initialDevice.pairingCode || targetId || '000000');
+      updateFields.secretCode = encryptDeterministic(String(secretCode).trim(), effectiveDevId);
+    } else if (!initialDevice.secretCode || initialDevice.secretCode.trim().length === 0 || initialDevice.secretCode.startsWith('scrypt:')) {
+      const fallbackPin = initialDevice.pairingCode
+        ? (decryptDeterministic(initialDevice.pairingCode, 'system_pairing') || initialDevice.pairingCode)
+        : (targetId || '000000');
+      updateFields.secretCode = encryptDeterministic(fallbackPin, effectiveDevId);
     }
     if (typeof secureOurChildApp !== 'undefined') updateFields.secureOurChildApp = Boolean(secureOurChildApp);
     if (typeof isAppHidden !== 'undefined') updateFields.isAppHidden = Boolean(isAppHidden);
@@ -296,7 +300,10 @@ export const checkSetupStatus = async (req: any, res: Response) => {
         deviceName: targetDevice.deviceName,
         deviceBrand: targetDevice.deviceBrand,
         deviceModel: targetDevice.deviceModel,
-        secretCode: targetDevice.secretCode || '',
+        secretCode: (() => {
+          const plain = targetDevice.secretCode ? (decryptDeterministic(targetDevice.secretCode, targetDevice.deviceId) || targetDevice.secretCode) : '';
+          return plain.startsWith('scrypt:') ? '' : plain;
+        })(),
         secureOurChildApp: secureAppVal,
         isAppHidden: isAppHiddenVal,
         grantedPermissions: gp,
@@ -372,8 +379,9 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
     device.appRemovedNotifiedAt = null;
     device.adminDisabledPendingRemoval = false;
     device.adminDisabledAt = null;
-    if (!device.secretCode || device.secretCode.trim().length === 0) {
-      device.secretCode = hashSecret(code || device.pairingCode || '000000');
+    if (!device.secretCode || device.secretCode.trim().length === 0 || device.secretCode.startsWith('scrypt:')) {
+      const fallbackPin = code || (device.pairingCode ? (decryptDeterministic(device.pairingCode, 'system_pairing') || device.pairingCode) : '000000');
+      device.secretCode = encryptDeterministic(fallbackPin, device.deviceId);
     }
     await device.save();
 
@@ -505,8 +513,9 @@ export const pairChildDevice = async (req: any, res: Response) => {
     if (typeof appVersionName !== 'undefined') device.appVersionName = String(appVersionName).trim();
     if (languageCode) device.languageCode = String(languageCode).trim().toLowerCase();
 
-    if (!device.secretCode || device.secretCode.trim().length === 0) {
-      device.secretCode = hashSecret(inputCode || device.pairingCode || '000000');
+    if (!device.secretCode || device.secretCode.trim().length === 0 || device.secretCode.startsWith('scrypt:')) {
+      const fallbackPin = inputCode || (device.pairingCode ? (decryptDeterministic(device.pairingCode, 'system_pairing') || device.pairingCode) : '000000');
+      device.secretCode = encryptDeterministic(fallbackPin, device.deviceId);
     }
 
     await device.save();
@@ -522,6 +531,7 @@ export const pairChildDevice = async (req: any, res: Response) => {
     delete deviceData.installedApps;
 
     const options = await ConfigService.getMergedOptions();
+    const plainSecret = decryptDeterministic(device.secretCode, device.deviceId) || inputCode || '000000';
 
     return res.json({
       success: true,
@@ -529,7 +539,7 @@ export const pairChildDevice = async (req: any, res: Response) => {
       deviceId: device.deviceId,
       deviceToken,
       device: deviceData,
-      secretCode: device.secretCode || inputCode || '000000',
+      secretCode: plainSecret.startsWith('scrypt:') ? (inputCode || '000000') : plainSecret,
       parentUid: device.parentUserId ? device.parentUserId.toString() : 'parent',
       allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
       allowDeveloperMode: Boolean(options.allowDeveloperModeOnChildApp),
@@ -712,7 +722,10 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       blockedApps: device.blockedApps || [],
       locationIntervalSeconds: device.locationIntervalSeconds ?? 1800,
       locationInterval: device.locationInterval ?? '30m',
-      secretCode: device.secretCode || '',
+      secretCode: (() => {
+        const plain = device.secretCode ? (decryptDeterministic(device.secretCode, device.deviceId) || device.secretCode) : '';
+        return plain.startsWith('scrypt:') ? '' : plain;
+      })(),
       secureOurChildApp: device.secureOurChildApp ?? true,
       isAppHidden: device.isAppHidden ?? false,
       hideApp: device.isAppHidden ?? false,
@@ -798,7 +811,11 @@ export const disconnectDevice = async (req: any, res: Response) => {
     const isParentCall = Boolean(req.user?.userId);
     const { secretCode } = req.body;
     if (isParentCall && device && device.isSetupComplete && device.secretCode && device.secretCode.trim().length > 0) {
-      if (!secretCode || !verifySecret(secretCode.trim(), device.secretCode.trim())) {
+      const trimmedSecret = secretCode ? String(secretCode).trim() : '';
+      const decryptedExpected = decryptDeterministic(device.secretCode, targetId) || device.secretCode;
+      const isValid = (trimmedSecret.length > 0 && decryptedExpected === trimmedSecret)
+        || (device.secretCode.startsWith('scrypt:') && verifySecret(trimmedSecret, device.secretCode));
+      if (!isValid) {
         return res.status(400).json({
           success: false,
           message: 'Incorrect 6-digit Secret Protection Code. Device disconnect cancelled.',
@@ -1223,7 +1240,7 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
     if (!device) return res.status(404).json({ success: false, message: 'Device not found' });
 
     if (secretCode) {
-      device.secretCode = hashSecret(String(secretCode).trim());
+      device.secretCode = encryptDeterministic(String(secretCode).trim(), device.deviceId);
     }
     if (deviceName && String(deviceName).trim().length > 0) {
       device.deviceName = String(deviceName).trim();
@@ -1287,8 +1304,11 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
     }
 
     // Signal child device to update protection immediately
+    const plainSecret = device.secretCode ? (decryptDeterministic(device.secretCode, device.deviceId) || device.secretCode) : '';
+    const cleanSecret = plainSecret.startsWith('scrypt:') ? '' : plainSecret;
+
     const restrictions = {
-      secretCode: device.secretCode,
+      secretCode: cleanSecret,
       secureOurChildApp: device.secureOurChildApp,
       isAppHidden: device.isAppHidden,
       hideApp: device.isAppHidden,
@@ -1315,7 +1335,7 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
     return res.json({
       success: true,
       message: 'Protection settings updated successfully',
-      secretCode: device.secretCode,
+      secretCode: cleanSecret,
       secureOurChildApp: device.secureOurChildApp,
       isAppHidden: device.isAppHidden,
     });
@@ -1362,9 +1382,11 @@ export const verifyChildSecretCode = async (req: any, res: Response) => {
     const maxAttempts = Number(options.childDeviceSecretCodeMaxAttempt) > 0 ? Number(options.childDeviceSecretCodeMaxAttempt) : 5;
 
     const trimmedInput = String(secretCode).trim();
-    const expectedCode = String(device.secretCode || '').trim();
+    const decryptedExpected = decryptDeterministic(device.secretCode || '', device.deviceId) || (device.secretCode || '');
+    const isMatch = (trimmedInput.length > 0 && decryptedExpected === trimmedInput)
+      || (device.secretCode && device.secretCode.startsWith('scrypt:') && verifySecret(trimmedInput, device.secretCode));
 
-    if (expectedCode.length > 0 && verifySecret(trimmedInput, expectedCode)) {
+    if (isMatch) {
       // Success! Reset attempts
       device.failedSecretCodeAttempts = 0;
       device.secretCodeBlockedUntil = null as any;

@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { decryptDeterministic } from '../utils/crypto.utils';
+import { decryptDeterministic, encryptDeterministic } from '../utils/crypto.utils';
 
 export interface IDevice extends Document {
   deviceId: string;
@@ -375,13 +375,25 @@ export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
   }
 
   const rawPairing = dev.pairingCode ? (decryptDeterministic(dev.pairingCode, 'system_pairing') || dev.pairingCode) : dev.pairingCode;
-  // Auto-fallback for secretCode: if missing or blank, fallback to pairingCode
-  const secCode = (dev.secretCode && String(dev.secretCode).trim().length > 0)
-    ? String(dev.secretCode).trim()
-    : ((rawPairing && String(rawPairing).trim().length > 0) ? String(rawPairing).trim() : '');
+  
+  // Auto-fallback for secretCode: decrypt if encrypted; if legacy scrypt hash or missing, fallback to pairingCode
+  let secCode = '';
+  if (dev.secretCode && String(dev.secretCode).trim().length > 0) {
+    const rawSec = String(dev.secretCode).trim();
+    if (rawSec.startsWith('scrypt:')) {
+      // Legacy one-way hash cannot be reversed; fallback to plain pairing code so UI does not overflow
+      secCode = (rawPairing && String(rawPairing).trim().length > 0) ? String(rawPairing).trim() : '';
+    } else {
+      secCode = decryptDeterministic(rawSec, dev.deviceId) || rawSec;
+    }
+  } else {
+    secCode = (rawPairing && String(rawPairing).trim().length > 0) ? String(rawPairing).trim() : '';
+  }
 
-  if ((!dev.secretCode || String(dev.secretCode).trim().length === 0) && secCode.length > 0 && dev._id) {
-    Device.updateOne({ _id: dev._id }, { $set: { secretCode: secCode } }).catch(() => {});
+  // Self-heal database: if secretCode was empty or had legacy scrypt hash, store deterministic encrypted PIN
+  if (secCode.length > 0 && dev._id && (!dev.secretCode || dev.secretCode.startsWith('scrypt:'))) {
+    const encSecret = encryptDeterministic(secCode, dev.deviceId);
+    Device.updateOne({ _id: dev._id }, { $set: { secretCode: encSecret } }).catch(() => {});
   }
 
   return {

@@ -352,7 +352,10 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         blockedPhoneNumbers: (device.blockedPhoneNumbers || []).map((p: string) => decryptDeterministic(p, device.deviceId) || p),
         blockedOutgoingPhoneNumbers: (device.blockedOutgoingPhoneNumbers || []).map((p: string) => decryptDeterministic(p, device.deviceId) || p),
         allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
-        secretCode: device.secretCode || '',
+        secretCode: (() => {
+          const plain = device.secretCode ? (decryptDeterministic(device.secretCode, device.deviceId) || device.secretCode) : '';
+          return plain.startsWith('scrypt:') ? '' : plain;
+        })(),
         secureOurChildApp: device.secureOurChildApp ?? true,
         childDeviceSecretCodeMaxAttempt: options.childDeviceSecretCodeMaxAttempt ? Number(options.childDeviceSecretCodeMaxAttempt) : 5,
         subState,
