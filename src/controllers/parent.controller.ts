@@ -608,6 +608,10 @@ export const getContacts = async (req: AuthRequest, res: Response) => {
         const obj = c.toObject ? c.toObject() : c;
         const decPhone = decryptDeterministic(obj.phoneNumber, targetDeviceId);
         const decName = decryptText(obj.name, targetDeviceId);
+        const decFirstName = decryptText(obj.firstName, targetDeviceId);
+        const decMiddleName = decryptText(obj.middleName, targetDeviceId);
+        const decLastName = decryptText(obj.lastName, targetDeviceId);
+        const decNickname = decryptText(obj.nickname, targetDeviceId);
         const decAddPhone = (obj.additionalPhoneNumbers || []).map((p: string) => decryptDeterministic(p, targetDeviceId));
         const decEmails = (obj.emails || []).map((e: string) => decryptDeterministic(e, targetDeviceId));
         const decNotes = decryptText(obj.notes, targetDeviceId);
@@ -624,6 +628,10 @@ export const getContacts = async (req: AuthRequest, res: Response) => {
         return {
           ...obj,
           name: decName,
+          firstName: decFirstName,
+          middleName: decMiddleName,
+          lastName: decLastName,
+          nickname: decNickname,
           phoneNumber: decPhone,
           additionalPhoneNumbers: decAddPhone,
           emails: decEmails,
@@ -708,8 +716,10 @@ export const getCallLogs = async (req: AuthRequest, res: Response) => {
       const cleanTarget = (phoneNumber as string).replace(/[^0-9]/g, '');
       const lastDigits = cleanTarget.length >= 10 ? cleanTarget.slice(-10) : cleanTarget;
       const flexRegex = lastDigits.split('').join('[^0-9]*');
+      const encTarget = encryptDeterministic(String(phoneNumber).trim(), targetDeviceId);
       query.$or = [
         { phoneNumber: phoneNumber },
+        { phoneNumber: encTarget },
         ...(lastDigits.length >= 5 ? [{ phoneNumber: { $regex: flexRegex, $options: 'i' } }] : [])
       ];
     }
