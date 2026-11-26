@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { WifiLog } from '../models/wifi-log.model';
 import { getReadQuery } from '../dal/db.dal';
 import { checkQuotaBlocked } from './ingest.controller';
+import { encryptText, decryptText, encryptDeterministic, decryptDeterministic } from '../utils/crypto.utils';
 
 // Ingest Wi-Fi log event from child device
 export const ingestWifiLog = async (req: Request, res: Response) => {
@@ -36,6 +37,13 @@ export const ingestWifiLog = async (req: Request, res: Response) => {
     }
 
     const eventDate = timestamp ? new Date(timestamp) : new Date();
+    const encLat = latitude != null ? encryptText(String(latitude), deviceId) : null;
+    const encLng = longitude != null ? encryptText(String(longitude), deviceId) : null;
+    const encSsid = ssid ? encryptDeterministic(String(ssid), deviceId) : '';
+    const encBssid = bssid ? encryptDeterministic(String(bssid), deviceId) : '';
+    const encIp = ipAddress ? encryptText(String(ipAddress), deviceId) : '';
+    const encLocName = locationName ? encryptText(String(locationName), deviceId) : '';
+    const encLocAddr = locationAddress ? encryptText(String(locationAddress), deviceId) : '';
 
     if (eventType === 'WIFI_CONNECTED') {
       let logEntry = null;
@@ -48,27 +56,31 @@ export const ingestWifiLog = async (req: Request, res: Response) => {
         if (typeof bytesUsed === 'number' && bytesUsed > 0) {
           logEntry.bytesUsed = Math.max(logEntry.bytesUsed || 0, bytesUsed);
         }
-        if (ssid && (!logEntry.ssid || logEntry.ssid === 'Connected Wi-Fi')) {
-          logEntry.ssid = ssid;
-        }
+        if (ssid) logEntry.ssid = encSsid;
+        if (bssid) logEntry.bssid = encBssid;
+        if (ipAddress) logEntry.ipAddress = encIp;
+        if (latitude != null) logEntry.latitude = encLat;
+        if (longitude != null) logEntry.longitude = encLng;
+        if (locationName) logEntry.locationName = encLocName;
+        if (locationAddress) logEntry.locationAddress = encLocAddr;
         await logEntry.save();
       } else {
         logEntry = new WifiLog({
           deviceId,
           eventType,
-          ssid: ssid || '',
-          bssid: bssid || '',
-          ipAddress: ipAddress || '',
+          ssid: encSsid || '',
+          bssid: encBssid || '',
+          ipAddress: encIp || '',
           sessionId: sessionId || '',
           startTime: eventDate,
           endTime: null,
           durationSeconds: 0,
           bytesUsed: typeof bytesUsed === 'number' ? bytesUsed : 0,
           isCurrentlyConnected: true,
-          latitude: latitude || null,
-          longitude: longitude || null,
-          locationName: locationName || '',
-          locationAddress: locationAddress || '',
+          latitude: encLat,
+          longitude: encLng,
+          locationName: encLocName || '',
+          locationAddress: encLocAddr || '',
           isBlockedAttempt: false,
           statusReason: '',
           timestamp: eventDate,
@@ -137,15 +149,13 @@ export const ingestWifiLog = async (req: Request, res: Response) => {
         if (!isNaN(parsedBytes) && parsedBytes > 0) {
           activeSession.bytesUsed = Math.max(activeSession.bytesUsed || 0, parsedBytes);
         }
-        if (ssid && (!activeSession.ssid || activeSession.ssid === 'Connected Wi-Fi')) {
-          activeSession.ssid = ssid;
-        }
-        if (bssid && !activeSession.bssid) {
-          activeSession.bssid = bssid;
-        }
-        if (locationAddress && !activeSession.locationAddress) {
-          activeSession.locationAddress = locationAddress;
-        }
+        if (ssid) activeSession.ssid = encSsid;
+        if (bssid) activeSession.bssid = encBssid;
+        if (ipAddress) activeSession.ipAddress = encIp;
+        if (locationAddress) activeSession.locationAddress = encLocAddr;
+        if (locationName) activeSession.locationName = encLocName;
+        if (latitude != null) activeSession.latitude = encLat;
+        if (longitude != null) activeSession.longitude = encLng;
 
         await activeSession.save();
         return res.status(200).json({ success: true, message: 'Wi-Fi session closed with exact disconnect timestamp', data: activeSession });
@@ -156,19 +166,19 @@ export const ingestWifiLog = async (req: Request, res: Response) => {
       const fallbackEntry = new WifiLog({
         deviceId,
         eventType: 'WIFI_CONNECTED',
-        ssid: ssid || 'Wi-Fi Network',
-        bssid: bssid || '',
-        ipAddress: ipAddress || '',
+        ssid: encSsid || 'Wi-Fi Network',
+        bssid: encBssid || '',
+        ipAddress: encIp || '',
         sessionId: sessionId || '',
         startTime: eventDate,
         endTime: eventDate,
         durationSeconds: 0,
         bytesUsed: typeof bytesUsed === 'number' ? bytesUsed : 0,
         isCurrentlyConnected: false,
-        latitude: latitude || null,
-        longitude: longitude || null,
-        locationName: locationName || '',
-        locationAddress: locationAddress || '',
+        latitude: encLat,
+        longitude: encLng,
+        locationName: encLocName || '',
+        locationAddress: encLocAddr || '',
         isBlockedAttempt: false,
         statusReason: '',
         timestamp: eventDate,
@@ -220,6 +230,13 @@ export const getWifiHistory = async (req: Request, res: Response) => {
 
     const formattedLogs = logs.map((log) => {
       const logObj = log.toObject();
+      logObj.ssid = decryptDeterministic(logObj.ssid, deviceId);
+      logObj.bssid = decryptDeterministic(logObj.bssid, deviceId);
+      logObj.ipAddress = decryptText(logObj.ipAddress, deviceId);
+      logObj.locationName = decryptText(logObj.locationName, deviceId);
+      logObj.locationAddress = decryptText(logObj.locationAddress, deviceId);
+      logObj.latitude = logObj.latitude != null ? (parseFloat(decryptText(String(logObj.latitude), deviceId)) || null) : null;
+      logObj.longitude = logObj.longitude != null ? (parseFloat(decryptText(String(logObj.longitude), deviceId)) || null) : null;
       if (logObj.isCurrentlyConnected && logObj.startTime) {
         const start = new Date(logObj.startTime);
         logObj.durationSeconds = Math.max(0, Math.floor((now.getTime() - start.getTime()) / 1000));

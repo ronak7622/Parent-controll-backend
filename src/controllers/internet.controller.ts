@@ -3,6 +3,7 @@ import { InternetLog } from '../models/internet-log.model';
 import { getReadQuery } from '../dal/db.dal';
 import { Device } from '../models/Device';
 import { checkQuotaBlocked } from './ingest.controller';
+import { encryptText, decryptText } from '../utils/crypto.utils';
 
 // Helper function to format bytes to human readable string (KB, MB, GB)
 const formatBytes = (bytes: number): string => {
@@ -51,6 +52,9 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
     }
 
     const eventDate = timestamp ? new Date(timestamp) : new Date();
+    const encLat = latitude != null ? encryptText(String(latitude), deviceId) : null;
+    const encLng = longitude != null ? encryptText(String(longitude), deviceId) : null;
+    const encAddress = locationAddress ? encryptText(String(locationAddress), deviceId) : '';
 
     if (eventType === 'DATA_CONNECTED' || eventType === 'DATA_ON') {
       let logEntry = null;
@@ -68,6 +72,9 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
         if (simCarrier && (!logEntry.simCarrier || logEntry.simCarrier === 'Cellular Data')) {
           logEntry.simCarrier = simCarrier;
         }
+        if (locationAddress) logEntry.locationAddress = encAddress;
+        if (latitude != null) logEntry.latitude = encLat;
+        if (longitude != null) logEntry.longitude = encLng;
         await logEntry.save();
       } else {
         const numBytes = typeof bytesUsed === 'number' ? bytesUsed : 0;
@@ -83,10 +90,10 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
           isCurrentlyConnected: true,
           simCarrier: simCarrier || 'Cellular Data',
           simCount: simCount || 1,
-          locationAddress: locationAddress || '',
+          locationAddress: encAddress,
           statusReason: statusReason || '',
-          latitude: latitude || null,
-          longitude: longitude || null,
+          latitude: encLat,
+          longitude: encLng,
           timestamp: eventDate,
         });
         await logEntry.save();
@@ -141,7 +148,9 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
         activeSession.bytesUsed = totalBytes;
         activeSession.dataUsageText = formatBytes(totalBytes);
         activeSession.isCurrentlyConnected = eventType === 'DATA_USAGE_UPDATE';
-        if (locationAddress) activeSession.locationAddress = locationAddress;
+        if (locationAddress) activeSession.locationAddress = encAddress;
+        if (latitude != null) activeSession.latitude = encLat;
+        if (longitude != null) activeSession.longitude = encLng;
         if (simCarrier) activeSession.simCarrier = simCarrier;
         if (statusReason) activeSession.statusReason = statusReason;
 
@@ -162,10 +171,10 @@ export const ingestInternetLog = async (req: Request, res: Response) => {
           isCurrentlyConnected: false,
           simCarrier: simCarrier || 'Cellular Data',
           simCount: simCount || 1,
-          locationAddress: locationAddress || '',
+          locationAddress: encAddress,
           statusReason: statusReason || 'Offline fallback disconnect',
-          latitude: latitude || null,
-          longitude: longitude || null,
+          latitude: encLat,
+          longitude: encLng,
           timestamp: eventDate,
         });
 
@@ -215,6 +224,9 @@ export const getInternetHistory = async (req: Request, res: Response) => {
 
     const formattedLogs = logs.map((log) => {
       const logObj = log.toObject();
+      logObj.locationAddress = decryptText(logObj.locationAddress, deviceId);
+      logObj.latitude = logObj.latitude != null ? (parseFloat(decryptText(String(logObj.latitude), deviceId)) || null) : null;
+      logObj.longitude = logObj.longitude != null ? (parseFloat(decryptText(String(logObj.longitude), deviceId)) || null) : null;
 
       // Compute live duration if currently connected
       if (logObj.isCurrentlyConnected && logObj.startTime) {

@@ -14,6 +14,7 @@ import { AppUsage } from '../models/AppUsage';
 import { AppSession } from '../models/AppSession';
 import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
+import AppIconCache from '../models/AppIconCache';
 import { Contact } from '../models/Contact';
 import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
@@ -26,7 +27,8 @@ import { sendFcmDataCommand } from '../services/fcm.service';
 import { getReadQuery, buildShardFilter, clampPaginationLimit } from '../dal/db.dal';
 import { cacheService } from '../services/cache.service';
 import { StorageAccountingService } from '../services/StorageAccountingService';
-import { bulkDeleteMediaFromR2, deleteMediaFromR2 } from '../services/r2.service';
+import { bulkDeleteMediaFromR2, deleteMediaFromR2, generatePresignedGetUrl } from '../services/r2.service';
+import { decryptText, decryptDeterministic, encryptDeterministic } from '../utils/crypto.utils';
 import { Subscription } from '../models/Subscription';
 import { checkQuotaBlocked } from './ingest.controller';
 import { config } from '../config/env';
@@ -83,6 +85,9 @@ export const getBrowserHistory = async (req: AuthRequest, res: Response) => {
 
     const formattedItems = items.map((doc) => {
       const obj = doc.toObject();
+      obj.url = decryptText(obj.url, deviceId);
+      obj.title = decryptText(obj.title, deviceId);
+      obj.domain = decryptDeterministic(obj.domain, deviceId);
       if (!obj.startTime) {
         obj.startTime = obj.timestamp;
       }
@@ -246,8 +251,20 @@ export const getYouTubeHistory = async (req: AuthRequest, res: Response) => {
       .sort({ timestamp: -1 })
       .limit(fetchLimit);
 
+    const decryptedItems = items.map((doc) => {
+      const obj: any = doc.toObject();
+      obj.title = decryptDeterministic(obj.title, deviceId);
+      obj.channelName = decryptText(obj.channelName, deviceId);
+      obj.videoUrl = decryptText(obj.videoUrl, deviceId);
+      obj.description = decryptText(obj.description, deviceId);
+      if (obj.videoId && !obj.thumbnailUrl) {
+        obj.thumbnailUrl = `https://img.youtube.com/vi/${obj.videoId}/hqdefault.jpg`;
+      }
+      return obj;
+    });
+
     const dev = await Device.findOne({ deviceId }).select('lastYoutubeSyncTime');
-    return res.json({ success: true, items, events: items, lastSyncTime: dev?.lastYoutubeSyncTime });
+    return res.json({ success: true, items: decryptedItems, events: decryptedItems, lastSyncTime: dev?.lastYoutubeSyncTime });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -399,19 +416,21 @@ export const getCapturedMedia = async (req: AuthRequest, res: Response) => {
       return u;
     };
 
-    const formattedItems = items.map((doc) => {
-      const obj = doc.toObject ? doc.toObject() : doc;
-      if (obj.mediaUrl) {
-        obj.mediaUrl = normalizeUrl(obj.mediaUrl);
-      }
-      if (obj.thumbnailUrl) {
-        obj.thumbnailUrl = normalizeUrl(obj.thumbnailUrl);
-      }
-      if (!obj.thumbnailUrl) {
-        obj.thumbnailUrl = obj.mediaUrl;
-      }
-      return obj;
-    });
+    const formattedItems = await Promise.all(
+      items.map(async (doc) => {
+        const obj = doc.toObject ? doc.toObject() : doc;
+        if (obj.mediaUrl) {
+          obj.mediaUrl = await generatePresignedGetUrl(obj.mediaUrl, 900);
+        }
+        if (obj.thumbnailUrl) {
+          obj.thumbnailUrl = await generatePresignedGetUrl(obj.thumbnailUrl, 900);
+        }
+        if (!obj.thumbnailUrl) {
+          obj.thumbnailUrl = obj.mediaUrl;
+        }
+        return obj;
+      })
+    );
 
     return res.json({ success: true, items: formattedItems, captures: formattedItems });
   } catch (error: any) {
@@ -574,26 +593,47 @@ export const getContacts = async (req: AuthRequest, res: Response) => {
 
     const targetDev = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
     const blockedIncomingSet = new Set((targetDev?.blockedPhoneNumbers || []).map((n: string) => {
-      const c = n.replace(/[^0-9]/g, '');
+      const dec = decryptDeterministic(n, targetDeviceId);
+      const c = (dec || n).replace(/[^0-9]/g, '');
       return c.length >= 7 ? c.slice(-10) : c;
     }));
     const blockedOutgoingSet = new Set((targetDev?.blockedOutgoingPhoneNumbers || []).map((n: string) => {
-      const c = n.replace(/[^0-9]/g, '');
+      const dec = decryptDeterministic(n, targetDeviceId);
+      const c = (dec || n).replace(/[^0-9]/g, '');
       return c.length >= 7 ? c.slice(-10) : c;
     }));
 
-    const sanitizedContacts = contacts.map((c: any) => {
-      const obj = c.toObject ? c.toObject() : c;
-      const clean = (obj.phoneNumber || '').replace(/[^0-9]/g, '');
-      const last10 = clean.length >= 7 ? clean.slice(-10) : clean;
-      const isIncomingBlocked = (clean.length >= 7 && blockedIncomingSet.has(last10)) || !!obj.isBlocked;
-      const isOutgoingBlocked = (clean.length >= 7 && blockedOutgoingSet.has(last10)) || !!obj.isOutgoingBlocked;
-      return {
-        ...obj,
-        isBlocked: isIncomingBlocked,
-        isOutgoingBlocked,
-      };
-    });
+    const sanitizedContacts = await Promise.all(
+      contacts.map(async (c: any) => {
+        const obj = c.toObject ? c.toObject() : c;
+        const decPhone = decryptDeterministic(obj.phoneNumber, targetDeviceId);
+        const decName = decryptText(obj.name, targetDeviceId);
+        const decAddPhone = (obj.additionalPhoneNumbers || []).map((p: string) => decryptDeterministic(p, targetDeviceId));
+        const decEmails = (obj.emails || []).map((e: string) => decryptDeterministic(e, targetDeviceId));
+        const decNotes = decryptText(obj.notes, targetDeviceId);
+
+        let photoUriVal = obj.photoUri || '';
+        if (obj.photoKey) {
+          photoUriVal = await generatePresignedGetUrl(obj.photoKey, 900);
+        }
+
+        const clean = (decPhone || '').replace(/[^0-9]/g, '');
+        const last10 = clean.length >= 7 ? clean.slice(-10) : clean;
+        const isIncomingBlocked = (clean.length >= 7 && blockedIncomingSet.has(last10)) || !!obj.isBlocked;
+        const isOutgoingBlocked = (clean.length >= 7 && blockedOutgoingSet.has(last10)) || !!obj.isOutgoingBlocked;
+        return {
+          ...obj,
+          name: decName,
+          phoneNumber: decPhone,
+          additionalPhoneNumbers: decAddPhone,
+          emails: decEmails,
+          notes: decNotes,
+          photoUri: photoUriVal,
+          isBlocked: isIncomingBlocked,
+          isOutgoingBlocked,
+        };
+      })
+    );
 
     return res.json({
       success: true,
@@ -713,7 +753,10 @@ export const getCallLogs = async (req: AuthRequest, res: Response) => {
     if (!total) total = logs.length;
 
     const targetDev = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
-    const blockedPhoneList: string[] = [...(targetDev?.blockedPhoneNumbers || [])];
+    const blockedPhoneList: string[] = (targetDev?.blockedPhoneNumbers || []).map((n: string) => {
+      const dec = decryptDeterministic(n, targetDeviceId);
+      return dec || n;
+    });
     const blockedLast10Set = new Set(blockedPhoneList.map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
 
     // Also include contacts marked as blocked in Contact model
@@ -723,13 +766,17 @@ export const getCallLogs = async (req: AuthRequest, res: Response) => {
     }).select('phoneNumber');
     for (const bc of blockedContactDocs) {
       if (bc.phoneNumber) {
-        blockedPhoneList.push(bc.phoneNumber);
-        const c10 = bc.phoneNumber.replace(/[^0-9]/g, '').slice(-10);
+        const decP = decryptDeterministic(bc.phoneNumber, targetDeviceId);
+        blockedPhoneList.push(decP || bc.phoneNumber);
+        const c10 = (decP || bc.phoneNumber).replace(/[^0-9]/g, '').slice(-10);
         if (c10.length >= 7) blockedLast10Set.add(c10);
       }
     }
 
-    const blockedOutgoingList: string[] = [...(targetDev?.blockedOutgoingPhoneNumbers || [])];
+    const blockedOutgoingList: string[] = (targetDev?.blockedOutgoingPhoneNumbers || []).map((n: string) => {
+      const dec = decryptDeterministic(n, targetDeviceId);
+      return dec || n;
+    });
     const blockedOutgoingLast10Set = new Set(blockedOutgoingList.map((n: string) => n.replace(/[^0-9]/g, '').slice(-10)));
 
     const blockedOutgoingContactDocs = await Contact.find({
@@ -738,44 +785,50 @@ export const getCallLogs = async (req: AuthRequest, res: Response) => {
     }).select('phoneNumber');
     for (const bc of blockedOutgoingContactDocs) {
       if (bc.phoneNumber) {
-        blockedOutgoingList.push(bc.phoneNumber);
-        const c10 = bc.phoneNumber.replace(/[^0-9]/g, '').slice(-10);
+        const decP = decryptDeterministic(bc.phoneNumber, targetDeviceId);
+        blockedOutgoingList.push(decP || bc.phoneNumber);
+        const c10 = (decP || bc.phoneNumber).replace(/[^0-9]/g, '').slice(-10);
         if (c10.length >= 7) blockedOutgoingLast10Set.add(c10);
       }
     }
 
     const sanitizedLogs = logs.map((l: any) => {
       const obj = l.toObject ? l.toObject() : l;
-      const clean = (obj.phoneNumber || '').replace(/[^0-9]/g, '');
+      const decPhone = decryptDeterministic(obj.phoneNumber, targetDeviceId);
+      const decName = decryptText(obj.contactName, targetDeviceId);
+      const clean = (decPhone || '').replace(/[^0-9]/g, '');
       const last10 = clean.length >= 7 ? clean.slice(-10) : clean;
       const isTrulyBlocked = obj.isBlocked === true ||
         (clean.length >= 7 && blockedLast10Set.has(last10)) ||
-        blockedPhoneList.includes(obj.phoneNumber);
+        blockedPhoneList.includes(decPhone);
       const isOutgoingBlocked = obj.isOutgoingBlocked === true ||
         (clean.length >= 7 && blockedOutgoingLast10Set.has(last10)) ||
-        blockedOutgoingList.includes(obj.phoneNumber);
+        blockedOutgoingList.includes(decPhone);
 
       // Preserve actual call direction (incoming, outgoing, missed) instead of overwriting with 'blocked'
       const resolvedType = (obj.callType === 'blocked') ? 'incoming' : (obj.callType || 'incoming');
 
       return {
         ...obj,
+        phoneNumber: decPhone,
+        contactName: decName,
         isBlocked: isTrulyBlocked,
         isOutgoingBlocked: isOutgoingBlocked,
         callType: resolvedType,
       };
     });
 
-    const host = req.get('host') || 'localhost:5000';
-    const baseUrl = `${req.protocol}://${host}`;
-
-    const formattedRecordings = recordings.map((r: any) => {
-      const obj = r.toObject ? r.toObject() : r;
-      if (obj.audioUrl && obj.audioUrl.startsWith('/uploads')) {
-        obj.audioUrl = `${baseUrl}${obj.audioUrl}`;
-      }
-      return obj;
-    });
+    const formattedRecordings = await Promise.all(
+      recordings.map(async (r: any) => {
+        const obj = r.toObject ? r.toObject() : r;
+        if (obj.audioUrl) {
+          obj.audioUrl = await generatePresignedGetUrl(obj.audioUrl, 900);
+        }
+        obj.phoneNumber = decryptDeterministic(obj.phoneNumber, targetDeviceId);
+        obj.contactName = decryptText(obj.contactName, targetDeviceId);
+        return obj;
+      })
+    );
 
     return res.json({
       success: true,
@@ -812,11 +865,12 @@ export const blockPhoneNumber = async (req: AuthRequest, res: Response) => {
 
     const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
     const last10 = cleanNum.length >= 10 ? cleanNum.slice(-10) : cleanNum;
+    const encPhone = encryptDeterministic(phoneNumber, targetDeviceId);
 
     // 1. Add to Device.blockedPhoneNumbers
     const device = await Device.findOneAndUpdate(
       { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
-      { $addToSet: { blockedPhoneNumbers: phoneNumber } },
+      { $addToSet: { blockedPhoneNumbers: encPhone } },
       { new: true }
     );
 
@@ -844,15 +898,17 @@ export const blockPhoneNumber = async (req: AuthRequest, res: Response) => {
       { $set: { isBlocked: true } }
     );
 
+    const decryptedBlocked = (device?.blockedPhoneNumbers || []).map((p: string) => decryptDeterministic(p, targetDeviceId) || p);
+
     // 4. Notify Child Device via Socket.io
     const io = getSignalingIo();
     if (io) {
       io.to(targetDeviceId).emit('update-blocked-numbers', {
-        blockedPhoneNumbers: device?.blockedPhoneNumbers || [phoneNumber],
+        blockedPhoneNumbers: decryptedBlocked,
       });
       if (targetDeviceId !== deviceId) {
         io.to(deviceId).emit('update-blocked-numbers', {
-          blockedPhoneNumbers: device?.blockedPhoneNumbers || [phoneNumber],
+          blockedPhoneNumbers: decryptedBlocked,
         });
       }
     }
@@ -860,7 +916,7 @@ export const blockPhoneNumber = async (req: AuthRequest, res: Response) => {
     return res.json({
       success: true,
       message: `Phone number ${phoneNumber} blocked successfully`,
-      blockedPhoneNumbers: device?.blockedPhoneNumbers || [],
+      blockedPhoneNumbers: decryptedBlocked,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -889,13 +945,15 @@ export const unblockPhoneNumber = async (req: AuthRequest, res: Response) => {
 
     const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
     const last10 = cleanNum.length >= 10 ? cleanNum.slice(-10) : cleanNum;
+    const encPhone = encryptDeterministic(phoneNumber, targetDeviceId);
 
     // 1. Remove all variations of this number from Device.blockedPhoneNumbers
     const currentDev = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] });
     const updatedBlocked = (currentDev?.blockedPhoneNumbers || []).filter((n: string) => {
-      const c = n.replace(/[^0-9]/g, '');
+      const dec = decryptDeterministic(n, targetDeviceId) || n;
+      const c = dec.replace(/[^0-9]/g, '');
       const cLast10 = c.length >= 10 ? c.slice(-10) : c;
-      return cLast10 !== last10 && n !== phoneNumber;
+      return cLast10 !== last10 && dec !== phoneNumber && n !== phoneNumber && n !== encPhone;
     });
 
     const device = await Device.findOneAndUpdate(
@@ -928,15 +986,17 @@ export const unblockPhoneNumber = async (req: AuthRequest, res: Response) => {
       { $set: { isBlocked: false } }
     );
 
+    const decryptedBlocked = (device?.blockedPhoneNumbers || []).map((p: string) => decryptDeterministic(p, targetDeviceId) || p);
+
     // 4. Notify Child Device via Socket.io
     const io = getSignalingIo();
     if (io) {
       io.to(targetDeviceId).emit('update-blocked-numbers', {
-        blockedPhoneNumbers: device?.blockedPhoneNumbers || [],
+        blockedPhoneNumbers: decryptedBlocked,
       });
       if (targetDeviceId !== deviceId) {
         io.to(deviceId).emit('update-blocked-numbers', {
-          blockedPhoneNumbers: device?.blockedPhoneNumbers || [],
+          blockedPhoneNumbers: decryptedBlocked,
         });
       }
     }
@@ -944,7 +1004,7 @@ export const unblockPhoneNumber = async (req: AuthRequest, res: Response) => {
     return res.json({
       success: true,
       message: `Phone number ${phoneNumber} unblocked successfully`,
-      blockedPhoneNumbers: device?.blockedPhoneNumbers || [],
+      blockedPhoneNumbers: decryptedBlocked,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -973,11 +1033,12 @@ export const blockOutgoingPhoneNumber = async (req: AuthRequest, res: Response) 
 
     const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
     const last10 = cleanNum.length >= 10 ? cleanNum.slice(-10) : cleanNum;
+    const encPhone = encryptDeterministic(phoneNumber, targetDeviceId);
 
     // 1. Add to Device.blockedOutgoingPhoneNumbers
     const device = await Device.findOneAndUpdate(
       { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
-      { $addToSet: { blockedOutgoingPhoneNumbers: phoneNumber } },
+      { $addToSet: { blockedOutgoingPhoneNumbers: encPhone } },
       { new: true }
     );
 
@@ -1005,15 +1066,17 @@ export const blockOutgoingPhoneNumber = async (req: AuthRequest, res: Response) 
       { $set: { isOutgoingBlocked: true } }
     );
 
+    const decryptedBlocked = (device?.blockedOutgoingPhoneNumbers || []).map((p: string) => decryptDeterministic(p, targetDeviceId) || p);
+
     // 4. Notify Child Device via Socket.io
     const io = getSignalingIo();
     if (io) {
       io.to(targetDeviceId).emit('update-blocked-outgoing-numbers', {
-        blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [phoneNumber],
+        blockedOutgoingPhoneNumbers: decryptedBlocked,
       });
       if (targetDeviceId !== deviceId) {
         io.to(deviceId).emit('update-blocked-outgoing-numbers', {
-          blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [phoneNumber],
+          blockedOutgoingPhoneNumbers: decryptedBlocked,
         });
       }
     }
@@ -1021,7 +1084,7 @@ export const blockOutgoingPhoneNumber = async (req: AuthRequest, res: Response) 
     return res.json({
       success: true,
       message: `Outgoing calls to ${phoneNumber} blocked successfully`,
-      blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
+      blockedOutgoingPhoneNumbers: decryptedBlocked,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -1050,13 +1113,15 @@ export const unblockOutgoingPhoneNumber = async (req: AuthRequest, res: Response
 
     const cleanNum = phoneNumber.replace(/[^0-9]/g, '');
     const last10 = cleanNum.length >= 10 ? cleanNum.slice(-10) : cleanNum;
+    const encPhone = encryptDeterministic(phoneNumber, targetDeviceId);
 
     // 1. Remove all variations of this number from Device.blockedOutgoingPhoneNumbers
     const currentDev = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] });
     const updatedBlocked = (currentDev?.blockedOutgoingPhoneNumbers || []).filter((n: string) => {
-      const c = n.replace(/[^0-9]/g, '');
+      const dec = decryptDeterministic(n, targetDeviceId) || n;
+      const c = dec.replace(/[^0-9]/g, '');
       const cLast10 = c.length >= 10 ? c.slice(-10) : c;
-      return cLast10 !== last10 && n !== phoneNumber;
+      return cLast10 !== last10 && dec !== phoneNumber && n !== phoneNumber && n !== encPhone;
     });
 
     const device = await Device.findOneAndUpdate(
@@ -1089,15 +1154,17 @@ export const unblockOutgoingPhoneNumber = async (req: AuthRequest, res: Response
       { $set: { isOutgoingBlocked: false } }
     );
 
+    const decryptedBlocked = (device?.blockedOutgoingPhoneNumbers || []).map((p: string) => decryptDeterministic(p, targetDeviceId) || p);
+
     // 4. Notify Child Device via Socket.io
     const io = getSignalingIo();
     if (io) {
       io.to(targetDeviceId).emit('update-blocked-outgoing-numbers', {
-        blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
+        blockedOutgoingPhoneNumbers: decryptedBlocked,
       });
       if (targetDeviceId !== deviceId) {
         io.to(deviceId).emit('update-blocked-outgoing-numbers', {
-          blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
+          blockedOutgoingPhoneNumbers: decryptedBlocked,
         });
       }
     }
@@ -1105,7 +1172,7 @@ export const unblockOutgoingPhoneNumber = async (req: AuthRequest, res: Response
     return res.json({
       success: true,
       message: `Outgoing calls to ${phoneNumber} unblocked successfully`,
-      blockedOutgoingPhoneNumbers: device?.blockedOutgoingPhoneNumbers || [],
+      blockedOutgoingPhoneNumbers: decryptedBlocked,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -1618,15 +1685,17 @@ export const getCallRecordings = async (req: AuthRequest, res: Response) => {
     const host = req.get('host') || 'localhost:5000';
     const baseUrl = `${req.protocol}://${host}`;
 
-    const formattedRecordings = recordings.map((r: any) => {
-      const obj = r.toObject ? r.toObject() : r;
-      if (obj.audioUrl && obj.audioUrl.startsWith('/uploads')) {
-        obj.audioUrl = `${baseUrl}${obj.audioUrl}`;
-      }
-      obj.phoneNumber = cleanPhone(obj.phoneNumber);
-      obj.contactName = cleanName(obj.contactName);
-      return obj;
-    });
+    const formattedRecordings = await Promise.all(
+      recordings.map(async (r: any) => {
+        const obj = r.toObject ? r.toObject() : r;
+        if (obj.audioUrl) {
+          obj.audioUrl = await generatePresignedGetUrl(obj.audioUrl, 900);
+        }
+        obj.phoneNumber = cleanPhone(decryptDeterministic(obj.phoneNumber, deviceId));
+        obj.contactName = cleanName(decryptText(obj.contactName, deviceId));
+        return obj;
+      })
+    );
 
     return res.json({
       success: true,
@@ -2284,7 +2353,7 @@ export const saveAppLimit = async (req: AuthRequest, res: Response) => {
     if (device?.fcmToken) {
       await sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
         action: 'UPDATE_APP_LIMITS',
-      });
+      }, device.deviceId);
     }
 
     await cacheService.del(cacheService.keys.appLimits(deviceId));
@@ -2319,7 +2388,7 @@ export const deleteAppLimit = async (req: AuthRequest, res: Response) => {
     if (device?.fcmToken) {
       await sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
         action: 'UPDATE_APP_LIMITS',
-      });
+      }, device.deviceId);
     }
 
     await cacheService.del(cacheService.keys.appLimits(deviceId));
@@ -2492,7 +2561,7 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
       }
       const device = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
       if (device?.fcmToken) {
-        await sendFcmDataCommand(device.fcmToken, 'SYNC_FEATURE', { feature, force: 'true' }).catch((e) => console.error('FCM feature sync error:', e));
+        await sendFcmDataCommand(device.fcmToken, 'SYNC_FEATURE', { feature, force: 'true' }, device.deviceId).catch((e) => console.error('FCM feature sync error:', e));
       }
       return res.json({ success: true, online: childOnline, delivered: true, message: 'Feature sync signal sent' });
     }
@@ -2509,7 +2578,7 @@ export const triggerDeviceSync = async (req: AuthRequest, res: Response) => {
 
     const device = await Device.findOne({ deviceId: { $in: [deviceId, targetDeviceId] } });
     if (device?.fcmToken) {
-      await sendFcmDataCommand(device.fcmToken, 'TRIGGER_SYNC', { force: 'true' }).catch((e) => console.error('FCM sync error:', e));
+      await sendFcmDataCommand(device.fcmToken, 'TRIGGER_SYNC', { force: 'true' }, device.deviceId).catch((e) => console.error('FCM sync error:', e));
     }
 
     return res.json({
@@ -2602,7 +2671,7 @@ export const saveAppBlockRule = async (req: AuthRequest, res: Response) => {
     if (device?.fcmToken) {
       sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
         action: 'UPDATE_APP_BLOCKS',
-      }).catch((err) => console.warn('[FCM] Error pushing app block rule:', err.message));
+      }, device.deviceId).catch((err) => console.warn('[FCM] Error pushing app block rule:', err.message));
     }
 
     await cacheService.del(cacheService.keys.appBlocks(deviceId));
@@ -2645,7 +2714,7 @@ export const deleteAppBlockRule = async (req: AuthRequest, res: Response) => {
     if (device?.fcmToken) {
       sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
         action: 'UPDATE_APP_BLOCKS',
-      }).catch((err) => console.warn('[FCM] Error pushing app block rules deletion:', err.message));
+      }, device.deviceId).catch((err) => console.warn('[FCM] Error pushing app block rules deletion:', err.message));
     }
 
     await cacheService.del(cacheService.keys.appBlocks(deviceId));
@@ -2732,6 +2801,8 @@ export const getInstalledApps = async (req: AuthRequest, res: Response) => {
         apkSizeBytes: a.apkSizeBytes || null,
         apkDownloadSizeBytes: a.apkDownloadSizeBytes || null,
         isEnabled: a.isEnabled !== false,
+        isInstalled: a.isInstalled !== false,
+        uninstalledAt: a.uninstalledAt ?? null,
       }))
       .sort((a: any, b: any) => {
       const nameA = (a.appName?.trim() || a.packageName || '').toLowerCase();
@@ -2764,7 +2835,21 @@ export const getNotificationsForApp = async (req: AuthRequest, res: Response) =>
 
     const items = await ChildNotification.find(query).sort({ timestamp: -1 });
 
-    return res.json({ success: true, notifications: items, date: query.date || 'all' });
+    const decryptedItems = items.map((doc: any) => {
+      const obj = doc.toObject ? doc.toObject() : doc;
+      return {
+        ...obj,
+        title: decryptText(obj.title, deviceId),
+        body: decryptText(obj.body, deviceId),
+        subText: decryptText(obj.subText, deviceId),
+        bigText: decryptText(obj.bigText, deviceId),
+        summaryText: decryptText(obj.summaryText, deviceId),
+        infoText: decryptText(obj.infoText, deviceId),
+        messages: Array.isArray(obj.messages) ? obj.messages.map((m: string) => decryptText(m, deviceId)) : [],
+      };
+    });
+
+    return res.json({ success: true, notifications: decryptedItems, date: query.date || 'all' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -2787,7 +2872,19 @@ export const getNotificationDetail = async (req: AuthRequest, res: Response) => 
       return res.status(404).json({ success: false, message: 'Notification not found' });
     }
 
-    return res.json({ success: true, notification: doc });
+    const obj = doc.toObject ? doc.toObject() : doc;
+    const decryptedDoc = {
+      ...obj,
+      title: decryptText(obj.title, deviceId),
+      body: decryptText(obj.body, deviceId),
+      subText: decryptText(obj.subText, deviceId),
+      bigText: decryptText(obj.bigText, deviceId),
+      summaryText: decryptText(obj.summaryText, deviceId),
+      infoText: decryptText(obj.infoText, deviceId),
+      messages: Array.isArray(obj.messages) ? obj.messages.map((m: string) => decryptText(m, deviceId)) : [],
+    };
+
+    return res.json({ success: true, notification: decryptedDoc });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -2898,25 +2995,47 @@ export const getLocationHistory = async (req: AuthRequest, res: Response) => {
       .sort({ timestamp: -1 })
       .limit(Number(limit));
 
+    const decryptedLogs = logs.map((log) => {
+      const obj = log.toObject();
+      const decLat = decryptText(String(obj.latitude), deviceId);
+      const decLng = decryptText(String(obj.longitude), deviceId);
+      obj.latitude = parseFloat(decLat) || 0;
+      obj.longitude = parseFloat(decLng) || 0;
+      obj.locationName = decryptText(obj.locationName, deviceId);
+      obj.locationAddress = decryptText(obj.locationAddress, deviceId);
+      return obj;
+    });
+
     const dev = await Device.findOne({ $or: [{ deviceId }, { deviceId: targetDeviceId }] }).select('lastLocationSyncTime lastLocation isOnline batteryLevel lastSeenAt');
 
+    let decryptedLastLoc: any = null;
+    if (dev?.lastLocation) {
+      const ll = { ...dev.lastLocation };
+      const decLat = decryptText(String(ll.latitude), deviceId);
+      const decLng = decryptText(String(ll.longitude), deviceId);
+      ll.latitude = parseFloat(decLat) || 0;
+      ll.longitude = parseFloat(decLng) || 0;
+      ll.address = decryptText(ll.address, deviceId);
+      decryptedLastLoc = ll;
+    }
+
     let movingCount = 0;
-    for (let i = 0; i < logs.length; i++) {
-      if (logs[i].isMoving) movingCount++;
+    for (let i = 0; i < decryptedLogs.length; i++) {
+      if (decryptedLogs[i].isMoving) movingCount++;
     }
 
     return res.json({
       success: true,
-      data: logs,
-      items: logs,
-      totalCount: logs.length,
+      data: decryptedLogs,
+      items: decryptedLogs,
+      totalCount: decryptedLogs.length,
       lastSyncTime: dev?.lastLocationSyncTime,
-      lastLocation: dev?.lastLocation,
+      lastLocation: decryptedLastLoc,
       isOnline: isDeviceFresh(dev), lastSeen: dev?.lastSeenAt,
       batteryLevel: dev?.batteryLevel || 100,
       summary: {
         movingCount,
-        totalPoints: logs.length,
+        totalPoints: decryptedLogs.length,
       },
     });
   } catch (error: any) {
@@ -2934,18 +3053,31 @@ export const getLiveLocation = async (req: AuthRequest, res: Response) => {
     const dev = await Device.findOne({ deviceId }).select('lastLocation lastLocationSyncTime isOnline batteryLevel deviceName lastSeenAt');
     const latestLog = await LocationLog.findOne({ deviceId }).sort({ timestamp: -1 });
 
-    const liveData = dev?.lastLocation || (latestLog ? {
-      latitude: latestLog.latitude,
-      longitude: latestLog.longitude,
-      altitude: latestLog.altitude,
-      speed: latestLog.speed,
-      heading: latestLog.heading,
-      accuracy: latestLog.accuracy,
-      address: latestLog.locationAddress || latestLog.locationName,
-      activityType: latestLog.activityType,
-      isMoving: latestLog.isMoving,
-      updatedAt: latestLog.timestamp,
-    } : null);
+    let liveData: any = null;
+    if (dev?.lastLocation) {
+      const ll = { ...dev.lastLocation };
+      const decLat = decryptText(String(ll.latitude), deviceId);
+      const decLng = decryptText(String(ll.longitude), deviceId);
+      ll.latitude = parseFloat(decLat) || 0;
+      ll.longitude = parseFloat(decLng) || 0;
+      ll.address = decryptText(ll.address, deviceId);
+      liveData = ll;
+    } else if (latestLog) {
+      const decLat = decryptText(String(latestLog.latitude), deviceId);
+      const decLng = decryptText(String(latestLog.longitude), deviceId);
+      liveData = {
+        latitude: parseFloat(decLat) || 0,
+        longitude: parseFloat(decLng) || 0,
+        altitude: latestLog.altitude,
+        speed: latestLog.speed,
+        heading: latestLog.heading,
+        accuracy: latestLog.accuracy,
+        address: decryptText(latestLog.locationAddress || latestLog.locationName, deviceId),
+        activityType: latestLog.activityType,
+        isMoving: latestLog.isMoving,
+        updatedAt: latestLog.timestamp,
+      };
+    }
 
     return res.json({
       success: true,
@@ -3065,27 +3197,44 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
       const rawMode = String(dt.activityMode || '').toUpperCase();
       const mode = (rawMode === 'RUNNING' || rawMode === 'WALKING' || (dt.avgSpeedKmH || 0) <= 15) ? 'WALKING' : 'DRIVING';
 
-      const startLat = Number(dt.startLat) || 0;
-      const startLng = Number(dt.startLng) || 0;
-      const endLat = Number(dt.endLat) || 0;
-      const endLng = Number(dt.endLng) || 0;
+      const startLat = parseFloat(decryptText(String(dt.startLat || 0), deviceId)) || 0;
+      const startLng = parseFloat(decryptText(String(dt.startLng || 0), deviceId)) || 0;
+      const endLat = parseFloat(decryptText(String(dt.endLat || 0), deviceId)) || 0;
+      const endLng = parseFloat(decryptText(String(dt.endLng || 0), deviceId)) || 0;
+      const startAddress = decryptText(dt.startAddress, deviceId);
+      const endAddress = decryptText(dt.endAddress, deviceId);
 
       // Filter out redundant/bogus stops that sit right at Departure (< 100m) or Destination (< 100m)
       const rawStops = Array.isArray(dt.stops) ? dt.stops : [];
-      const cleanStops = rawStops.filter((s: any) => {
-        const sLat = Number(s?.latitude) || 0;
-        const sLng = Number(s?.longitude) || 0;
-        if (!sLat || !sLng) return false;
+      const cleanStops = rawStops.map((s: any) => {
+        const sLat = parseFloat(decryptText(String(s?.latitude || 0), deviceId)) || 0;
+        const sLng = parseFloat(decryptText(String(s?.longitude || 0), deviceId)) || 0;
+        const sAddr = decryptText(s?.address, deviceId);
+        return {
+          ...s,
+          latitude: sLat,
+          longitude: sLng,
+          address: sAddr,
+        };
+      }).filter((s: any) => {
+        if (!s.latitude || !s.longitude) return false;
         if (startLat && startLng) {
-          const distFromStart = calculateDistanceMeters(sLat, sLng, startLat, startLng);
+          const distFromStart = calculateDistanceMeters(s.latitude, s.longitude, startLat, startLng);
           if (distFromStart <= 150) return false;
         }
         if (endLat && endLng) {
-          const distFromEnd = calculateDistanceMeters(sLat, sLng, endLat, endLng);
+          const distFromEnd = calculateDistanceMeters(s.latitude, s.longitude, endLat, endLng);
           if (distFromEnd <= 150) return false;
         }
         return true;
       });
+
+      const cleanRoute = (Array.isArray(dt.routePoints) ? dt.routePoints : []).map((p: any) => ({
+        ...p,
+        latitude: parseFloat(decryptText(String(p?.latitude || 0), deviceId)) || 0,
+        longitude: parseFloat(decryptText(String(p?.longitude || 0), deviceId)) || 0,
+        address: decryptText(p?.address, deviceId),
+      }));
 
       return {
         id: dt._id.toString(),
@@ -3099,13 +3248,13 @@ export const getDrivingHistory = async (req: AuthRequest, res: Response) => {
         maxSpeedKmH: Math.min(120, Math.max(dt.avgSpeedKmH || 0, dt.maxSpeedKmH || 0)),
         startTime: dt.startTime,
         endTime: dt.endTime,
-        startAddress: dt.startAddress,
-        endAddress: dt.endAddress,
-        startLat: dt.startLat,
-        startLng: dt.startLng,
-        endLat: dt.endLat,
-        endLng: dt.endLng,
-        routePoints: Array.isArray(dt.routePoints) ? dt.routePoints : [],
+        startAddress,
+        endAddress,
+        startLat,
+        startLng,
+        endLat,
+        endLng,
+        routePoints: cleanRoute,
         stops: cleanStops,
         date: dt.date,
       };
@@ -3181,9 +3330,10 @@ export const getMonitoredKeywords = async (req: AuthRequest, res: Response) => {
   try {
     const { deviceId } = req.params;
     const device = await Device.findOne({ deviceId });
+    const decryptedKeywords = (device?.monitoredKeywords || []).map((k: string) => decryptDeterministic(k, deviceId) || k);
     return res.json({
       success: true,
-      keywords: device?.monitoredKeywords || [],
+      keywords: decryptedKeywords,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -3201,26 +3351,27 @@ export const addMonitoredKeyword = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'keyword is required' });
     }
 
+    const encKeyword = encryptDeterministic(keyword, deviceId);
     const existingDevice = await Device.findOne({ deviceId });
     if (existingDevice && existingDevice.monitoredKeywords && existingDevice.monitoredKeywords.length >= 50) {
-      if (!existingDevice.monitoredKeywords.includes(keyword)) {
+      if (!existingDevice.monitoredKeywords.includes(encKeyword) && !existingDevice.monitoredKeywords.includes(keyword)) {
         return res.status(400).json({
           success: false,
           message: 'Maximum limit of 50 monitored keywords reached for this device',
-          keywords: existingDevice.monitoredKeywords,
+          keywords: (existingDevice.monitoredKeywords || []).map((k: string) => decryptDeterministic(k, deviceId) || k),
         });
       }
     }
 
     const device = await Device.findOneAndUpdate(
       { deviceId },
-      { $addToSet: { monitoredKeywords: keyword } },
+      { $addToSet: { monitoredKeywords: encKeyword } },
       { new: true }
     );
 
-    const updatedKeywords = device?.monitoredKeywords || [];
+    const updatedKeywords = (device?.monitoredKeywords || []).map((k: string) => decryptDeterministic(k, deviceId) || k);
 
-    // Socket.io push to child app
+    // Socket.io push to child app (plaintext array so child can match keystrokes)
     const io = getSignalingIo();
     if (io) {
       io.to(deviceId).emit('update-monitored-keywords', { keywords: updatedKeywords });
@@ -3247,15 +3398,15 @@ export const deleteMonitoredKeyword = async (req: AuthRequest, res: Response) =>
       return res.status(400).json({ success: false, message: 'keyword is required' });
     }
 
+    const encKeyword = encryptDeterministic(keyword, deviceId);
     const device = await Device.findOneAndUpdate(
       { deviceId },
-      { $pull: { monitoredKeywords: keyword } },
+      { $pull: { monitoredKeywords: { $in: [keyword, encKeyword] } as any } },
       { new: true }
     );
 
-    const updatedKeywords = device?.monitoredKeywords || [];
+    const updatedKeywords = (device?.monitoredKeywords || []).map((k: string) => decryptDeterministic(k, deviceId) || k);
 
-    // Socket.io push to child app
     const io = getSignalingIo();
     if (io) {
       io.to(deviceId).emit('update-monitored-keywords', { keywords: updatedKeywords });
@@ -3299,21 +3450,19 @@ export const getKeyboardHistory = async (req: AuthRequest, res: Response) => {
       Device.findOne({ deviceId }).select('lastKeyboardSyncTime isOnline batteryLevel lastSeenAt'),
     ]);
 
-    const cdnBase = (config.cdnPublicDomain || config.r2.publicDomain || 'https://media.childprotect.info').replace(/\/+$/, '');
-    const formattedLogs = logs.map((doc) => {
-      const obj = doc.toObject ? doc.toObject() : doc;
-      if (obj.screenshotUrl) {
-        let u = String(obj.screenshotUrl).trim();
-        if (u.includes('.r2.cloudflarestorage.com/')) {
-          u = u.replace(/https:\/\/[^/]+\.r2\.cloudflarestorage\.com\//, `${cdnBase}/`);
+    const formattedLogs = await Promise.all(
+      logs.map(async (doc) => {
+        const obj = doc.toObject ? doc.toObject() : doc;
+        if (obj.screenshotKey) {
+          obj.screenshotUrl = await generatePresignedGetUrl(obj.screenshotKey, 900);
+        } else if (obj.screenshotUrl) {
+          obj.screenshotUrl = await generatePresignedGetUrl(obj.screenshotUrl, 900);
         }
-        if (u.includes('media.childprotect.app')) {
-          u = u.replace('media.childprotect.app', 'media.childprotect.info');
-        }
-        obj.screenshotUrl = u;
-      }
-      return obj;
-    });
+        obj.capturedText = decryptText(obj.capturedText, deviceId);
+        obj.matchedKeyword = decryptDeterministic(obj.matchedKeyword, deviceId);
+        return obj;
+      })
+    );
 
     return res.json({
       success: true,
@@ -3470,11 +3619,18 @@ export const getChatThreads = async (req: AuthRequest, res: Response) => {
       { $sort: { lastTimestamp: -1 } },
     ]);
 
+    const decryptedThreads = threads.map((t: any) => ({
+      ...t,
+      contactName: decryptText(t.contactName, deviceId),
+      contactNumber: decryptDeterministic(t.contactNumber, deviceId),
+      lastMessage: decryptText(t.lastMessage, deviceId),
+    }));
+
     const device = await Device.findOne({ deviceId }).select('lastChatSyncTime');
 
     return res.json({
       success: true,
-      threads,
+      threads: decryptedThreads,
       lastSyncTime: device?.lastChatSyncTime || null,
     });
   } catch (error: any) {
@@ -3547,9 +3703,16 @@ export const getChatMessages = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    const decryptedMessages = cleanMessages.reverse().map((m: any) => ({
+      ...m,
+      text: decryptText(m.text, deviceId),
+      contactName: decryptText(m.contactName, deviceId),
+      contactNumber: decryptDeterministic(m.contactNumber, deviceId),
+    }));
+
     return res.json({
       success: true,
-      messages: cleanMessages.reverse(),
+      messages: decryptedMessages,
       hasMore: messages.length === pageLimit,
     });
   } catch (error: any) {
@@ -3712,6 +3875,40 @@ export const getChatStorageBreakdown = async (req: AuthRequest, res: Response) =
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Fetch and stream cached app icon by packageName with 24-hour client/CDN cache
+ */
+export const getAppIcon = async (req: any, res: Response) => {
+  try {
+    const { packageName } = req.params;
+    if (!packageName) return res.status(400).send('Package name is required');
+    const cached = await AppIconCache.findOne({ packageName }).lean();
+    if (!cached || !cached.iconData) {
+      return res.status(404).send('Icon not found');
+    }
+
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+
+    const dataUriMatch = cached.iconData.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (dataUriMatch) {
+      const mime = dataUriMatch[1];
+      const buf = Buffer.from(dataUriMatch[2], 'base64');
+      res.setHeader('Content-Type', mime);
+      return res.send(buf);
+    }
+
+    if (/^[A-Za-z0-9+/=]+$/.test(cached.iconData.slice(0, 100))) {
+      const buf = Buffer.from(cached.iconData, 'base64');
+      res.setHeader('Content-Type', 'image/png');
+      return res.send(buf);
+    }
+
+    return res.json({ success: true, iconData: cached.iconData });
+  } catch (err: any) {
+    return res.status(500).send(err.message);
   }
 };
 

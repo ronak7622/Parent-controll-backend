@@ -1,9 +1,12 @@
 import { Response, Request } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import { AuthRequest } from '../middleware/auth';
 import { ChildMessage, MessageCategory, MessageDirection } from '../models/ChildMessage';
 import { Device } from '../models/Device';
 import { getReadQuery } from '../dal/db.dal';
 import { checkQuotaBlocked } from './ingest.controller';
+import { encryptText, decryptText, encryptDeterministic, decryptDeterministic } from '../utils/crypto.utils';
+import { uploadDirectBuffer, generatePresignedGetUrl, bulkDeleteMediaFromR2 } from '../services/r2.service';
 
 function getLocalDateString(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
@@ -59,37 +62,72 @@ export const ingestMessages = async (req: Request, res: Response) => {
       });
     }
 
-    const ops = messages
+    const validMessages = messages
       .filter((m: any) => m && m.nativeId && m.address && m.timestamp)
-      .slice(0, 500)
-      .map((m: any) => {
-        const timestamp = new Date(m.timestamp);
-        const body = m.body ? String(m.body).slice(0, 4000) : '';
-        const address = String(m.address).trim();
-        return {
-          updateOne: {
-            filter: { deviceId, nativeId: String(m.nativeId), isMms: !!m.isMms },
-            update: {
-              $setOnInsert: {
-                deviceId,
-                nativeId: String(m.nativeId),
-                address,
-                contactName: m.contactName ? String(m.contactName).slice(0, 200) : undefined,
-                contactPhotoBase64: m.contactPhotoBase64 ? String(m.contactPhotoBase64) : undefined,
-                direction: (m.direction === 'sent' ? 'sent' : 'received') as MessageDirection,
-                isMms: !!m.isMms,
-                body,
-                imageBase64: m.imageBase64 ? String(m.imageBase64) : undefined,
-                category: categorizeMessage(body, address),
-                timestamp,
-                date: (m.date && String(m.date).trim()) || getLocalDateString(timestamp.getTime()),
-                isRead: false,
-              },
+      .slice(0, 500);
+
+    const ops: any[] = [];
+    for (const m of validMessages) {
+      const timestamp = new Date(m.timestamp);
+      const rawBody = m.body ? String(m.body).slice(0, 4000) : '';
+      const rawAddress = String(m.address).trim();
+      // Ingest-time keyword and category matching runs on plaintext before encryption
+      const category = categorizeMessage(rawBody, rawAddress);
+      const encryptedBody = encryptText(rawBody, deviceId);
+      const encryptedAddress = encryptDeterministic(rawAddress, deviceId);
+      const encryptedContactName = m.contactName ? encryptText(String(m.contactName).slice(0, 200), deviceId) : undefined;
+
+      let imageKey: string | undefined = undefined;
+      let contactPhotoKey: string | undefined = undefined;
+
+      if (m.imageBase64 && typeof m.imageBase64 === 'string' && (m.imageBase64.startsWith('data:image') || m.imageBase64.length > 200)) {
+        try {
+          const cleanB64 = m.imageBase64.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
+          const buf = Buffer.from(cleanB64, 'base64');
+          if (buf.length > 0 && buf.length <= 10 * 1024 * 1024) {
+            imageKey = await uploadDirectBuffer(buf, `messages/${deviceId}/${uuidv4()}.jpg`, 'image/jpeg');
+          }
+        } catch (e: any) {
+          console.warn('[MSG-IMAGE] Upload error:', e.message);
+        }
+      }
+
+      if (m.contactPhotoBase64 && typeof m.contactPhotoBase64 === 'string' && (m.contactPhotoBase64.startsWith('data:image') || m.contactPhotoBase64.length > 200)) {
+        try {
+          const cleanB64 = m.contactPhotoBase64.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
+          const buf = Buffer.from(cleanB64, 'base64');
+          if (buf.length > 0 && buf.length <= 10 * 1024 * 1024) {
+            contactPhotoKey = await uploadDirectBuffer(buf, `contact-photos/${deviceId}/${uuidv4()}.jpg`, 'image/jpeg');
+          }
+        } catch (e: any) {
+          console.warn('[MSG-CONTACT-PHOTO] Upload error:', e.message);
+        }
+      }
+
+      ops.push({
+        updateOne: {
+          filter: { deviceId, nativeId: String(m.nativeId), isMms: !!m.isMms },
+          update: {
+            $setOnInsert: {
+              deviceId,
+              nativeId: String(m.nativeId),
+              address: encryptedAddress,
+              contactName: encryptedContactName,
+              direction: (m.direction === 'sent' ? 'sent' : 'received') as MessageDirection,
+              isMms: !!m.isMms,
+              body: encryptedBody,
+              ...(imageKey ? { imageKey } : {}),
+              ...(contactPhotoKey ? { contactPhotoKey } : {}),
+              category,
+              timestamp,
+              date: (m.date && String(m.date).trim()) || getLocalDateString(timestamp.getTime()),
+              isRead: false,
             },
-            upsert: true,
           },
-        };
+          upsert: true,
+        },
       });
+    }
 
     if (ops.length > 0) {
       await ChildMessage.bulkWrite(ops, { ordered: false });
@@ -148,6 +186,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
           _id: '$address',
           contactName: { $last: '$contactName' },
           contactPhotoBase64: { $last: '$contactPhotoBase64' },
+          contactPhotoKey: { $last: '$contactPhotoKey' },
           totalCount: { $sum: 1 },
           unreadCount: { $sum: { $cond: [{ $eq: ['$isRead', false] }, 1, 0] } },
           lastMessageAt: { $max: '$timestamp' },
@@ -161,16 +200,28 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
 
     const dev = await Device.findOne({ deviceId }).select('lastMessageSyncTime');
 
-    const conversations = agg.map((a) => ({
-      address: a._id,
-      contactName: a.contactName || null,
-      contactPhotoBase64: a.contactPhotoBase64 || null,
-      totalCount: a.totalCount,
-      unreadCount: a.unreadCount,
-      lastMessageAt: a.lastMessageAt,
-      lastBody: a.lastIsMms && !a.lastBody ? '📷 Photo' : a.lastBody,
-      lastDirection: a.lastDirection,
-    }));
+    const conversations = await Promise.all(
+      agg.map(async (a) => {
+        const decBody = decryptText(a.lastBody, deviceId);
+        const decAddress = decryptDeterministic(a._id, deviceId);
+        const decContact = decryptText(a.contactName, deviceId);
+        let photoUrl = a.contactPhotoBase64 || null;
+        if (a.contactPhotoKey) {
+          photoUrl = await generatePresignedGetUrl(a.contactPhotoKey, 900);
+        }
+        return {
+          address: decAddress,
+          contactName: decContact || null,
+          contactPhotoBase64: photoUrl,
+          contactPhotoUrl: photoUrl,
+          totalCount: a.totalCount,
+          unreadCount: a.unreadCount,
+          lastMessageAt: a.lastMessageAt,
+          lastBody: a.lastIsMms && !decBody ? '📷 Photo' : decBody,
+          lastDirection: a.lastDirection,
+        };
+      })
+    );
 
     return res.json({ success: true, conversations, lastSyncTime: dev?.lastMessageSyncTime || null });
   } catch (error: any) {
@@ -190,7 +241,9 @@ export const getMessagesForConversation = async (req: AuthRequest, res: Response
       return res.status(400).json({ success: false, message: 'address is required' });
     }
 
-    const query: any = { deviceId, address };
+    const rawAddress = String(address).trim();
+    const encAddress = encryptDeterministic(rawAddress, deviceId);
+    const query: any = { deviceId, address: { $in: [rawAddress, encAddress] } };
     if (date && String(date).trim() && String(date).trim() !== 'all') {
       query.date = String(date).trim();
     }
@@ -213,7 +266,23 @@ export const getMessagesForConversation = async (req: AuthRequest, res: Response
       }
     }
 
-    return res.json({ success: true, messages: uniqueMessages });
+    const decryptedMessages = await Promise.all(
+      uniqueMessages.map(async (msg: any) => {
+        const obj = msg.toObject ? msg.toObject() : { ...msg };
+        obj.body = decryptText(obj.body, deviceId);
+        obj.contactName = decryptText(obj.contactName, deviceId);
+        obj.address = decryptDeterministic(obj.address, deviceId);
+        if (obj.imageKey) {
+          obj.imageUrl = await generatePresignedGetUrl(obj.imageKey, 900);
+        }
+        if (obj.contactPhotoKey) {
+          obj.contactPhotoUrl = await generatePresignedGetUrl(obj.contactPhotoKey, 900);
+        }
+        return obj;
+      })
+    );
+
+    return res.json({ success: true, messages: decryptedMessages });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -225,7 +294,17 @@ export const getMessageDetail = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const message = await ChildMessage.findByIdAndUpdate(id, { $set: { isRead: true } }, { new: true });
     if (!message) return res.status(404).json({ success: false, message: 'Message not found' });
-    return res.json({ success: true, message });
+    const obj: any = message.toObject ? message.toObject() : message;
+    obj.body = decryptText(obj.body, obj.deviceId);
+    obj.contactName = decryptText(obj.contactName, obj.deviceId);
+    obj.address = decryptDeterministic(obj.address, obj.deviceId);
+    if (obj.imageKey) {
+      obj.imageUrl = await generatePresignedGetUrl(obj.imageKey, 900);
+    }
+    if (obj.contactPhotoKey) {
+      obj.contactPhotoUrl = await generatePresignedGetUrl(obj.contactPhotoKey, 900);
+    }
+    return res.json({ success: true, message: obj });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -237,7 +316,11 @@ export const markAllMessagesRead = async (req: AuthRequest, res: Response) => {
     const { deviceId } = req.params;
     const { address } = req.query;
     const filter: any = { deviceId, isRead: false };
-    if (address) filter.address = address;
+    if (address) {
+      const rawAddress = String(address).trim();
+      const encAddress = encryptDeterministic(rawAddress, deviceId);
+      filter.address = { $in: [rawAddress, encAddress] };
+    }
     const result = await ChildMessage.updateMany(filter, { $set: { isRead: true } });
     return res.json({ success: true, modifiedCount: result.modifiedCount });
   } catch (error: any) {
@@ -248,7 +331,16 @@ export const markAllMessagesRead = async (req: AuthRequest, res: Response) => {
 export const deleteMessage = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    await ChildMessage.findByIdAndDelete(id);
+    const msg = await ChildMessage.findById(id);
+    if (msg) {
+      const keysToDelete: string[] = [];
+      if (msg.imageKey) keysToDelete.push(msg.imageKey);
+      if (msg.contactPhotoKey) keysToDelete.push(msg.contactPhotoKey);
+      if (keysToDelete.length > 0) {
+        bulkDeleteMediaFromR2(keysToDelete).catch((e) => console.warn('[MSG-DELETE-R2] Error:', e.message));
+      }
+      await ChildMessage.findByIdAndDelete(id);
+    }
     return res.json({ success: true, message: 'Message deleted' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -288,7 +380,24 @@ export const deleteMessagesForDevice = async (req: AuthRequest, res: Response) =
       );
     }
 
+    const msgsWithMedia = await ChildMessage.find({
+      ...query,
+      $or: [
+        { imageKey: { $exists: true, $nin: [null, ''] } },
+        { contactPhotoKey: { $exists: true, $nin: [null, ''] } },
+      ],
+    }).select('imageKey contactPhotoKey');
+    const keysToDelete: string[] = [];
+    for (const m of msgsWithMedia) {
+      if (m.imageKey) keysToDelete.push(m.imageKey);
+      if (m.contactPhotoKey) keysToDelete.push(m.contactPhotoKey);
+    }
+    if (keysToDelete.length > 0) {
+      bulkDeleteMediaFromR2(keysToDelete).catch((e) => console.warn('[MSG-DELETE-ALL-R2] Error:', e.message));
+    }
+
     const result = await ChildMessage.deleteMany(query);
+    return res.json({ success: true, deletedCount: result.deletedCount });
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

@@ -69,6 +69,46 @@ export const uploadMediaToR2 = async (
 };
 
 /**
+ * Upload direct buffer to a specified R2 key (returns the object key)
+ */
+export const uploadDirectBuffer = async (
+  buffer: Buffer,
+  key: string,
+  mimeType: string = 'image/jpeg'
+): Promise<string> => {
+  const cleanKey = key.replace(/^\/+/, '');
+  if (isDummyKey()) {
+    const targetPath = path.join(__dirname, '../../public/uploads', cleanKey);
+    const targetDir = path.dirname(targetPath);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+    fs.writeFileSync(targetPath, buffer);
+    return cleanKey;
+  }
+
+  try {
+    const command = new PutObjectCommand({
+      Bucket: config.r2.bucketName,
+      Key: cleanKey,
+      Body: buffer,
+      ContentType: mimeType,
+    });
+    await s3Client.send(command);
+    return cleanKey;
+  } catch (err: any) {
+    console.warn('[R2-UPLOAD-WARN] Failed upload to R2, fallback to local disk:', err.message);
+    const targetPath = path.join(__dirname, '../../public/uploads', cleanKey);
+    const targetDir = path.dirname(targetPath);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+    fs.writeFileSync(targetPath, buffer);
+    return cleanKey;
+  }
+};
+
+/**
  * Generate Presigned PUT Upload URL for Direct Child Upload to R2 / S3
  */
 export const generatePresignedPutUrl = async (
@@ -116,33 +156,47 @@ export const generatePresignedPutUrl = async (
 };
 
 /**
- * Generate Presigned GET Download URL / CDN URL for Parent App
+ * Generate Presigned GET Download URL for Parent App
+ * Extracts object key from legacy public URLs and generates authenticated, short-lived presigned URLs (15-min TTL)
+ * guaranteeing privacy even when R2 bucket public access is disabled.
  */
 export const generatePresignedGetUrl = async (
   objectKey: string,
-  expiresInSeconds: number = 3600
+  expiresInSeconds: number = 900
 ): Promise<string> => {
-  if (!objectKey) return '';
-  if (objectKey.startsWith('http://') || objectKey.startsWith('https://') || objectKey.startsWith('/uploads/')) {
-    return objectKey;
+  if (!objectKey || typeof objectKey !== 'string') return '';
+  const trimmed = objectKey.trim();
+  if (trimmed.startsWith('/uploads/') || trimmed.startsWith('http://localhost') || trimmed.startsWith('http://127.0.0.1')) {
+    return trimmed;
   }
 
-  if (config.cdnPublicDomain && !config.cdnPublicDomain.startsWith('http://your_')) {
-    return `${config.cdnPublicDomain}/${objectKey}`;
+  // Extract clean object key from any existing full domain URL
+  let cleanKey = trimmed;
+  if (cleanKey.includes('.r2.cloudflarestorage.com/')) {
+    cleanKey = cleanKey.replace(/^https?:\/\/[^/]+\.r2\.cloudflarestorage\.com\//, '');
+  } else if (cleanKey.includes('media.childprotect.info/')) {
+    cleanKey = cleanKey.replace(/^https?:\/\/media\.childprotect\.info\//, '');
+  } else if (cleanKey.includes('media.childprotect.app/')) {
+    cleanKey = cleanKey.replace(/^https?:\/\/media\.childprotect\.app\//, '');
   }
+  cleanKey = cleanKey.replace(/^\/+/, '');
 
   if (isDummyKey()) {
-    return `/uploads/${objectKey}`;
+    return `/uploads/${cleanKey}`;
   }
 
   try {
     const command = new GetObjectCommand({
       Bucket: config.r2.bucketName,
-      Key: objectKey,
+      Key: cleanKey,
     });
     return await getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
   } catch (error: any) {
-    return `https://${config.r2.bucketName}.${config.r2.accountId}.r2.cloudflarestorage.com/${objectKey}`;
+    console.warn('[PRESIGNED-GET-ERROR] Failed to sign GET URL, fallback to raw key:', error.message);
+    if (config.cdnPublicDomain && !config.cdnPublicDomain.startsWith('http://your_')) {
+      return `${config.cdnPublicDomain}/${cleanKey}`;
+    }
+    return `https://${config.r2.bucketName}.${config.r2.accountId}.r2.cloudflarestorage.com/${cleanKey}`;
   }
 };
 

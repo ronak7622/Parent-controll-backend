@@ -12,8 +12,8 @@ export interface IWifiLog extends Document {
   endTime?: Date;
   durationSeconds?: number;
   isCurrentlyConnected?: boolean;
-  latitude?: number;
-  longitude?: number;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
   locationName?: string;
   locationAddress?: string;
   isBlockedAttempt?: boolean;
@@ -39,8 +39,9 @@ const WifiLogSchema: Schema = new Schema(
     durationSeconds: { type: Number, default: 0 },
     bytesUsed: { type: Number, default: 0 },
     isCurrentlyConnected: { type: Boolean, default: false },
-    latitude: { type: Number, default: null },
-    longitude: { type: Number, default: null },
+    latitude: { type: Schema.Types.Mixed, default: null },
+    longitude: { type: Schema.Types.Mixed, default: null },
+    locationName: { type: String, default: '' },
     locationAddress: { type: String, default: '' },
     isBlockedAttempt: { type: Boolean, default: false },
     statusReason: { type: String, default: '' },

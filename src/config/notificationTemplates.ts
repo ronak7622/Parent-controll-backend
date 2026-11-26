@@ -372,6 +372,38 @@ export const NOTIFICATION_TEMPLATES: Record<string, NotificationTemplate> = {
       fr: '{deviceName} a supprimé l’application{timeInfo}. Reconnectez pour reprendre — vos données sont en sécurité.',
     },
   },
+  DEVICE_APP_UNINSTALLED: {
+    title: {
+      en: 'App Uninstalled',
+      hi: 'ऐप अनइंस्टॉल की गई',
+      gu: 'ઍપ અનઇન્સ્ટોલ કરવામાં આવી',
+      es: 'App desinstalada',
+      fr: 'Application désinstallée',
+    },
+    body: {
+      en: '{appName} was uninstalled on {deviceName} · {dateTime}',
+      hi: '{deviceName} पर {appName} अनइंस्टॉल की गई · {dateTime}',
+      gu: '{deviceName} પર {appName} અનઇન્સ્ટોલ કરવામાં આવી · {dateTime}',
+      es: '{appName} fue desinstalada en {deviceName} · {dateTime}',
+      fr: '{appName} a été désinstallée sur {deviceName} · {dateTime}',
+    },
+  },
+  DEVICE_APP_UNINSTALLED_RESTRICTED: {
+    title: {
+      en: '⚠️ Blocked/Limited App Removed',
+      hi: '⚠️ ब्लॉक/सीमित ऐप हटाई गई',
+      gu: '⚠️ બ્લોક/મર્યાદિત કરેલી ઍપ કાઢી નાખવામાં આવી',
+      es: '⚠️ App bloqueada/limitada eliminada',
+      fr: '⚠️ Application bloquée/limitée supprimée',
+    },
+    body: {
+      en: '⚠️ A blocked/limited app was removed: {appName} on {deviceName} · {dateTime}. Its rules are saved and will re-apply automatically if reinstalled.',
+      hi: '⚠️ ब्लॉक/सीमित ऐप हटाई गई: {deviceName} पर {appName} · {dateTime}। इसके नियम सुरक्षित हैं और पुनः इंस्टॉल होने पर अपने आप लागू होंगे।',
+      gu: '⚠️ બ્લોક/મર્યાદિત કરેલી ઍપ કાઢી નાખવામાં આવી: {deviceName} પર {appName} · {dateTime}. તેના નિયમો સુરક્ષિત છે અને ફરી ઇન્સ્ટોલ થતાં આપોઆપ લાગુ થશે.',
+      es: '⚠️ Se eliminó una app bloqueada/limitada: {appName} en {deviceName} · {dateTime}. Las reglas están guardadas y se volverán a aplicar automáticamente si se reinstala.',
+      fr: '⚠️ Une application bloquée/limitée a été supprimée : {appName} sur {deviceName} · {dateTime}. Ses règles sont enregistrées et s\'appliqueront automatiquement en cas de réinstallation.',
+    },
+  },
   DEVICE_CRITICAL_PERM_OFF: {
     title: {
       en: 'Critical Permission Disabled — Action Needed',
@@ -516,6 +548,9 @@ const TEMPLATE_KEY_ALIASES: Record<string, string> = {
   DEVICE_CRITICAL_PERM_OFF_MULTI: 'DEVICE_CRITICAL_PERM_OFF_MULTI',
   CRITICAL_PERMISSIONS_OFF_MULTI: 'DEVICE_CRITICAL_PERM_OFF_MULTI',
   CHILD_APP_UPDATE_REQUIRED_MULTI: 'CHILD_APP_UPDATE_REQUIRED_MULTI',
+  APP_UNINSTALLED: 'DEVICE_APP_UNINSTALLED',
+  DEVICE_APP_UNINSTALLED: 'DEVICE_APP_UNINSTALLED',
+  DEVICE_APP_UNINSTALLED_RESTRICTED: 'DEVICE_APP_UNINSTALLED_RESTRICTED',
 };
 
 export const getLocalizedNotification = (

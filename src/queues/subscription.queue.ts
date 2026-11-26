@@ -227,8 +227,6 @@ const processSubscriptionJobs = async () => {
         { criticalPermissionsOff: true },
         { 'grantedPermissions.ACCESSIBILITY': false },
         { 'grantedPermissions.DEVICE_ADMIN': false },
-        { isLocationEnabled: false },
-        { locationEnabled: false },
       ],
       parentUserId: { $exists: true, $ne: null },
       isPaired: { $ne: false },
@@ -409,77 +407,6 @@ const processSubscriptionJobs = async () => {
               }
             );
             console.log(`[DEVICE-ALERT-QUEUE] Sent Critical Perm Off FCM to parent_${parentUserId} for ${permOffDevs.length} device(s)`);
-          }
-        }
-
-        // ─── 3C. LOCATION DISABLED ALERT (Multi-Device Grouped) ───
-        const locOffDevs = pDevs.filter(
-          (d) => !d.appRemoved && (d.isLocationEnabled === false || d.locationEnabled === false)
-        );
-
-        if (locOffDevs.length > 0) {
-          const locIntervalMin = Number(options.permissionOffWarNotificationIntervalInMinute) || 1440;
-          const dueLocOff = locOffDevs.filter((dev) => {
-            const lastNotif = dev.locationDisabledNotifiedAt ? new Date(dev.locationDisabledNotifiedAt).getTime() : 0;
-            return now.getTime() - lastNotif >= locIntervalMin * 60 * 1000;
-          });
-
-          if (dueLocOff.length > 0) {
-            const devPayloadList = locOffDevs.map((d) => {
-              const devOffTime = d.locationDisabledAt ? new Date(d.locationDisabledAt) : now;
-              const timeText = formatRelativeDateTimeForNotification(devOffTime, lang, parentTz);
-              return {
-                deviceId: String(d.deviceId),
-                deviceName: d.deviceName || 'Child Device',
-                locationDisabledAt: devOffTime.toISOString(),
-                timeText,
-              };
-            });
-
-            if (locOffDevs.length === 1) {
-              const singleDev = devPayloadList[0];
-              await sendLocalizedFcmTopicNotification(
-                parentTopic,
-                'DEVICE_LOCATION_OFF',
-                {
-                  deviceName: singleDev.deviceName,
-                  timeText: singleDev.timeText,
-                  timeInfo: singleDev.timeText ? ` (${singleDev.timeText})` : '',
-                },
-                lang,
-                {
-                  type: 'LOCATION_DISABLED',
-                  deviceId: singleDev.deviceId,
-                  deviceName: singleDev.deviceName,
-                  locationDisabledAt: singleDev.locationDisabledAt,
-                  timeText: singleDev.timeText,
-                  deviceCount: '1',
-                  devices: JSON.stringify(devPayloadList),
-                  timezone: parentTz,
-                }
-              );
-            } else {
-              const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
-              await sendLocalizedFcmTopicNotification(
-                parentTopic,
-                'DEVICE_LOCATION_OFF_MULTI',
-                {
-                  count: locOffDevs.length,
-                  deviceList,
-                },
-                lang,
-                {
-                  type: 'LOCATION_DISABLED',
-                  deviceCount: String(locOffDevs.length),
-                  devices: JSON.stringify(devPayloadList),
-                  timezone: parentTz,
-                }
-              );
-            }
-
-            const dueIds = dueLocOff.map((d) => d._id);
-            await Device.updateMany({ _id: { $in: dueIds } }, { $set: { locationDisabledNotifiedAt: now } });
-            console.log(`[DEVICE-ALERT-QUEUE] Sent Location Off FCM to parent_${parentUserId} for ${locOffDevs.length} device(s)`);
           }
         }
       } catch (parentDevErr: any) {

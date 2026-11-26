@@ -14,7 +14,6 @@ export interface IYouTubeHistory extends Document {
   watchedDurationSeconds?: number;
   endedAt?: Date;
   source: string;
-  thumbnailBase64?: string;
   blocked: boolean;
   blockReason?: string;
   timestamp: Date;
@@ -34,7 +33,6 @@ const YouTubeHistorySchema = new Schema<IYouTubeHistory>(
     watchedDurationSeconds: { type: Number, default: 0 },
     endedAt: { type: Date },
     source: { type: String, default: 'YouTube App' },
-    thumbnailBase64: { type: String },
     blocked: { type: Boolean, default: false },
     blockReason: { type: String },
     timestamp: { type: Date, required: true },

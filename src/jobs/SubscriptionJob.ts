@@ -100,7 +100,7 @@ export class SubscriptionJob {
                 status: 'active',
                 expireAt: newExpireAt.toISOString(),
                 graceEndsAt: graceEndsAt.toISOString(),
-              }).catch(() => {});
+              }, d.deviceId).catch(() => {});
             }
           }
         } else {
@@ -183,7 +183,7 @@ export class SubscriptionJob {
                     await sendFcmDataCommand(dev.fcmToken, 'MONITORING_STOP', {
                       status: 'expired',
                       action: 'WIPE_LOCAL_AND_STOP',
-                    }).catch(() => {});
+                    }, dev.deviceId).catch(() => {});
                   }
                 } catch (devErr: any) {
                   console.error(`[SUBSCRIPTION-WIPE-ERROR] Orphan Device ${dev.deviceId} (${du.parentUserId}): ${devErr?.message}`);
@@ -305,7 +305,7 @@ export class SubscriptionJob {
                 await sendFcmDataCommand(dev.fcmToken, 'MONITORING_STOP', {
                   status: 'expired',
                   action: 'WIPE_LOCAL_AND_STOP',
-                }).catch((fcmErr) => {
+                }, dev.deviceId).catch((fcmErr) => {
                   console.warn(`[FCM-WIPE-WARN] FCM to device ${dev.deviceId} failed: ${fcmErr?.message}`);
                 });
               }

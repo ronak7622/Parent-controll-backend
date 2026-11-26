@@ -17,6 +17,7 @@ export interface IChildNotification extends Document {
   messages?: string[]; // "Sender: message text" lines, for grouped/messaging-style notifications
   actionLabels?: string[]; // e.g. ["Reply", "Mark as read"]
   imageBase64?: string; // the notification's own picture/large icon (BigPictureStyle image, contact photo, etc.), if any
+  imageKey?: string;
   timestamp: Date;
   date: string; // yyyy-MM-dd, device-local day (matches AppUsage/AppSession convention)
   isRead: boolean;
@@ -40,6 +41,7 @@ const ChildNotificationSchema = new Schema<IChildNotification>(
     messages: [{ type: String }],
     actionLabels: [{ type: String }],
     imageBase64: { type: String },
+    imageKey: { type: String },
     timestamp: { type: Date, required: true },
     date: { type: String, required: true },
     isRead: { type: Boolean, default: false },

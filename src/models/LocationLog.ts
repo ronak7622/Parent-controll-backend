@@ -3,8 +3,8 @@ import { applyTtlIndex } from '../utils/ttl.utils';
 
 export interface ILocationLog extends Document {
   deviceId: string;
-  latitude: number;
-  longitude: number;
+  latitude: string | number;
+  longitude: string | number;
   altitude?: number;
   speed?: number; // km/h
   heading?: number; // degrees 0-360
@@ -21,8 +21,8 @@ export interface ILocationLog extends Document {
 const LocationLogSchema: Schema = new Schema(
   {
     deviceId: { type: String, required: true, index: true },
-    latitude: { type: Number, required: true },
-    longitude: { type: Number, required: true },
+    latitude: { type: String, required: true },
+    longitude: { type: String, required: true },
     altitude: { type: Number, default: 0 },
     speed: { type: Number, default: 0 },
     heading: { type: Number, default: 0 },

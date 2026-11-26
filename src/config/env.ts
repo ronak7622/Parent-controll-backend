@@ -9,6 +9,11 @@ export const config = {
   mongoUri: process.env.MONGODB_URI || 'mongodb://localhost:27017/child_protect_db',
   jwtSecret: process.env.JWT_SECRET || 'super_secret_jwt_key_child_protect_2026',
   
+  encryption: {
+    masterKey: process.env.DATA_ENCRYPTION_KEY || '',
+    blindIndexSecret: process.env.BLIND_INDEX_SECRET || '',
+  },
+  
   r2: {
     accountId: process.env.R2_ACCOUNT_ID || '',
     accessKeyId: process.env.R2_ACCESS_KEY_ID || '',

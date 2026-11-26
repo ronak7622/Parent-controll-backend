@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { mediaRateLimiter } from '../middleware/rateLimiter';
 import {
   authenticateFirebase,
   authRateLimiter,
@@ -159,6 +160,7 @@ import {
   deleteChatMessagesForDay,
   deleteAllChatMessages,
   getChatStorageBreakdown,
+  getAppIcon,
 } from '../controllers/parent.controller';
 
 
@@ -280,6 +282,8 @@ router.get('/device/:deviceId/schedule-config', authenticateJwt, verifyDeviceOwn
 router.post('/device/:deviceId/schedule-config', authenticateJwt, verifyDeviceOwnership, updateScheduleConfig);
 router.get('/parent/device/:deviceId/installed-apps', authenticateJwt, verifyDeviceOwnership, getInstalledApps);
 router.get('/device/:deviceId/installed-apps', authenticateJwt, verifyDeviceOwnership, getInstalledApps);
+router.get('/apps/icon/:packageName', getAppIcon);
+router.get('/parent/apps/icon/:packageName', getAppIcon);
 
 
 // ===================================
@@ -321,7 +325,7 @@ router.delete('/parent/youtube-session/:id', authenticateJwt, deleteYouTubeSessi
 router.delete('/parent/device/:deviceId/youtube-sessions', authenticateJwt, verifyDeviceOwnership, deleteYouTubeSessionsForDevice);
 router.delete('/parent/youtube-history/:id', authenticateJwt, deleteYouTubeHistory);
 router.delete('/parent/device/:deviceId/youtube-history', authenticateJwt, verifyDeviceOwnership, deleteYouTubeHistoryForDevice);
-router.get('/parent/device/:deviceId/media-captures', authenticateJwt, verifyDeviceOwnership, getCapturedMedia);
+router.get('/parent/device/:deviceId/media-captures', authenticateJwt, verifyDeviceOwnership, mediaRateLimiter, getCapturedMedia);
 router.delete('/parent/device/:deviceId/media-captures', authenticateJwt, verifyDeviceOwnership, deleteCapturedMedia);
 router.get('/parent/device/:deviceId/screenshot-schedule', authenticateJwt, verifyDeviceOwnership, getScheduleConfig);
 router.post('/parent/device/:deviceId/screenshot-schedule', authenticateJwt, verifyDeviceOwnership, updateScheduleConfig);
@@ -339,8 +343,8 @@ router.get('/parent/device/:deviceId/blocked-calls', authenticateJwt, verifyDevi
 router.get('/parent/device/:deviceId/call-recording-settings', authenticateJwt, verifyDeviceOwnership, getCallRecordingSettings);
 router.post('/parent/device/:deviceId/call-recording-settings', authenticateJwt, verifyDeviceOwnership, updateCallRecordingSettings);
 router.get('/parent/device/:deviceId/call-recording-contacts', authenticateJwt, verifyDeviceOwnership, getCallRecordingContacts);
-router.get('/parent/device/:deviceId/call-recordings', authenticateJwt, verifyDeviceOwnership, getCallRecordings);
-router.get('/parent/call-recording/:id/stream', authenticateJwt, streamCallRecording);
+router.get('/parent/device/:deviceId/call-recordings', authenticateJwt, verifyDeviceOwnership, mediaRateLimiter, getCallRecordings);
+router.get('/parent/call-recording/:id/stream', authenticateJwt, mediaRateLimiter, streamCallRecording);
 router.delete('/parent/call-recording/:id', authenticateJwt, deleteCallRecording);
 router.delete('/parent/device/:deviceId/call-recordings/day', authenticateJwt, verifyDeviceOwnership, deleteCallRecordingsForDay);
 router.delete('/parent/device/:deviceId/call-recordings/all', authenticateJwt, verifyDeviceOwnership, deleteAllCallRecordings);
@@ -414,7 +418,7 @@ router.post('/ingest/keyboard-logs', authenticateDevice, ingestKeyboardLogs);
 router.get('/parent/device/:deviceId/monitored-keywords', authenticateJwt, verifyDeviceOwnership, getMonitoredKeywords);
 router.post('/parent/device/:deviceId/monitored-keywords', authenticateJwt, verifyDeviceOwnership, addMonitoredKeyword);
 router.delete('/parent/device/:deviceId/monitored-keywords', authenticateJwt, verifyDeviceOwnership, deleteMonitoredKeyword);
-router.get('/parent/device/:deviceId/keyboard-history', authenticateJwt, verifyDeviceOwnership, getKeyboardHistory);
+router.get('/parent/device/:deviceId/keyboard-history', authenticateJwt, verifyDeviceOwnership, mediaRateLimiter, getKeyboardHistory);
 router.delete('/parent/device/:deviceId/keyboard-history/day', authenticateJwt, verifyDeviceOwnership, deleteKeyboardHistoryForDay);
 router.delete('/parent/device/:deviceId/keyboard-history/all', authenticateJwt, verifyDeviceOwnership, deleteAllKeyboardHistory);
 router.delete('/parent/keyboard-history/:id', authenticateJwt, deleteKeyboardLogItem);

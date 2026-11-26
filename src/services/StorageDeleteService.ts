@@ -280,15 +280,57 @@ export class StorageDeleteService {
         // 3b. Keyword-tracker screenshots (KeyboardLog.screenshotUrl -> R2 keyboard-captures/).
         // Collected here so these images are purged from R2 together with the KeyboardLog docs
         // (step 5). Previously missed -> orphaned .webp files after scheduled auto-delete.
-        if (isAll || categories.includes('text')) {
+        if (isAll || categories.includes('text') || categories.includes('messages')) {
           const kbDocs = await KeyboardLog.find({
             deviceId: devId,
-            screenshotUrl: { $exists: true, $nin: [null, ''] },
-            ...dateQuery,
-          }).select('_id screenshotUrl');
+            $and: [
+              {
+                $or: [
+                  { screenshotUrl: { $exists: true, $nin: [null, ''] } },
+                  { screenshotKey: { $exists: true, $nin: [null, ''] } },
+                ],
+              },
+              dateQuery,
+            ],
+          }).select('_id screenshotUrl screenshotKey');
           for (const doc of kbDocs) {
-            const url = (doc as any).screenshotUrl;
-            if (url) mediaUrlsToDelete.push(url);
+            if ((doc as any).screenshotKey) mediaUrlsToDelete.push((doc as any).screenshotKey);
+            else if ((doc as any).screenshotUrl) mediaUrlsToDelete.push((doc as any).screenshotUrl);
+          }
+
+          const msgDocs = await ChildMessage.find({
+            deviceId: devId,
+            $and: [
+              {
+                $or: [
+                  { imageKey: { $exists: true, $nin: [null, ''] } },
+                  { contactPhotoKey: { $exists: true, $nin: [null, ''] } },
+                ],
+              },
+              dateQuery,
+            ],
+          }).select('_id imageKey contactPhotoKey');
+          for (const doc of msgDocs) {
+            if (doc.imageKey) mediaUrlsToDelete.push(doc.imageKey);
+            if (doc.contactPhotoKey) mediaUrlsToDelete.push(doc.contactPhotoKey);
+          }
+
+          const notifDocs = await ChildNotification.find({
+            deviceId: devId,
+            imageKey: { $exists: true, $nin: [null, ''] },
+            ...dateQuery,
+          }).select('_id imageKey');
+          for (const doc of notifDocs) {
+            if (doc.imageKey) mediaUrlsToDelete.push(doc.imageKey);
+          }
+
+          const contactDocs = await Contact.find({
+            deviceId: devId,
+            photoKey: { $exists: true, $nin: [null, ''] },
+            ...dateQuery,
+          }).select('_id photoKey');
+          for (const doc of contactDocs) {
+            if (doc.photoKey) mediaUrlsToDelete.push(doc.photoKey);
           }
         }
 
@@ -412,23 +454,50 @@ export class StorageDeleteService {
         console.warn(`[ERASE-ALL-DEVICE-DATA] Error querying/deleting CallRecording for ${deviceId}:`, err?.message);
       }
 
-      // 3b. KeyboardLog screenshots (keyword-tracker captures stored in R2 under keyboard-captures/).
-      // These were previously missed here (KeyboardLog is deleted as a "text" collection in step 5),
-      // which orphaned the .webp images in R2 after unpair / erase / plan-expiry cleanup.
+      // 3b. Small R2 Images (KeyboardLog screenshots, ChildMessage images/contact photos, ChildNotification images, Contact photos)
       try {
         const kbDocs = await KeyboardLog.find({
           deviceId,
-          screenshotUrl: { $exists: true, $nin: [null, ''] },
-        }).select('_id screenshotUrl fileSizeBytes');
+          $or: [
+            { screenshotUrl: { $exists: true, $nin: [null, ''] } },
+            { screenshotKey: { $exists: true, $nin: [null, ''] } },
+          ],
+        }).select('_id screenshotUrl screenshotKey fileSizeBytes');
         for (const doc of kbDocs) {
-          const url = (doc as any).screenshotUrl;
-          if (url) {
-            mediaUrlsToDelete.push(url);
-            totalBytesFreed += (doc as any).fileSizeBytes || 0; // real R2 image bytes freed
-          }
+          if ((doc as any).screenshotKey) mediaUrlsToDelete.push((doc as any).screenshotKey);
+          else if ((doc as any).screenshotUrl) mediaUrlsToDelete.push((doc as any).screenshotUrl);
+          totalBytesFreed += (doc as any).fileSizeBytes || 0;
+        }
+
+        const msgDocs = await ChildMessage.find({
+          deviceId,
+          $or: [
+            { imageKey: { $exists: true, $nin: [null, ''] } },
+            { contactPhotoKey: { $exists: true, $nin: [null, ''] } },
+          ],
+        }).select('_id imageKey contactPhotoKey');
+        for (const doc of msgDocs) {
+          if (doc.imageKey) mediaUrlsToDelete.push(doc.imageKey);
+          if (doc.contactPhotoKey) mediaUrlsToDelete.push(doc.contactPhotoKey);
+        }
+
+        const notifDocs = await ChildNotification.find({
+          deviceId,
+          imageKey: { $exists: true, $nin: [null, ''] },
+        }).select('_id imageKey');
+        for (const doc of notifDocs) {
+          if (doc.imageKey) mediaUrlsToDelete.push(doc.imageKey);
+        }
+
+        const contactDocs = await Contact.find({
+          deviceId,
+          photoKey: { $exists: true, $nin: [null, ''] },
+        }).select('_id photoKey');
+        for (const doc of contactDocs) {
+          if (doc.photoKey) mediaUrlsToDelete.push(doc.photoKey);
         }
       } catch (err: any) {
-        console.warn(`[ERASE-ALL-DEVICE-DATA] Error collecting KeyboardLog screenshots for ${deviceId}:`, err?.message);
+        console.warn(`[ERASE-ALL-DEVICE-DATA] Error collecting small media for ${deviceId}:`, err?.message);
       }
 
       // 4. Bulk Delete all R2 & local files

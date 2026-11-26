@@ -1,9 +1,11 @@
 import { hashId } from '../utils/privacy';
+import { encryptText, decryptText, encryptDeterministic, decryptDeterministic, computeBlindIndex } from '../utils/crypto.utils';
 import mongoose from 'mongoose';
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import AppIconCache from '../models/AppIconCache';
 import { BrowserHistory } from '../models/BrowserHistory';
 import { YouTubeHistory } from '../models/YouTubeHistory';
 import { YouTubeSession } from '../models/YouTubeSession';
@@ -12,6 +14,8 @@ import { CallRecording } from '../models/CallRecording';
 import { MediaCapture } from '../models/MediaCapture';
 import { AppUsage } from '../models/AppUsage';
 import { AppSession } from '../models/AppSession';
+import { AppBlockRule } from '../models/AppBlockRule';
+import { AppLimit } from '../models/AppLimit';
 import { Contact } from '../models/Contact';
 import { ChildNotification } from '../models/ChildNotification';
 import { LocationLog } from '../models/LocationLog';
@@ -21,7 +25,7 @@ import { ChatMessage } from '../models/ChatMessage';
 import { Device, enrichDeviceWithOnlineStatus } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { shouldSendAlertShared } from './device.controller';
-import { uploadMediaToR2, generatePresignedPutUrl, generatePresignedGetUrl, headObjectSizeR2 } from '../services/r2.service';
+import { uploadMediaToR2, uploadDirectBuffer, generatePresignedPutUrl, generatePresignedGetUrl, headObjectSizeR2 } from '../services/r2.service';
 import { config } from '../config/env';
 import { enqueueIngestJob } from '../queues/ingest.queue';
 import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification, sendFcmDirectNotification } from '../services/fcm.service';
@@ -246,20 +250,6 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
               timezone: parentTz,
             }
           );
-          if (parentFcm) {
-            await sendFcmDirectNotification(
-              parentFcm,
-              `⚠️ Location Turned Off (${devName})`,
-              `Location was turned off on ${devName} at ${timeText}. Live tracking and location history are paused. Please turn on location on child's device.`,
-              {
-                type: 'LOCATION_DISABLED',
-                deviceId: String(device.deviceId || device._id),
-                timestamp: Date.now().toString(),
-                devices: JSON.stringify(devPayloadList),
-                timezone: parentTz,
-              }
-            );
-          }
         } else {
           const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
           await sendLocalizedFcmTopicNotification(
@@ -277,19 +267,6 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
               timezone: parentTz,
             }
           );
-          if (parentFcm) {
-            await sendFcmDirectNotification(
-              parentFcm,
-              `⚠️ ${allLocOff.length} Devices — Location Turned Off`,
-              `Location turned off on ${allLocOff.length} devices: ${deviceList}. Turn ON location on child devices to resume tracking.`,
-              {
-                type: 'LOCATION_DISABLED',
-                deviceCount: String(allLocOff.length),
-                devices: JSON.stringify(devPayloadList),
-                timezone: parentTz,
-              }
-            );
-          }
         }
         await Device.updateOne({ _id: device._id }, { $set: { locationDisabledNotifiedAt: new Date() } });
       } catch (fcmErr: any) {
@@ -360,7 +337,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         youtubeBlockSchedule: device.youtubeBlockSchedule,
         youtubeShortsBlockSchedule: device.youtubeShortsBlockSchedule,
         youtubeRestrictedMode: device.youtubeRestrictedMode ?? false,
-        youtubeBlockedKeywords: device.youtubeBlockedKeywords || [],
+        youtubeBlockedKeywords: (device.youtubeBlockedKeywords || []).map((k: string) => decryptDeterministic(k, device.deviceId) || k),
         preventNotificationDisable: device.preventNotificationDisable ?? false,
         preventLocationDisable: device.preventLocationDisable ?? true,
         isLocationEnabled: device.isLocationEnabled ?? device.locationEnabled ?? true,
@@ -368,12 +345,12 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         notifyOnBlockedUrlAttempt: device.notifyOnBlockedUrlAttempt ?? true,
         browserRestrictionMode: device.browserRestrictionMode || device.browserRestrictionsMode || 'unrestricted',
         browserRestrictionsMode: device.browserRestrictionsMode || device.browserRestrictionMode || 'unrestricted',
-        browserBlacklist: device.browserBlacklist || [],
-        browserWhitelist: device.browserWhitelist || [],
+        browserBlacklist: (device.browserBlacklist || []).map((b: string) => decryptDeterministic(b, device.deviceId) || b),
+        browserWhitelist: (device.browserWhitelist || []).map((w: string) => decryptDeterministic(w, device.deviceId) || w),
         browserBlockedCategories: device.browserBlockedCategories || [],
         blockedApps: device.blockedApps || [],
-        blockedPhoneNumbers: device.blockedPhoneNumbers || [],
-        blockedOutgoingPhoneNumbers: device.blockedOutgoingPhoneNumbers || [],
+        blockedPhoneNumbers: (device.blockedPhoneNumbers || []).map((p: string) => decryptDeterministic(p, device.deviceId) || p),
+        blockedOutgoingPhoneNumbers: (device.blockedOutgoingPhoneNumbers || []).map((p: string) => decryptDeterministic(p, device.deviceId) || p),
         allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
         secretCode: device.secretCode || '',
         secureOurChildApp: device.secureOurChildApp ?? true,
@@ -423,11 +400,12 @@ export const ingestBrowserHistory = async (req: Request, res: Response) => {
       if (lastClearedTime > 0 && itemTime.getTime() <= lastClearedTime) continue;
       if (clearedDatesSet.has(getLocalDateString(itemTime))) continue;
 
+      const domainVal = String(item.domain || item.url || '').toLowerCase();
       const docData: any = {
         deviceId,
-        url: item.url,
-        domain: item.domain || item.url,
-        title: item.title,
+        url: encryptText(String(item.url), deviceId),
+        domain: encryptDeterministic(domainVal, deviceId),
+        title: item.title ? encryptText(String(item.title), deviceId) : '',
         browserPackage: item.browserPackage || 'browser',
         browserName: item.browserName || 'Browser',
         blocked: item.blocked || false,
@@ -571,20 +549,21 @@ export const ingestYouTubeHistory = async (req: Request, res: Response) => {
 
     const docs = rawLogs.map((item: any) => {
       const itemTime = item.timestamp ? new Date(item.timestamp) : new Date();
+      const devId = item.deviceId || topDeviceId;
+      const rawTitle = item.title || 'YouTube Video';
       return {
-        deviceId: item.deviceId || topDeviceId,
+        deviceId: devId,
         videoId: item.videoId,
-        videoUrl: item.videoUrl,
-        title: item.title || 'YouTube Video',
-        channelName: item.channelName,
+        videoUrl: item.videoUrl ? encryptText(String(item.videoUrl), devId) : '',
+        title: encryptDeterministic(String(rawTitle), devId),
+        channelName: item.channelName ? encryptText(String(item.channelName), devId) : '',
         duration: item.duration,
-        description: item.description,
+        description: item.description ? encryptText(String(item.description), devId) : '',
         isShorts: item.isShorts || item.isShort || false,
         isVideo: item.isVideo !== false,
         watchedDurationSeconds: item.watchedDurationSeconds || 0,
         endedAt: item.endedAt ? new Date(item.endedAt) : undefined,
         source: item.source || 'YouTube App',
-        thumbnailBase64: item.thumbnailBase64,
         blocked: item.blocked || false,
         blockReason: item.blockReason,
         timestamp: itemTime,
@@ -1096,6 +1075,13 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
         const packageName = String(au.packageName).trim();
         const appName = au.appName ? String(au.appName).trim() : packageName;
         const appIcon = au.appIcon ? String(au.appIcon) : undefined;
+        if (appIcon && packageName) {
+          AppIconCache.updateOne(
+            { packageName },
+            { $set: { packageName, iconData: appIcon } },
+            { upsert: true }
+          ).catch((e) => console.warn('[APP-ICON-CACHE] Error:', e.message));
+        }
         const usageDurationSeconds = Number(au.usageDurationSeconds) || 0;
         const category = au.category ? String(au.category) : undefined;
         const timestamp = au.timestamp ? new Date(au.timestamp) : new Date();
@@ -1106,7 +1092,6 @@ export const ingestGeneralLogs = async (req: Request, res: Response) => {
             update: {
               $set: {
                 appName,
-                ...(appIcon ? { appIcon } : {}),
                 usageDurationSeconds,
                 category,
                 date,
@@ -1197,7 +1182,11 @@ export const ingestCallLogs = async (req: Request, res: Response) => {
 
     // Check device's current blocked phone numbers
     const device = await Device.findOne({ deviceId: targetDeviceId });
-    const blockedNumbersSet = new Set((device?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
+    const rawBlocked = (device?.blockedPhoneNumbers || []).map((n: string) => {
+      const dec = decryptDeterministic(n, targetDeviceId);
+      return (dec || n).replace(/[^0-9]/g, '');
+    });
+    const blockedNumbersSet = new Set(rawBlocked);
     const lastClearedTime = device?.lastCallHistoryClearedAt ? new Date(device.lastCallHistoryClearedAt).getTime() : 0;
     const clearedDatesSet = new Set(device?.clearedCallLogDates || []);
 
@@ -1235,8 +1224,8 @@ export const ingestCallLogs = async (req: Request, res: Response) => {
       const docData: any = {
         deviceId,
         callId,
-        phoneNumber: item.phoneNumber,
-        contactName: item.contactName || '',
+        phoneNumber: encryptDeterministic(item.phoneNumber, deviceId),
+        contactName: encryptText(item.contactName || '', deviceId),
         callType,
         startTime,
         endTime,
@@ -1302,8 +1291,16 @@ export const ingestContacts = async (req: Request, res: Response) => {
     }
 
     const device = await Device.findOne({ deviceId: targetDeviceId });
-    const blockedNumbersSet = new Set((device?.blockedPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
-    const blockedOutgoingNumbersSet = new Set((device?.blockedOutgoingPhoneNumbers || []).map((n: string) => n.replace(/[^0-9]/g, '')));
+    const rawBlocked = (device?.blockedPhoneNumbers || []).map((n: string) => {
+      const dec = decryptDeterministic(n, targetDeviceId);
+      return (dec || n).replace(/[^0-9]/g, '');
+    });
+    const blockedNumbersSet = new Set(rawBlocked);
+    const rawBlockedOutgoing = (device?.blockedOutgoingPhoneNumbers || []).map((n: string) => {
+      const dec = decryptDeterministic(n, targetDeviceId);
+      return (dec || n).replace(/[^0-9]/g, '');
+    });
+    const blockedOutgoingNumbersSet = new Set(rawBlockedOutgoing);
 
     const operations: any[] = [];
     const activeNumbers: string[] = [];
@@ -1312,27 +1309,46 @@ export const ingestContacts = async (req: Request, res: Response) => {
       const deviceId = c.deviceId || topDeviceId;
       if (!deviceId || !c.phoneNumber) continue;
 
+      const encPhone = encryptDeterministic(c.phoneNumber, deviceId);
+      activeNumbers.push(encPhone);
       activeNumbers.push(c.phoneNumber);
+
       const cleanNum = c.phoneNumber.replace(/[^0-9]/g, '');
       const isBlocked = c.isBlocked || (cleanNum.length >= 10 && blockedNumbersSet.has(cleanNum.slice(-10)));
       const isOutgoingBlocked = c.isOutgoingBlocked || (cleanNum.length >= 10 && blockedOutgoingNumbersSet.has(cleanNum.slice(-10)));
 
+      let photoKey: string | undefined = undefined;
+      let photoUriVal = c.photoUri || '';
+      if (photoUriVal && typeof photoUriVal === 'string' && (photoUriVal.startsWith('data:image') || photoUriVal.length > 500)) {
+        try {
+          const cleanB64 = photoUriVal.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
+          const buf = Buffer.from(cleanB64, 'base64');
+          if (buf.length > 0 && buf.length <= 10 * 1024 * 1024) {
+            photoKey = await uploadDirectBuffer(buf, `contact-photos/${deviceId}/${uuidv4()}.jpg`, 'image/jpeg');
+            photoUriVal = ''; // strip base64 from mongo document
+          }
+        } catch (e: any) {
+          console.warn('[CONTACT-PHOTO] Upload error:', e.message);
+        }
+      }
+
       const docData: any = {
         deviceId,
-        name: c.name || 'Unknown Contact',
-        phoneNumber: c.phoneNumber,
-        additionalPhoneNumbers: Array.isArray(c.additionalPhoneNumbers) ? c.additionalPhoneNumbers : [],
-        emails: Array.isArray(c.emails) ? c.emails : (c.email ? [c.email] : []),
+        name: encryptText(c.name || 'Unknown Contact', deviceId),
+        phoneNumber: encPhone,
+        additionalPhoneNumbers: (Array.isArray(c.additionalPhoneNumbers) ? c.additionalPhoneNumbers : []).map((p: string) => encryptDeterministic(p, deviceId)),
+        emails: (Array.isArray(c.emails) ? c.emails : (c.email ? [c.email] : [])).map((e: string) => encryptDeterministic(e, deviceId)),
         accountType: c.accountType || 'Device',
-        photoUri: c.photoUri || '',
-        firstName: c.firstName || '',
-        middleName: c.middleName || '',
-        lastName: c.lastName || '',
-        nickname: c.nickname || '',
+        photoUri: photoUriVal,
+        ...(photoKey ? { photoKey } : {}),
+        firstName: c.firstName ? encryptText(c.firstName, deviceId) : '',
+        middleName: c.middleName ? encryptText(c.middleName, deviceId) : '',
+        lastName: c.lastName ? encryptText(c.lastName, deviceId) : '',
+        nickname: c.nickname ? encryptText(c.nickname, deviceId) : '',
         company: c.company || '',
         jobTitle: c.jobTitle || '',
         department: c.department || '',
-        notes: c.notes || '',
+        notes: c.notes ? encryptText(c.notes, deviceId) : '',
         contactSource: c.contactSource || c.accountType || 'Device',
         phoneLabel: c.phoneLabel || 'Mobile',
         isPrimaryNumber: c.isPrimaryNumber !== undefined ? c.isPrimaryNumber : true,
@@ -1345,7 +1361,7 @@ export const ingestContacts = async (req: Request, res: Response) => {
 
       operations.push({
         updateOne: {
-          filter: { deviceId, phoneNumber: c.phoneNumber },
+          filter: { deviceId, phoneNumber: { $in: [c.phoneNumber, encPhone] } },
           update: { $set: docData },
           upsert: true,
         }
@@ -1595,50 +1611,63 @@ export const ingestNotifications = async (req: Request, res: Response) => {
       return v.filter((x) => x != null).map((x) => String(x).slice(0, 500)).slice(0, max);
     };
 
-    const ops = notifications
-      .filter((n: any) => n && n.packageName && n.timestamp)
-      .slice(0, 500)
-      .map((n: any) => {
-        const timestamp = new Date(n.timestamp);
-        const packageName = String(n.packageName).trim();
-        const appName = n.appName ? String(n.appName).trim() : packageName;
-        const title = n.title ? String(n.title).slice(0, 500) : '';
-        const body = n.body ? String(n.body).slice(0, 2000) : '';
-        const date = (n.date && String(n.date).trim()) || getLocalDateString(n.timestamp);
+    const validNotifications = notifications.filter((n: any) => n && n.packageName && n.timestamp).slice(0, 500);
+    const ops: any[] = [];
+    for (const n of validNotifications) {
+      const timestamp = new Date(n.timestamp);
+      const packageName = String(n.packageName).trim();
+      const appName = n.appName ? String(n.appName).trim() : packageName;
+      const rawTitle = n.title ? String(n.title).slice(0, 500) : '';
+      const rawBody = n.body ? String(n.body).slice(0, 2000) : '';
+      const date = (n.date && String(n.date).trim()) || getLocalDateString(n.timestamp);
 
-        return {
-          updateOne: {
-            filter: { deviceId, packageName, timestamp, title, body },
-            update: {
-              $setOnInsert: {
-                deviceId,
-                packageName,
-                appName,
-                timestamp,
-                date,
-                title,
-                body,
-                isRead: false,
-                subText: n.subText ? String(n.subText).slice(0, 500) : undefined,
-                bigText: n.bigText ? String(n.bigText).slice(0, 4000) : undefined,
-                summaryText: n.summaryText ? String(n.summaryText).slice(0, 500) : undefined,
-                infoText: n.infoText ? String(n.infoText).slice(0, 500) : undefined,
-                category: n.category ? String(n.category).slice(0, 100) : undefined,
-                number: typeof n.number === 'number' && n.number > 0 ? n.number : undefined,
-                messages: asStringArray(n.messages, 50),
-                actionLabels: asStringArray(n.actionLabels, 10),
-              },
-              // A chat app often re-posts the same message a moment later with its photo attached,
-              // so the image is $set (not insert-only) to fill it in on the already-saved row.
-              ...(n.imageBase64 ? { $set: { imageBase64: String(n.imageBase64).slice(0, 5000) } } : {}),
+      const encryptedTitle = encryptText(rawTitle, deviceId);
+      const encryptedBody = encryptText(rawBody, deviceId);
+
+      let imageKey: string | undefined = undefined;
+      if (n.imageBase64 && typeof n.imageBase64 === 'string' && (n.imageBase64.startsWith('data:image') || n.imageBase64.length > 200)) {
+        try {
+          const cleanB64 = n.imageBase64.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
+          const buf = Buffer.from(cleanB64, 'base64');
+          if (buf.length > 0 && buf.length <= 10 * 1024 * 1024) {
+            imageKey = await uploadDirectBuffer(buf, `notifications/${deviceId}/${uuidv4()}.jpg`, 'image/jpeg');
+          }
+        } catch (e: any) {
+          console.warn('[NOTIF-IMAGE] Upload error:', e.message);
+        }
+      }
+
+      ops.push({
+        updateOne: {
+          filter: { deviceId, packageName, timestamp },
+          update: {
+            $setOnInsert: {
+              deviceId,
+              packageName,
+              appName,
+              timestamp,
+              date,
+              title: encryptedTitle,
+              body: encryptedBody,
+              ...(imageKey ? { imageKey } : {}),
+              isRead: false,
+              subText: n.subText ? encryptText(String(n.subText).slice(0, 500), deviceId) : undefined,
+              bigText: n.bigText ? encryptText(String(n.bigText).slice(0, 4000), deviceId) : undefined,
+              summaryText: n.summaryText ? encryptText(String(n.summaryText).slice(0, 500), deviceId) : undefined,
+              infoText: n.infoText ? encryptText(String(n.infoText).slice(0, 500), deviceId) : undefined,
+              category: n.category ? String(n.category).slice(0, 100) : undefined,
+              number: typeof n.number === 'number' && n.number > 0 ? n.number : undefined,
+              messages: asStringArray(n.messages, 50)?.map((m: string) => encryptText(m, deviceId)),
+              actionLabels: asStringArray(n.actionLabels, 10),
             },
-            upsert: true,
           },
-        };
+          upsert: true,
+        },
       });
+    }
 
     if (ops.length > 0) {
-      const docs = ops.map((op) => op.updateOne.update.$setOnInsert || op.updateOne.update.$set || op.updateOne.update);
+      const docs = ops.map((op: any) => op.updateOne.update?.$setOnInsert || op.updateOne.update?.$set || op.updateOne.update);
       const enqueued = await enqueueIngestJob('notifications', { docs });
       if (enqueued) {
         return res.status(202).json({ success: true, message: `Queued ${docs.length} notifications.`, queued: true });
@@ -1744,7 +1773,7 @@ export const updateDeviceSyncStatus = async (req: Request, res: Response) => {
  */
 export const ingestInstalledApps = async (req: Request, res: Response) => {
   try {
-    const { deviceId, installedApps } = req.body;
+    const { deviceId, installedApps, isFinalChunk, currentPackages } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     if (await checkQuotaBlocked(deviceId)) {
@@ -1758,30 +1787,163 @@ export const ingestInstalledApps = async (req: Request, res: Response) => {
     if (Array.isArray(installedApps)) {
       const cleanApps = installedApps
         .filter((a: any) => a && a.packageName)
-        .map((a: any) => ({
-          packageName: String(a.packageName).trim(),
-          appName: a.appName ? String(a.appName).trim() : String(a.packageName).trim(),
-          appIcon: a.appIcon ? String(a.appIcon) : undefined,
-          versionName: a.versionName ? String(a.versionName) : undefined,
-          versionCode: a.versionCode ? Number(a.versionCode) : undefined,
-          firstInstallTime: a.firstInstallTime ? Number(a.firstInstallTime) : undefined,
-          lastUpdateTime: a.lastUpdateTime ? Number(a.lastUpdateTime) : undefined,
-          permissions: Array.isArray(a.permissions) ? a.permissions.map(String) : [],
-          grantedPermissions: Array.isArray(a.grantedPermissions) ? a.grantedPermissions.map(String) : [],
-          isSystemApp: typeof a.isSystemApp === 'boolean' ? a.isSystemApp : undefined,
-          category: a.category ? String(a.category) : undefined,
-          targetSdkVersion: a.targetSdkVersion ? Number(a.targetSdkVersion) : undefined,
-          minSdkVersion: a.minSdkVersion ? Number(a.minSdkVersion) : undefined,
-          installerPackage: a.installerPackage ? String(a.installerPackage) : undefined,
-          apkSizeBytes: a.apkSizeBytes ? Number(a.apkSizeBytes) : undefined,
-          apkDownloadSizeBytes: a.apkDownloadSizeBytes ? Number(a.apkDownloadSizeBytes) : undefined,
-          isEnabled: typeof a.isEnabled === 'boolean' ? a.isEnabled : undefined,
-        }));
+        .map((a: any) => {
+          const pkg = String(a.packageName).trim();
+          if (a.appIcon && pkg) {
+            AppIconCache.updateOne(
+              { packageName: pkg },
+              { $set: { packageName: pkg, iconData: String(a.appIcon) } },
+              { upsert: true }
+            ).catch((e) => console.warn('[APP-ICON-CACHE] Error:', e.message));
+          }
+          return {
+            packageName: pkg,
+            appName: a.appName ? String(a.appName).trim() : pkg,
+            versionName: a.versionName ? String(a.versionName) : undefined,
+            versionCode: a.versionCode ? Number(a.versionCode) : undefined,
+            firstInstallTime: a.firstInstallTime ? Number(a.firstInstallTime) : undefined,
+            lastUpdateTime: a.lastUpdateTime ? Number(a.lastUpdateTime) : undefined,
+            permissions: Array.isArray(a.permissions) ? a.permissions.map(String) : [],
+            grantedPermissions: Array.isArray(a.grantedPermissions) ? a.grantedPermissions.map(String) : [],
+            isSystemApp: typeof a.isSystemApp === 'boolean' ? a.isSystemApp : undefined,
+            category: a.category ? String(a.category) : undefined,
+            targetSdkVersion: a.targetSdkVersion ? Number(a.targetSdkVersion) : undefined,
+            minSdkVersion: a.minSdkVersion ? Number(a.minSdkVersion) : undefined,
+            installerPackage: a.installerPackage ? String(a.installerPackage) : undefined,
+            apkSizeBytes: a.apkSizeBytes ? Number(a.apkSizeBytes) : undefined,
+            apkDownloadSizeBytes: a.apkDownloadSizeBytes ? Number(a.apkDownloadSizeBytes) : undefined,
+            isEnabled: typeof a.isEnabled === 'boolean' ? a.isEnabled : undefined,
+            isInstalled: true,
+            uninstalledAt: null,
+          };
+        });
 
-      await Device.findOneAndUpdate(
+      // Upsert / merge by packageName so chunked uploads accumulate correctly
+      const existingDevice = await Device.findOne(
         { deviceId },
-        { $set: { installedApps: cleanApps } }
+        'installedApps deviceName model name uninstalledAppNotifiedList parentUserId'
       );
+      const appMap = new Map<string, any>();
+      if (existingDevice && Array.isArray(existingDevice.installedApps)) {
+        for (const app of existingDevice.installedApps) {
+          if (app && app.packageName) {
+            appMap.set(app.packageName, (app as any).toObject ? (app as any).toObject() : app);
+          }
+        }
+      }
+
+      for (const newApp of cleanApps) {
+        const prev = appMap.get(newApp.packageName) || {};
+        const definedNewApp: any = { isInstalled: true, uninstalledAt: null };
+        for (const [key, val] of Object.entries(newApp)) {
+          if (val !== undefined) {
+            definedNewApp[key] = val;
+          }
+        }
+        appMap.set(newApp.packageName, { ...prev, ...definedNewApp });
+      }
+
+      // Handle install-state transitions on the final chunk
+      const newlyUninstalledApps: any[] = [];
+      const nowMs = Date.now();
+      if (isFinalChunk === true && Array.isArray(currentPackages) && currentPackages.length > 0) {
+        const currentPkgSet = new Set(currentPackages.map((p: any) => String(p).trim()));
+
+        for (const [pkg, appData] of appMap.entries()) {
+          if (!currentPkgSet.has(pkg)) {
+            // App was present previously, but absent from currently installed packages -> uninstalled
+            if (appData.isInstalled !== false) {
+              appData.isInstalled = false;
+              // Set uninstalledAt only on the transition — do not overwrite an existing uninstalledAt
+              if (!appData.uninstalledAt) {
+                appData.uninstalledAt = nowMs;
+              }
+              newlyUninstalledApps.push(appData);
+            }
+          } else {
+            // App is currently installed on child device
+            appData.isInstalled = true;
+            appData.uninstalledAt = null;
+          }
+        }
+      }
+
+      await Device.updateOne(
+        { deviceId },
+        { $set: { installedApps: Array.from(appMap.values()) } },
+        { upsert: !existingDevice }
+      );
+
+      // Part 2: Dispatch single-time uninstall notifications for newly uninstalled apps
+      if (newlyUninstalledApps.length > 0) {
+        try {
+          const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+          if (parentUserId) {
+            const parentUser = await User.findById(parentUserId);
+            const lang = parentUser?.languageCode || 'en';
+            const parentTz = (parentUser as any)?.timezone || (parentUser as any)?.timeZone || 'Asia/Kolkata';
+            const devName = existingDevice?.deviceName || (existingDevice as any)?.name || existingDevice?.model || 'Child Device';
+            const parentTopic = `parent_${parentUserId}`;
+
+            const notifiedList: string[] = Array.isArray((existingDevice as any)?.uninstalledAppNotifiedList)
+              ? [...(existingDevice as any).uninstalledAppNotifiedList]
+              : [];
+            const newlyNotifiedKeys: string[] = [];
+
+            for (const uninstalledApp of newlyUninstalledApps) {
+              const pkg = uninstalledApp.packageName;
+              const uTime = uninstalledApp.uninstalledAt || nowMs;
+              const dedupKey = `${deviceId}_${pkg}_${uTime}`;
+              if (notifiedList.includes(dedupKey)) {
+                continue;
+              }
+
+              // Check if app had an AppBlockRule(isBlocked: true) or AppLimit(isEnabled: true)
+              const [blockRule, appLimit] = await Promise.all([
+                AppBlockRule.findOne({ deviceId, packageName: pkg, isBlocked: true }).lean(),
+                AppLimit.findOne({ deviceId, packageName: pkg, isEnabled: true }).lean(),
+              ]);
+              const isRestricted = Boolean(blockRule || appLimit);
+
+              const dateTimeStr = formatRelativeDateTimeForNotification(new Date(uTime), lang, parentTz);
+              const templateKey = isRestricted ? 'DEVICE_APP_UNINSTALLED_RESTRICTED' : 'DEVICE_APP_UNINSTALLED';
+              const appName = uninstalledApp.appName || pkg;
+
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                templateKey,
+                {
+                  appName,
+                  deviceName: devName,
+                  childDeviceName: devName,
+                  dateTime: dateTimeStr,
+                },
+                lang,
+                {
+                  type: 'APP_UNINSTALLED',
+                  deviceId: String(deviceId),
+                  packageName: pkg,
+                  appName,
+                  uninstalledAt: String(uTime),
+                  isRestricted: isRestricted ? 'true' : 'false',
+                  timezone: parentTz,
+                }
+              );
+
+              newlyNotifiedKeys.push(dedupKey);
+            }
+
+            if (newlyNotifiedKeys.length > 0) {
+              await Device.updateOne(
+                { deviceId },
+                { $addToSet: { uninstalledAppNotifiedList: { $each: newlyNotifiedKeys } } }
+              );
+            }
+          }
+        } catch (notifErr: any) {
+          console.warn('[APP-UNINSTALL-NOTIF-WARN]', notifErr?.message);
+        }
+      }
     }
 
     return res.json({ success: true, message: 'Installed apps updated successfully.' });
@@ -1825,16 +1987,23 @@ export const ingestLocationHistory = async (req: Request, res: Response) => {
       const dateStr = (item.date && String(item.date).trim()) ? String(item.date).trim() : getLocalDateString(ts);
       const speed = typeof item.speed === 'number' ? Math.max(0, item.speed) : 0;
 
+      const rawLocName = item.locationName || item.address || '';
+      const rawLocAddr = item.locationAddress || item.locationName || item.address || '';
+      const encLat = encryptText(String(item.latitude), deviceId);
+      const encLng = encryptText(String(item.longitude), deviceId);
+      const encLocName = rawLocName ? encryptText(String(rawLocName), deviceId) : '';
+      const encLocAddr = rawLocAddr ? encryptText(String(rawLocAddr), deviceId) : '';
+
       const doc = {
         deviceId,
-        latitude: item.latitude,
-        longitude: item.longitude,
+        latitude: encLat,
+        longitude: encLng,
         altitude: item.altitude || 0,
         speed,
         heading: item.heading || item.bearing || 0,
         accuracy: item.accuracy || 0,
-        locationName: item.locationName || item.address || '',
-        locationAddress: item.locationAddress || item.locationName || item.address || '',
+        locationName: encLocName,
+        locationAddress: encLocAddr,
         activityType: item.activityType || (speed > 5 ? 'IN_VEHICLE' : (speed > 1.5 ? 'WALKING' : 'STILL')),
         isMoving: typeof item.isMoving === 'boolean' ? item.isMoving : speed > 1.5,
         isLive: !!item.isLive,
@@ -1846,13 +2015,13 @@ export const ingestLocationHistory = async (req: Request, res: Response) => {
 
       if (!latestLoc || ts.getTime() > latestLoc.updatedAt.getTime()) {
         latestLoc = {
-          latitude: item.latitude,
-          longitude: item.longitude,
+          latitude: encLat,
+          longitude: encLng,
           altitude: item.altitude || 0,
           speed,
           heading: item.heading || item.bearing || 0,
           accuracy: item.accuracy || 0,
-          address: doc.locationAddress,
+          address: encLocAddr,
           activityType: doc.activityType,
           isMoving: doc.isMoving,
           batteryLevel: item.batteryLevel,
@@ -1951,16 +2120,20 @@ export const ingestLiveLocation = async (req: Request, res: Response) => {
     const addressStr = locationAddress || locationName || '';
     const resolvedActivity = activityType || (speedVal > 5 ? 'IN_VEHICLE' : (speedVal > 1.5 ? 'WALKING' : 'STILL'));
 
+    const encLat = encryptText(String(latitude), deviceId);
+    const encLng = encryptText(String(longitude), deviceId);
+    const encAddress = addressStr ? encryptText(String(addressStr), deviceId) : '';
+
     const doc = new LocationLog({
       deviceId,
-      latitude,
-      longitude,
+      latitude: encLat,
+      longitude: encLng,
       altitude: altitude || 0,
       speed: speedVal,
       heading: heading || 0,
       accuracy: accuracy || 0,
-      locationName: addressStr,
-      locationAddress: addressStr,
+      locationName: encAddress,
+      locationAddress: encAddress,
       activityType: resolvedActivity,
       isMoving: typeof isMoving === 'boolean' ? isMoving : speedVal > 1.5,
       isLive: true,
@@ -1971,13 +2144,13 @@ export const ingestLiveLocation = async (req: Request, res: Response) => {
     await doc.save();
 
     const lastLocObj = {
-      latitude,
-      longitude,
+      latitude: encLat,
+      longitude: encLng,
       altitude: altitude || 0,
       speed: speedVal,
       heading: heading || 0,
       accuracy: accuracy || 0,
-      address: addressStr,
+      address: encAddress,
       activityType: resolvedActivity,
       isMoving: typeof isMoving === 'boolean' ? isMoving : speedVal > 1.5,
       batteryLevel: batteryLevel || 100,
@@ -1994,7 +2167,11 @@ export const ingestLiveLocation = async (req: Request, res: Response) => {
       }
     );
 
-    return res.json({ success: true, location: doc, lastLocation: lastLocObj });
+    return res.json({
+      success: true,
+      location: { ...doc.toObject(), latitude, longitude, locationName: addressStr, locationAddress: addressStr },
+      lastLocation: { ...lastLocObj, latitude, longitude, address: addressStr },
+    });
   } catch (error: any) {
     console.error('[INGEST-LIVE-LOCATION] Error:', error);
     return res.status(500).json({ success: false, message: error.message });
@@ -2117,6 +2294,20 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
           walkRadiusMeters: Number(s.walkRadiusMeters) || 0,
         }));
 
+      const encryptedRoute = cleanRoute.map((p: any) => ({
+        ...p,
+        latitude: encryptText(String(p.latitude), deviceId),
+        longitude: encryptText(String(p.longitude), deviceId),
+        address: p.address ? encryptText(String(p.address), deviceId) : '',
+      }));
+
+      const encryptedStops = cleanStops.map((s: any) => ({
+        ...s,
+        latitude: encryptText(String(s.latitude), deviceId),
+        longitude: encryptText(String(s.longitude), deviceId),
+        address: s.address ? encryptText(String(s.address), deviceId) : '',
+      }));
+
       const docData: any = {
         deviceId,
         tripId: item.tripId,
@@ -2129,14 +2320,14 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
         maxSpeedKmH: maxSpd,
         startTime,
         endTime,
-        startAddress: item.startAddress || '',
-        endAddress: item.endAddress || '',
-        startLat: Number(item.startLat) || 0,
-        startLng: Number(item.startLng) || 0,
-        endLat: Number(item.endLat) || 0,
-        endLng: Number(item.endLng) || 0,
-        routePoints: cleanRoute,
-        stops: cleanStops,
+        startAddress: item.startAddress ? encryptText(String(item.startAddress), deviceId) : '',
+        endAddress: item.endAddress ? encryptText(String(item.endAddress), deviceId) : '',
+        startLat: encryptText(String(startLatNum), deviceId),
+        startLng: encryptText(String(startLngNum), deviceId),
+        endLat: encryptText(String(endLatNum), deviceId),
+        endLng: encryptText(String(endLngNum), deviceId),
+        routePoints: encryptedRoute,
+        stops: encryptedStops,
         date: dateStr,
       };
 
@@ -2207,14 +2398,36 @@ export const ingestKeyboardLogs = async (req: Request, res: Response) => {
         screenshotBytes = await headObjectSizeR2(screenshotUrl);
       }
 
+      if (item.appIcon && item.packageName) {
+        AppIconCache.updateOne(
+          { packageName: String(item.packageName).trim() },
+          { $set: { packageName: String(item.packageName).trim(), iconData: String(item.appIcon) } },
+          { upsert: true }
+        ).catch((e) => console.warn('[APP-ICON-CACHE] Error:', e.message));
+      }
+
+      let screenshotKey = '';
+      if (screenshotUrl) {
+        if (screenshotUrl.includes('/uploads/')) {
+          screenshotKey = screenshotUrl.substring(screenshotUrl.indexOf('/uploads/') + '/uploads/'.length);
+        } else if (screenshotUrl.startsWith('http://') || screenshotUrl.startsWith('https://')) {
+          try {
+            const parsed = new URL(screenshotUrl);
+            screenshotKey = parsed.pathname.startsWith('/') ? parsed.pathname.substring(1) : parsed.pathname;
+          } catch (_e) { screenshotKey = screenshotUrl; }
+        } else {
+          screenshotKey = screenshotUrl;
+        }
+      }
+
       docsToInsert.push({
         deviceId,
-        matchedKeyword: String(item.matchedKeyword).trim(),
+        matchedKeyword: encryptDeterministic(String(item.matchedKeyword).trim(), deviceId),
         packageName: String(item.packageName || 'unknown').trim(),
         appName: String(item.appName || item.packageName || 'App').trim(),
-        appIcon: item.appIcon || '',
-        capturedText: item.capturedText || '',
-        screenshotBase64: screenshotUrl ? '' : (item.screenshotBase64 ? String(item.screenshotBase64).slice(0, 5000) : ''),
+        capturedText: encryptText(item.capturedText || '', deviceId),
+        screenshotBase64: '',
+        screenshotKey: screenshotKey || undefined,
         screenshotUrl: screenshotUrl || '',
         fileSizeBytes: screenshotUrl ? screenshotBytes : 0,
         timestamp: item.timestamp ? new Date(item.timestamp) : new Date(),
@@ -2417,11 +2630,11 @@ export const ingestChatMessagesBatch = async (req: Request, res: Response) => {
         deviceId,
         packageName,
         contactId: cleanContactId,
-        contactName,
-        contactNumber,
+        contactName: encryptText(contactName, deviceId),
+        contactNumber: contactNumber ? encryptDeterministic(contactNumber, deviceId) : '',
         direction,
         type,
-        text,
+        text: encryptText(text, deviceId),
         callType,
         callDurationSec,
         orderIndex,

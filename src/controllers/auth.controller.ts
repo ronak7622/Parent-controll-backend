@@ -12,6 +12,7 @@ import { cacheService } from '../services/cache.service';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { TrialLedger } from '../models/TrialLedger';
 import { recordTrialOrPlanUsage } from './subscription.controller';
+import { encryptText, decryptText } from '../utils/crypto.utils';
 
 /**
  * IP-based Rate Limiter for Authentication Gateway (Protection against brute force & flooding)
@@ -173,7 +174,8 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         user.timeZone = clientTz.trim();
       }
       if (req.body.fcmToken && typeof req.body.fcmToken === 'string') {
-        user.fcmToken = req.body.fcmToken.trim();
+        const cleanFcm = req.body.fcmToken.trim();
+        user.fcmToken = encryptText(cleanFcm, String(user._id));
       }
       await user.save();
     } else {
@@ -190,7 +192,10 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         'Asia/Kolkata'
       ).trim();
 
+      const rawFcm = req.body.fcmToken && typeof req.body.fcmToken === 'string' ? req.body.fcmToken.trim() : undefined;
+      const newUserId = new mongoose.Types.ObjectId();
       user = new User({
+        _id: newUserId,
         firebaseUid,
         email,
         normalizedEmail: normEmail,
@@ -202,7 +207,7 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
         languageCode: userLanguageCode,
         timezone: clientTz,
         timeZone: clientTz,
-        fcmToken: req.body.fcmToken && typeof req.body.fcmToken === 'string' ? req.body.fcmToken.trim() : undefined,
+        fcmToken: rawFcm ? encryptText(rawFcm, String(newUserId)) : undefined,
         currentSessionId: newSessionId,
         currentDeviceName: clientDeviceName || (clientPlatform === 'flutter_app' ? 'Mobile App' : 'Web Browser'),
         lastActivePlatform: clientPlatform || 'web',
@@ -320,7 +325,8 @@ export const updateParentFcmToken = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, message: 'fcmToken is required.' });
     }
     const cleanToken = fcmToken.trim();
-    await User.findByIdAndUpdate(parentUserId, { fcmToken: cleanToken });
+    const encToken = encryptText(cleanToken, String(parentUserId));
+    await User.findByIdAndUpdate(parentUserId, { fcmToken: encToken });
     return res.json({ success: true, message: 'FCM token updated successfully' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message || 'Server error' });

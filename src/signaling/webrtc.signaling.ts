@@ -9,6 +9,7 @@ import { Device, enrichDeviceWithOnlineStatus } from '../models/Device';
 import { AppLimit } from '../models/AppLimit';
 import { AppBlockRule } from '../models/AppBlockRule';
 import { LiveUsageService } from '../services/LiveUsageService';
+import { decryptDeterministic } from '../utils/crypto.utils';
 
 let signalingIo: any = null;
 
@@ -226,12 +227,12 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
           if (dev) {
             if (dev.blockedPhoneNumbers && dev.blockedPhoneNumbers.length > 0) {
               socket.emit('update-blocked-numbers', {
-                blockedPhoneNumbers: dev.blockedPhoneNumbers,
+                blockedPhoneNumbers: dev.blockedPhoneNumbers.map((p: string) => decryptDeterministic(p, targetDeviceId) || p),
               });
             }
             if (dev.blockedOutgoingPhoneNumbers && dev.blockedOutgoingPhoneNumbers.length > 0) {
               socket.emit('update-blocked-outgoing-numbers', {
-                blockedOutgoingPhoneNumbers: dev.blockedOutgoingPhoneNumbers,
+                blockedOutgoingPhoneNumbers: dev.blockedOutgoingPhoneNumbers.map((p: string) => decryptDeterministic(p, targetDeviceId) || p),
               });
             }
 
@@ -351,7 +352,7 @@ export const setupWebRtcSignaling = (httpServer: HttpServer): SocketIOServer => 
               type: data?.type || 'camera',
               sessionId: data?.sessionId || '',
               deviceId: dev.deviceId,
-            }).catch(() => {});
+            }, dev.deviceId).catch(() => {});
           }
         } catch (_) {}
 

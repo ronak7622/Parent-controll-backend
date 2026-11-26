@@ -15,20 +15,20 @@ export interface IDrivingTrip extends Document {
   endTime: Date;
   startAddress: string;
   endAddress: string;
-  startLat: number;
-  startLng: number;
-  endLat: number;
-  endLng: number;
+  startLat: string | number;
+  startLng: string | number;
+  endLat: string | number;
+  endLng: string | number;
   routePoints: Array<{
-    latitude: number;
-    longitude: number;
+    latitude: string | number;
+    longitude: string | number;
     speed: number;
     timestamp: Date;
     address?: string;
   }>;
   stops?: Array<{
-    latitude: number;
-    longitude: number;
+    latitude: string | number;
+    longitude: string | number;
     startTime: Date;
     endTime: Date;
     durationSeconds: number;
@@ -60,14 +60,14 @@ const DrivingTripSchema: Schema = new Schema(
     endTime: { type: Date, required: true },
     startAddress: { type: String, default: '' },
     endAddress: { type: String, default: '' },
-    startLat: { type: Number, required: true },
-    startLng: { type: Number, required: true },
-    endLat: { type: Number, required: true },
-    endLng: { type: Number, required: true },
+    startLat: { type: Schema.Types.Mixed, required: true },
+    startLng: { type: Schema.Types.Mixed, required: true },
+    endLat: { type: Schema.Types.Mixed, required: true },
+    endLng: { type: Schema.Types.Mixed, required: true },
     routePoints: [
       {
-        latitude: { type: Number, required: true },
-        longitude: { type: Number, required: true },
+        latitude: { type: Schema.Types.Mixed, required: true },
+        longitude: { type: Schema.Types.Mixed, required: true },
         speed: { type: Number, default: 0 },
         timestamp: { type: Date, default: Date.now },
         address: { type: String, default: '' },
@@ -75,8 +75,8 @@ const DrivingTripSchema: Schema = new Schema(
     ],
     stops: [
       {
-        latitude: { type: Number, required: true },
-        longitude: { type: Number, required: true },
+        latitude: { type: Schema.Types.Mixed, required: true },
+        longitude: { type: Schema.Types.Mixed, required: true },
         startTime: { type: Date, required: true },
         endTime: { type: Date, required: true },
         durationSeconds: { type: Number, default: 0 },

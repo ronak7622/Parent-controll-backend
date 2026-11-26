@@ -13,6 +13,7 @@ import { AppSession } from '../models/AppSession';
 import { KeyboardLog } from '../models/KeyboardLog';
 import { WifiLog } from '../models/wifi-log.model';
 import { InternetLog } from '../models/internet-log.model';
+import { encryptText, encryptDeterministic } from '../utils/crypto.utils';
 
 let ingestQueue: Queue | null = null;
 let ingestWorker: Worker | null = null;
@@ -144,24 +145,40 @@ const processJobPayload = async (jobType: string, payload: any) => {
         break;
       }
       case 'wifi_logs': {
-        const ops = docs.map((d: any) => ({
-          updateOne: {
-            filter: { deviceId: d.deviceId, timestamp: d.timestamp, ssid: d.ssid },
-            update: { $set: d },
-            upsert: true,
-          },
-        }));
+        const ops = docs.map((d: any) => {
+          const enc = { ...d };
+          if (enc.ssid) enc.ssid = encryptDeterministic(enc.ssid, enc.deviceId);
+          if (enc.bssid) enc.bssid = encryptDeterministic(enc.bssid, enc.deviceId);
+          if (enc.ipAddress) enc.ipAddress = encryptText(enc.ipAddress, enc.deviceId);
+          if (enc.locationName) enc.locationName = encryptText(enc.locationName, enc.deviceId);
+          if (enc.locationAddress) enc.locationAddress = encryptText(enc.locationAddress, enc.deviceId);
+          if (enc.latitude != null) enc.latitude = encryptText(String(enc.latitude), enc.deviceId);
+          if (enc.longitude != null) enc.longitude = encryptText(String(enc.longitude), enc.deviceId);
+          return {
+            updateOne: {
+              filter: { deviceId: enc.deviceId, timestamp: enc.timestamp, ssid: enc.ssid },
+              update: { $set: enc },
+              upsert: true,
+            },
+          };
+        });
         await WifiLog.bulkWrite(ops, { ordered: false });
         break;
       }
       case 'internet_logs': {
-        const ops = docs.map((d: any) => ({
-          updateOne: {
-            filter: { deviceId: d.deviceId, timestamp: d.timestamp, networkType: d.networkType },
-            update: { $set: d },
-            upsert: true,
-          },
-        }));
+        const ops = docs.map((d: any) => {
+          const enc = { ...d };
+          if (enc.locationAddress) enc.locationAddress = encryptText(enc.locationAddress, enc.deviceId);
+          if (enc.latitude != null) enc.latitude = encryptText(String(enc.latitude), enc.deviceId);
+          if (enc.longitude != null) enc.longitude = encryptText(String(enc.longitude), enc.deviceId);
+          return {
+            updateOne: {
+              filter: { deviceId: enc.deviceId, timestamp: enc.timestamp, sessionId: enc.sessionId || enc.timestamp },
+              update: { $set: enc },
+              upsert: true,
+            },
+          };
+        });
         await InternetLog.bulkWrite(ops, { ordered: false });
         break;
       }

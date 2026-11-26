@@ -50,3 +50,45 @@ export const apiRateLimiter = rateLimit({
     message: 'Too many requests from this device or account, please try again after 15 minutes.',
   },
 });
+
+
+/**
+ * Stricter limiter for media-serving endpoints that mint short-lived presigned
+ * download URLs (recordings, call-audio, keyboard screenshots, captured media).
+ * Caps how many presigned URLs one parent/device can harvest, so a single
+ * compromised token cannot mass-download a child's media. Redis-backed for the fleet.
+ */
+export const mediaRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.NODE_ENV === 'development' ? 500000 : 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    if (process.env.NODE_ENV === 'development') return true;
+    const ip = req.ip || req.headers['x-forwarded-for'] || '';
+    if (typeof ip === 'string' && (ip.includes('127.0.0.1') || ip.includes('::1') || ip.startsWith('192.168.') || ip.startsWith('10.'))) {
+      return true;
+    }
+    return false;
+  },
+  validate: { keyGeneratorIpFallback: false, xForwardedForHeader: false },
+  passOnStoreError: true,
+  store: getRedisClient()
+    ? new RedisStore({
+        // @ts-ignore
+        sendCommand: (...args: string[]) => getRedisClient()!.call(...args),
+        prefix: 'rlm:',
+      })
+    : undefined,
+  keyGenerator: (req: any) => {
+    if (req.user?.id || req.user?._id) return `user_${req.user.id || req.user._id}`;
+    const deviceId =
+      req.headers['x-device-id'] || req.params?.deviceId || req.query?.deviceId || req.body?.deviceId;
+    if (deviceId) return `device_${deviceId}`;
+    return req.ip || req.headers['x-forwarded-for'] || 'unknown_ip';
+  },
+  message: {
+    success: false,
+    message: 'Too many media requests, please slow down and try again shortly.',
+  },
+});

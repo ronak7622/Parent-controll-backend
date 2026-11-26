@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { decryptDeterministic } from '../utils/crypto.utils';
 
 export interface IDevice extends Document {
   deviceId: string;
@@ -111,8 +112,8 @@ export interface IDevice extends Document {
   lastKeyboardSyncTime?: Date;
   lastChatSyncTime?: Date;
   lastLocation?: {
-    latitude: number;
-    longitude: number;
+    latitude: number | string;
+    longitude: number | string;
     altitude?: number;
     speed?: number;
     heading?: number;
@@ -143,7 +144,10 @@ export interface IDevice extends Document {
     apkSizeBytes?: number; // actual on-disk installed size (can be larger than Play Store's download size)
     apkDownloadSizeBytes?: number; // approx. compressed transfer size (closer to what Play Store shows)
     isEnabled?: boolean;
+    isInstalled?: boolean;
+    uninstalledAt?: number | null;
   }[];
+  uninstalledAppNotifiedList?: string[];
 
   createdAt: Date;
   updatedAt: Date;
@@ -257,8 +261,8 @@ const DeviceSchema = new Schema<IDevice>(
     lastKeyboardSyncTime: { type: Date },
     lastChatSyncTime: { type: Date },
     lastLocation: {
-      latitude: { type: Number },
-      longitude: { type: Number },
+      latitude: { type: Schema.Types.Mixed },
+      longitude: { type: Schema.Types.Mixed },
       altitude: { type: Number },
       speed: { type: Number },
       heading: { type: Number },
@@ -289,8 +293,11 @@ const DeviceSchema = new Schema<IDevice>(
         apkSizeBytes: { type: Number },
         apkDownloadSizeBytes: { type: Number },
         isEnabled: { type: Boolean },
+        isInstalled: { type: Boolean, default: true },
+        uninstalledAt: { type: Number, default: null },
       },
     ],
+    uninstalledAppNotifiedList: [{ type: String }],
   },
   { timestamps: true }
 );
@@ -367,10 +374,11 @@ export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
     }
   }
 
+  const rawPairing = dev.pairingCode ? (decryptDeterministic(dev.pairingCode, 'system_pairing') || dev.pairingCode) : dev.pairingCode;
   // Auto-fallback for secretCode: if missing or blank, fallback to pairingCode
   const secCode = (dev.secretCode && String(dev.secretCode).trim().length > 0)
     ? String(dev.secretCode).trim()
-    : ((dev.pairingCode && String(dev.pairingCode).trim().length > 0) ? String(dev.pairingCode).trim() : '');
+    : ((rawPairing && String(rawPairing).trim().length > 0) ? String(rawPairing).trim() : '');
 
   if ((!dev.secretCode || String(dev.secretCode).trim().length === 0) && secCode.length > 0 && dev._id) {
     Device.updateOne({ _id: dev._id }, { $set: { secretCode: secCode } }).catch(() => {});
@@ -378,6 +386,13 @@ export function enrichDeviceWithOnlineStatus<T extends Record<string, any>>(
 
   return {
     ...dev,
+    pairingCode: rawPairing,
+    browserBlacklist: Array.isArray(dev.browserBlacklist) ? dev.browserBlacklist.map((b: string) => decryptDeterministic(b, dev.deviceId) || b) : dev.browserBlacklist,
+    browserWhitelist: Array.isArray(dev.browserWhitelist) ? dev.browserWhitelist.map((w: string) => decryptDeterministic(w, dev.deviceId) || w) : dev.browserWhitelist,
+    youtubeBlockedKeywords: Array.isArray(dev.youtubeBlockedKeywords) ? dev.youtubeBlockedKeywords.map((k: string) => decryptDeterministic(k, dev.deviceId) || k) : dev.youtubeBlockedKeywords,
+    blockedPhoneNumbers: Array.isArray(dev.blockedPhoneNumbers) ? dev.blockedPhoneNumbers.map((p: string) => decryptDeterministic(p, dev.deviceId) || p) : dev.blockedPhoneNumbers,
+    blockedOutgoingPhoneNumbers: Array.isArray(dev.blockedOutgoingPhoneNumbers) ? dev.blockedOutgoingPhoneNumbers.map((p: string) => decryptDeterministic(p, dev.deviceId) || p) : dev.blockedOutgoingPhoneNumbers,
+    monitoredKeywords: Array.isArray(dev.monitoredKeywords) ? dev.monitoredKeywords.map((m: string) => decryptDeterministic(m, dev.deviceId) || m) : dev.monitoredKeywords,
     secretCode: secCode,
     isOnline: (isRemoved || dev.isOnline === false) ? false : isOnline,
     appRemoved: isRemoved,

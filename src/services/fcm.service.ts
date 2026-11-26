@@ -1,9 +1,11 @@
 
-const handleUnregisteredFcmToken = async (fcmToken: string) => {
+const handleUnregisteredFcmToken = async (fcmToken: string, deviceId?: string) => {
   try {
     const { Device } = require('../models/Device');
     const { confirmDeviceAppRemoved } = require('../controllers/device.controller');
-    const matchedDevice = await Device.findOne({ fcmToken });
+    const matchedDevice = deviceId
+      ? await Device.findOne({ deviceId })
+      : await Device.findOne({ $or: [{ fcmToken }, { fcmToken: { $regex: fcmToken.slice(-20) } }] });
     if (matchedDevice && matchedDevice.appRemoved !== true) {
       console.log(`[FCM-UNREGISTERED] Token for device ${matchedDevice.deviceId} is unregistered on FCM. Confirming app removal.`);
       await confirmDeviceAppRemoved(matchedDevice.deviceId, 'FCM_UNREGISTERED');
@@ -17,6 +19,7 @@ import admin from 'firebase-admin';
 import { config } from '../config/env';
 import { getLocalizedNotification } from '../config/notificationTemplates';
 import { User } from '../models/User';
+import { decryptText } from '../utils/crypto.utils';
 
 let isFirebaseInitialized = false;
 
@@ -40,16 +43,21 @@ try {
 export const sendFcmDataCommand = async (
   fcmToken: string,
   commandType: string,
-  payload: Record<string, string> = {}
+  payload: Record<string, string> = {},
+  deviceId?: string
 ): Promise<boolean> => {
-  if (!isFirebaseInitialized || !fcmToken) {
-    console.log(`[FCM-MOCK] Command '${commandType}' triggered for token: ${fcmToken?.substring(0, 10)}...`);
+  let effectiveToken = fcmToken;
+  if (effectiveToken && effectiveToken.startsWith('enc_text:')) {
+    effectiveToken = decryptText(effectiveToken, deviceId) || effectiveToken;
+  }
+  if (!isFirebaseInitialized || !effectiveToken) {
+    console.log(`[FCM-MOCK] Command '${commandType}' triggered for token: ${effectiveToken?.substring(0, 10)}...`);
     return false;
   }
 
   try {
     const message: admin.messaging.Message = {
-      token: fcmToken,
+      token: effectiveToken,
       data: {
         command: commandType,
         timestamp: Date.now().toString(),

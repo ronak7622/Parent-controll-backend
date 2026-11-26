@@ -15,8 +15,8 @@ export interface IInternetLog extends Document {
   simCount?: number;
   locationAddress?: string;
   statusReason?: string;
-  latitude?: number;
-  longitude?: number;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
   timestamp: Date;
 }
 
@@ -39,8 +39,8 @@ const InternetLogSchema: Schema = new Schema(
     simCount: { type: Number, default: 1 },
     locationAddress: { type: String, default: '' },
     statusReason: { type: String, default: '' },
-    latitude: { type: Number, default: null },
-    longitude: { type: Number, default: null },
+    latitude: { type: Schema.Types.Mixed, default: null },
+    longitude: { type: Schema.Types.Mixed, default: null },
     timestamp: { type: Date, default: Date.now, index: true },
   },
   { timestamps: true }

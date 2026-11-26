@@ -1134,7 +1134,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response) => {
               status: 'active',
               expireAt: newExpireAt.toISOString(),
               graceEndsAt: newGraceEndsAt.toISOString(),
-            }).catch(() => {});
+            }, d.deviceId).catch(() => {});
           }
         }
 
@@ -1427,7 +1427,7 @@ export const deleteAccount = async (req: Request, res: Response) => {
           await sendFcmDataCommand(dev.fcmToken, 'DELETE_ACCOUNT_WIPE', {
             command: 'UNPAIR_AND_WIPE_LOCAL',
             action: 'UNPAIR',
-          }).catch(() => {});
+          }, dev.deviceId).catch(() => {});
         }
 
         // Invalidate Redis/Cache keys for this device

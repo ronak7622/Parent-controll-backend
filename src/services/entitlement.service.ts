@@ -123,7 +123,7 @@ export async function sendResumeSignal(parentUserId: string, expireAt: Date, gra
         await sendFcmDataCommand(d.fcmToken, 'SUBSCRIPTION_RESUME', {
           status: 'active',
           expireAt: expireAt.toISOString(),
-          graceEndsAt: graceEndsAt.toISOString() }).catch(() => {});
+          graceEndsAt: graceEndsAt.toISOString() }, d.deviceId).catch(() => {});
       }
     }
   } catch (err) {

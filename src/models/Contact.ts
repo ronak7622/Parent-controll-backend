@@ -8,6 +8,7 @@ export interface IContact extends Document {
   emails: string[];
   accountType?: string;
   photoUri?: string;
+  photoKey?: string;
   isBlocked: boolean;
   isOutgoingBlocked?: boolean;
   firstName?: string;
@@ -35,6 +36,7 @@ const ContactSchema = new Schema<IContact>(
     emails: [{ type: String }],
     accountType: { type: String, default: 'Device' },
     photoUri: { type: String },
+    photoKey: { type: String },
     isBlocked: { type: Boolean, default: false },
     isOutgoingBlocked: { type: Boolean, default: false },
     firstName: { type: String, default: '' },
@@ -55,7 +57,6 @@ const ContactSchema = new Schema<IContact>(
   { timestamps: true }
 );
 
-ContactSchema.index({ deviceId: 1, phoneNumber: 1 }, { unique: true });
 ContactSchema.index({ deviceId: 1, name: 1 });
 
 export const Contact = mongoose.model<IContact>('Contact', ContactSchema);

@@ -10,7 +10,7 @@ import { getSignalingIo, isChildOnline } from '../signaling/webrtc.signaling';
 import { getISTDateString } from './parent.controller';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { DeletedRecording } from '../models/DeletedRecording';
-import { deleteMediaFromR2, bulkDeleteMediaFromR2, generatePresignedPutUrl, headObjectSizeR2 } from '../services/r2.service';
+import { deleteMediaFromR2, bulkDeleteMediaFromR2, generatePresignedPutUrl, generatePresignedGetUrl, headObjectSizeR2 } from '../services/r2.service';
 import { checkQuotaBlocked } from './ingest.controller';
 
 // Format duration helper
@@ -216,7 +216,7 @@ export const startRecording = async (req: Request, res: Response) => {
         camera: String(cameraPosition),
         triggerSource,
         quality: String(quality),
-      });
+      }, device.deviceId);
     }
 
     try {
@@ -284,7 +284,7 @@ export const stopRecording = async (req: Request, res: Response) => {
     if (device?.fcmToken) {
       await sendFcmDataCommand(device.fcmToken, 'STOP_RECORDING', {
         sessionId: recording?.sessionId || sessionId || '',
-      });
+      }, device.deviceId);
     }
 
     // 2. ALWAYS emit Socket.IO remote-command to child device room!
@@ -438,16 +438,14 @@ export const getRecordings = async (req: Request, res: Response) => {
       .sort({ timestamp: -1 })
       .limit(Number(limit) || 100);
 
-    return res.json({
-      success: true,
-      count: list.length,
-      recordings: list.map((item) => ({
+    const recordings = await Promise.all(
+      list.map(async (item) => ({
         id: item._id,
         sessionId: item.sessionId,
         recordingType: item.recordingType,
         triggerSource: item.triggerSource,
-        mediaUrl: item.mediaUrl,
-        thumbnailUrl: item.thumbnailUrl,
+        mediaUrl: item.mediaUrl ? await generatePresignedGetUrl(item.mediaUrl, 900) : item.mediaUrl,
+        thumbnailUrl: item.thumbnailUrl ? await generatePresignedGetUrl(item.thumbnailUrl, 900) : item.thumbnailUrl,
         durationSeconds: item.durationSeconds,
         fileSizeBytes: item.fileSizeBytes,
         formattedDuration: formatDuration(item.durationSeconds),
@@ -456,7 +454,13 @@ export const getRecordings = async (req: Request, res: Response) => {
         quality: item.quality || 'medium',
         timestamp: item.timestamp,
         formattedDate: getISTDateString(item.timestamp),
-      })),
+      }))
+    );
+
+    return res.json({
+      success: true,
+      count: list.length,
+      recordings,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });

@@ -1,4 +1,5 @@
 import { hashId } from '../utils/privacy';
+import { hashSecret, verifySecret, encryptText, decryptText, encryptDeterministic, decryptDeterministic } from '../utils/crypto.utils';
 import mongoose from 'mongoose';
 import { Response } from 'express';
 import jwt from 'jsonwebtoken';
@@ -55,6 +56,7 @@ export const generatePairingCode = async (req: any, res: Response) => {
     const parentUserId = req.user?.userId || req.body.parentUserId;
 
     const code = customCode || Math.floor(100000 + Math.random() * 900000).toString();
+    const encCode = encryptDeterministic(code, 'system_pairing');
     const isObjId = mongoose.isValidObjectId(deviceId);
     const isRealDeviceId = (deviceId && !deviceId.startsWith('session_')) || isObjId;
 
@@ -62,7 +64,7 @@ export const generatePairingCode = async (req: any, res: Response) => {
       await Device.findOneAndUpdate(
         { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
         {
-          pairingCode: code,
+          pairingCode: encCode,
           isPaired: false,
           ...(parentUserId ? { parentUserId } : {}),
           ...(deviceName && deviceName !== 'Child Device' ? { deviceName } : {}),
@@ -75,13 +77,13 @@ export const generatePairingCode = async (req: any, res: Response) => {
     } else {
       const targetDeviceId = `session_${code}`;
       await Device.findOneAndUpdate(
-        { pairingCode: code },
+        { pairingCode: { $in: [code, encCode] } },
         {
           deviceId: targetDeviceId,
           deviceName: deviceName || 'Child Device',
           deviceModel: deviceModel || '',
           deviceBrand: deviceBrand || '',
-          pairingCode: code,
+          pairingCode: encCode,
           isPaired: false,
           parentUserId: parentUserId || null,
           isOnline: true,
@@ -111,8 +113,9 @@ export const generatePairingCode = async (req: any, res: Response) => {
 export const checkPairingStatus = async (req: any, res: Response) => {
   try {
     const { code } = req.params;
+    const encCode = encryptDeterministic(code, 'system_pairing');
     const devices = await Device.find({
-      $or: [{ pairingCode: code }, { deviceId: code }],
+      $or: [{ pairingCode: { $in: [code, encCode] } }, { deviceId: code }],
       isPaired: true,
     }).sort({ updatedAt: -1 });
 
@@ -165,8 +168,9 @@ export const completeChildSetup = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, message: 'deviceId is required' });
     }
 
+    const encTargetId = encryptDeterministic(targetId, 'system_pairing');
     const initialDevice = await Device.findOne({
-      $or: [{ deviceId: targetId }, { pairingCode: targetId }],
+      $or: [{ deviceId: targetId }, { pairingCode: { $in: [targetId, encTargetId] } }],
     });
 
     if (!initialDevice) {
@@ -179,9 +183,9 @@ export const completeChildSetup = async (req: any, res: Response) => {
 
     const updateFields: any = { isSetupComplete: true, isPaired: true, appRemoved: false, appRemovedAt: null, appRemovedNotifiedAt: null };
     if (secretCode) {
-      updateFields.secretCode = String(secretCode).trim();
+      updateFields.secretCode = hashSecret(String(secretCode).trim());
     } else if (!initialDevice.secretCode || initialDevice.secretCode.trim().length === 0) {
-      updateFields.secretCode = initialDevice.pairingCode || targetId || '000000';
+      updateFields.secretCode = hashSecret(initialDevice.pairingCode || targetId || '000000');
     }
     if (typeof secureOurChildApp !== 'undefined') updateFields.secureOurChildApp = Boolean(secureOurChildApp);
     if (typeof isAppHidden !== 'undefined') updateFields.isAppHidden = Boolean(isAppHidden);
@@ -252,10 +256,11 @@ export const checkSetupStatus = async (req: any, res: Response) => {
     const { code } = req.params;
     const parentUserId = req.user?.userId;
 
+    const encCode = encryptDeterministic(code, 'system_pairing');
     const isObjId = mongoose.isValidObjectId(code);
     const devices = await Device.find({
       $or: [
-        { pairingCode: code },
+        { pairingCode: { $in: [code, encCode] } },
         { deviceId: code },
         ...(isObjId ? [{ _id: code }] : []),
       ],
@@ -323,8 +328,9 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'Pairing code is required' });
     }
 
+    const encCode = encryptDeterministic(code, 'system_pairing');
     const device = await Device.findOne({
-      $or: [{ pairingCode: code }, { deviceId: code }],
+      $or: [{ pairingCode: { $in: [code, encCode] } }, { deviceId: code }],
     });
 
     if (!device) {
@@ -367,7 +373,7 @@ export const pairDeviceWithCode = async (req: AuthRequest, res: Response) => {
     device.adminDisabledPendingRemoval = false;
     device.adminDisabledAt = null;
     if (!device.secretCode || device.secretCode.trim().length === 0) {
-      device.secretCode = code || device.pairingCode || '000000';
+      device.secretCode = hashSecret(code || device.pairingCode || '000000');
     }
     await device.save();
 
@@ -417,8 +423,9 @@ export const pairChildDevice = async (req: any, res: Response) => {
 
     let codeRecord: any = null;
     if (inputCode) {
+      const encInputCode = encryptDeterministic(inputCode, 'system_pairing');
       codeRecord = await Device.findOne({
-        $or: [{ pairingCode: inputCode }, { deviceId: inputCode }]
+        $or: [{ pairingCode: { $in: [inputCode, encInputCode] } }, { deviceId: inputCode }]
       });
 
       if (codeRecord) {
@@ -460,8 +467,8 @@ export const pairChildDevice = async (req: any, res: Response) => {
     }
 
     if (targetParentUserId) device.parentUserId = targetParentUserId;
-    if (inputCode) device.pairingCode = inputCode;
-    if (fcmToken) device.fcmToken = fcmToken;
+    if (inputCode) device.pairingCode = encryptDeterministic(inputCode, 'system_pairing');
+    if (fcmToken) device.fcmToken = encryptText(fcmToken, device.deviceId);
     if (deviceBrand) device.deviceBrand = deviceBrand;
     if (deviceModel) device.deviceModel = deviceModel;
     if (osType) device.osType = osType;
@@ -499,7 +506,7 @@ export const pairChildDevice = async (req: any, res: Response) => {
     if (languageCode) device.languageCode = String(languageCode).trim().toLowerCase();
 
     if (!device.secretCode || device.secretCode.trim().length === 0) {
-      device.secretCode = inputCode || device.pairingCode || '000000';
+      device.secretCode = hashSecret(inputCode || device.pairingCode || '000000');
     }
 
     await device.save();
@@ -596,35 +603,60 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       updates.isLocationEnabled = locVal;
     }
 
+    const effectiveDevId = deviceId.replace(/^session_/, '');
+
     if (updates.addBlacklist) {
       mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
-      mongoUpdate['$addToSet']['browserBlacklist'] = updates.addBlacklist;
+      mongoUpdate['$addToSet']['browserBlacklist'] = encryptDeterministic(String(updates.addBlacklist), effectiveDevId);
       delete updates.addBlacklist;
     }
     if (updates.addBlacklistUrls && Array.isArray(updates.addBlacklistUrls)) {
       mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
-      mongoUpdate['$addToSet']['browserBlacklist'] = { $each: updates.addBlacklistUrls };
+      mongoUpdate['$addToSet']['browserBlacklist'] = { $each: updates.addBlacklistUrls.map((u: string) => encryptDeterministic(String(u), effectiveDevId)) };
       delete updates.addBlacklistUrls;
     }
     if (updates.removeBlacklist) {
+      const encRm = encryptDeterministic(String(updates.removeBlacklist), effectiveDevId);
       mongoUpdate['$pull'] = mongoUpdate['$pull'] || {};
-      mongoUpdate['$pull']['browserBlacklist'] = updates.removeBlacklist;
+      mongoUpdate['$pull']['browserBlacklist'] = { $in: [updates.removeBlacklist, encRm] };
       delete updates.removeBlacklist;
     }
     if (updates.addWhitelist) {
       mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
-      mongoUpdate['$addToSet']['browserWhitelist'] = updates.addWhitelist;
+      mongoUpdate['$addToSet']['browserWhitelist'] = encryptDeterministic(String(updates.addWhitelist), effectiveDevId);
       delete updates.addWhitelist;
     }
     if (updates.addWhitelistUrls && Array.isArray(updates.addWhitelistUrls)) {
       mongoUpdate['$addToSet'] = mongoUpdate['$addToSet'] || {};
-      mongoUpdate['$addToSet']['browserWhitelist'] = { $each: updates.addWhitelistUrls };
+      mongoUpdate['$addToSet']['browserWhitelist'] = { $each: updates.addWhitelistUrls.map((u: string) => encryptDeterministic(String(u), effectiveDevId)) };
       delete updates.addWhitelistUrls;
     }
     if (updates.removeWhitelist) {
+      const encRm = encryptDeterministic(String(updates.removeWhitelist), effectiveDevId);
       mongoUpdate['$pull'] = mongoUpdate['$pull'] || {};
-      mongoUpdate['$pull']['browserWhitelist'] = updates.removeWhitelist;
+      mongoUpdate['$pull']['browserWhitelist'] = { $in: [updates.removeWhitelist, encRm] };
       delete updates.removeWhitelist;
+    }
+    if (Array.isArray(updates.blockedPhoneNumbers)) {
+      updates.blockedPhoneNumbers = updates.blockedPhoneNumbers.map((p: string) => encryptDeterministic(String(p), effectiveDevId));
+    }
+    if (Array.isArray(updates.blockedOutgoingPhoneNumbers)) {
+      updates.blockedOutgoingPhoneNumbers = updates.blockedOutgoingPhoneNumbers.map((p: string) => encryptDeterministic(String(p), effectiveDevId));
+    }
+    if (Array.isArray(updates.youtubeBlockedKeywords)) {
+      updates.youtubeBlockedKeywords = updates.youtubeBlockedKeywords.map((k: string) => encryptDeterministic(String(k), effectiveDevId));
+    }
+    if (Array.isArray(updates.browserBlacklist)) {
+      updates.browserBlacklist = updates.browserBlacklist.map((u: string) => encryptDeterministic(String(u), effectiveDevId));
+    }
+    if (Array.isArray(updates.browserWhitelist)) {
+      updates.browserWhitelist = updates.browserWhitelist.map((u: string) => encryptDeterministic(String(u), effectiveDevId));
+    }
+    if (Array.isArray(updates.monitoredKeywords)) {
+      updates.monitoredKeywords = updates.monitoredKeywords.map((k: string) => encryptDeterministic(String(k), effectiveDevId));
+    }
+    if (updates.fcmToken) {
+      updates.fcmToken = encryptText(String(updates.fcmToken), effectiveDevId);
     }
 
     if (Object.keys(updates).length > 0) {
@@ -664,7 +696,7 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       youtubeBlockSchedule: device.youtubeBlockSchedule,
       youtubeShortsBlockSchedule: device.youtubeShortsBlockSchedule,
       youtubeRestrictedMode: device.youtubeRestrictedMode ?? false,
-      youtubeBlockedKeywords: device.youtubeBlockedKeywords || [],
+      youtubeBlockedKeywords: (device.youtubeBlockedKeywords || []).map((k: string) => decryptDeterministic(k, device.deviceId) || k),
       preventNotificationDisable: device.preventNotificationDisable ?? false,
       preventLocationDisable: device.preventLocationDisable ?? true,
       preventLocationTurnOff: device.preventLocationDisable ?? true,
@@ -674,8 +706,8 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
       notifyOnBlockedUrlAttempt: device.notifyOnBlockedUrlAttempt ?? true,
       browserRestrictionMode: device.browserRestrictionMode || device.browserRestrictionsMode || 'unrestricted',
       browserRestrictionsMode: device.browserRestrictionsMode || device.browserRestrictionMode || 'unrestricted',
-      browserBlacklist: device.browserBlacklist || [],
-      browserWhitelist: device.browserWhitelist || [],
+      browserBlacklist: (device.browserBlacklist || []).map((b: string) => decryptDeterministic(b, device.deviceId) || b),
+      browserWhitelist: (device.browserWhitelist || []).map((w: string) => decryptDeterministic(w, device.deviceId) || w),
       browserBlockedCategories: device.browserBlockedCategories || [],
       blockedApps: device.blockedApps || [],
       locationIntervalSeconds: device.locationIntervalSeconds ?? 1800,
@@ -687,7 +719,8 @@ export const updateDeviceSettings = async (req: AuthRequest, res: Response) => {
     };
 
     if (device.fcmToken) {
-      sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+      const rawFcmToken = decryptText(device.fcmToken, device.deviceId);
+      sendFcmDataCommand(rawFcmToken, 'UPDATE_RULES', {
         restrictions: JSON.stringify(restrictions),
       }).catch(() => {});
     }
@@ -732,7 +765,8 @@ export const sendRemoteCommand = async (req: AuthRequest, res: Response) => {
     getSignalingIo()?.to(device.deviceId).emit('remote-command', { command: targetCommand, deviceId: device.deviceId, ...(req.body || {}) });
 
     if (device.fcmToken) {
-      await sendFcmDataCommand(device.fcmToken, targetCommand, { action: targetCommand, ...(req.body || {}) });
+      const rawFcmToken = decryptText(device.fcmToken, device.deviceId);
+      await sendFcmDataCommand(rawFcmToken, targetCommand, { action: targetCommand, ...(req.body || {}) });
     }
 
     return res.json({
@@ -764,7 +798,7 @@ export const disconnectDevice = async (req: any, res: Response) => {
     const isParentCall = Boolean(req.user?.userId);
     const { secretCode } = req.body;
     if (isParentCall && device && device.isSetupComplete && device.secretCode && device.secretCode.trim().length > 0) {
-      if (!secretCode || secretCode.trim() !== device.secretCode.trim()) {
+      if (!secretCode || !verifySecret(secretCode.trim(), device.secretCode.trim())) {
         return res.status(400).json({
           success: false,
           message: 'Incorrect 6-digit Secret Protection Code. Device disconnect cancelled.',
@@ -789,7 +823,8 @@ export const disconnectDevice = async (req: any, res: Response) => {
 
     if (device && device.fcmToken) {
       try {
-        await sendFcmDataCommand(device.fcmToken, 'UNPAIR', { action: 'UNPAIR', command: 'UNPAIR', deviceId: targetId });
+        const rawFcmToken = decryptText(device.fcmToken, device.deviceId);
+        await sendFcmDataCommand(rawFcmToken, 'UNPAIR', { action: 'UNPAIR', command: 'UNPAIR', deviceId: targetId });
       } catch (_) {}
     }
 
@@ -1188,7 +1223,7 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
     if (!device) return res.status(404).json({ success: false, message: 'Device not found' });
 
     if (secretCode) {
-      device.secretCode = String(secretCode).trim();
+      device.secretCode = hashSecret(String(secretCode).trim());
     }
     if (deviceName && String(deviceName).trim().length > 0) {
       device.deviceName = String(deviceName).trim();
@@ -1259,7 +1294,8 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
       hideApp: device.isAppHidden,
     };
     if (device.fcmToken) {
-      sendFcmDataCommand(device.fcmToken, 'UPDATE_RULES', {
+      const rawFcmToken = decryptText(device.fcmToken, device.deviceId);
+      sendFcmDataCommand(rawFcmToken, 'UPDATE_RULES', {
         restrictions: JSON.stringify(restrictions),
       }).catch(() => {});
     }
@@ -1328,7 +1364,7 @@ export const verifyChildSecretCode = async (req: any, res: Response) => {
     const trimmedInput = String(secretCode).trim();
     const expectedCode = String(device.secretCode || '').trim();
 
-    if (expectedCode.length > 0 && trimmedInput === expectedCode) {
+    if (expectedCode.length > 0 && verifySecret(trimmedInput, expectedCode)) {
       // Success! Reset attempts
       device.failedSecretCodeAttempts = 0;
       device.secretCodeBlockedUntil = null as any;
@@ -1643,7 +1679,8 @@ export const processPendingAppRemovals = async () => {
       // If the app was uninstalled, Google FCM returns messaging/registration-token-not-registered.
       if (dev.fcmToken) {
         try {
-          const isFcmUnregistered = await validateFcmTokenUnregistered(dev.fcmToken);
+          const rawFcmToken = decryptText(dev.fcmToken, dev.deviceId);
+          const isFcmUnregistered = await validateFcmTokenUnregistered(rawFcmToken);
           if (isFcmUnregistered) {
             console.log(`[VERIFY-REMOVAL] Device ${dev.deviceId} (${dev.deviceName}) confirmed UNINSTALLED via FCM token registry check.`);
             await confirmDeviceAppRemoved(dev.deviceId, 'FCM_UNREGISTERED');
