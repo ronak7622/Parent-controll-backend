@@ -327,8 +327,8 @@ const processSubscriptionJobs = async () => {
               );
             }
 
-            const dueIds = dueRemoved.map((d) => d._id);
-            await Device.updateMany({ _id: { $in: dueIds } }, { $set: { appRemovedNotifiedAt: now } });
+            const allRemovedIds = removedDevs.map((d) => d._id);
+            await Device.updateMany({ _id: { $in: allRemovedIds } }, { $set: { appRemovedNotifiedAt: now } });
             console.log(`[DEVICE-ALERT-QUEUE] Sent App Removed FCM to parent_${parentUserId} for ${removedDevs.length} device(s)`);
           }
         }
@@ -420,9 +420,9 @@ const processSubscriptionJobs = async () => {
               );
             }
 
-            const dueIds = duePermOff.map((d) => d._id);
+            const allPermOffIds = permOffDevs.map((d) => d._id);
             await Device.updateMany(
-              { _id: { $in: dueIds } },
+              { _id: { $in: allPermOffIds } },
               {
                 $set: {
                   criticalPermissionsNotifiedAt: now,

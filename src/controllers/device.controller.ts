@@ -1258,14 +1258,10 @@ export const updateDeviceProtection = async (req: AuthRequest, res: Response) =>
       const isCurrentHidden = Boolean(device.isAppHidden);
 
       if (isHidingRequested !== isCurrentHidden) {
-        // Enforce REAL-TIME presence:
-        // 1. Is child socket currently connected right this second?
+        // Enforce REAL-TIME presence: child socket must be live right now to hide/unhide app
         const isChildSocketLive = await isChildOnline(device.deviceId, device.pairingCode);
 
-        // 2. Strict recent freshness: 35 seconds (immediate offline detection, not 150 seconds!)
-        const isRecentFresh = isDeviceFresh(device, 35);
-
-        if ((!isChildSocketLive && !isRecentFresh) || device.appRemoved === true) {
+        if (!isChildSocketLive || device.appRemoved === true) {
           // Immediately mark device offline in DB so UI reflects reality immediately without waiting 2.5 minutes!
           await Device.updateOne({ _id: device._id }, { $set: { isOnline: false } });
           const io = getSignalingIo();

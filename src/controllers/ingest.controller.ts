@@ -228,78 +228,91 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       }
     } catch (_) {}
 
-    // Send push notification to parent when location is turned off (combined if multiple devices)
+    // Send push notification to parent when location is turned off (atomic lock prevents duplicate notifications)
     if (device.isLocationEnabled === false && !device.locationDisabledNotifiedAt && parentUserId) {
-      try {
-        const parentUser = await User.findById(parentUserId);
-        const parentFcm = parentUser?.fcmToken;
-        const parentTopic = `parent_${parentUserId}`;
-        const lang = parentUser?.languageCode || 'en';
-        const parentTz = (parentUser as any)?.timezone || (parentUser as any)?.timeZone || 'Asia/Kolkata';
-
-        const allLocOff = await Device.find({
-          parentUserId,
+      const claimedLocOff = await Device.findOneAndUpdate(
+        {
+          _id: device._id,
           isLocationEnabled: false,
-          appRemoved: { $ne: true },
-          isPaired: { $ne: false },
-        }).lean();
+          $or: [
+            { locationDisabledNotifiedAt: null },
+            { locationDisabledNotifiedAt: { $exists: false } },
+          ],
+        },
+        { $set: { locationDisabledNotifiedAt: new Date() } },
+        { new: true }
+      );
+      if (claimedLocOff) {
+        try {
+          const parentUser = await User.findById(parentUserId);
+          const parentFcm = parentUser?.fcmToken;
+          const parentTopic = `parent_${parentUserId}`;
+          const lang = parentUser?.languageCode || 'en';
+          const parentTz = (parentUser as any)?.timezone || (parentUser as any)?.timeZone || 'Asia/Kolkata';
 
-        const devPayloadList = allLocOff.map((d) => {
-          const offTime = d.locationDisabledAt ? new Date(d.locationDisabledAt) : new Date();
-          const tText = formatRelativeDateTimeForNotification(offTime, lang, parentTz);
-          return {
-            deviceId: String(d.deviceId),
-            deviceName: d.deviceName || 'Child Device',
-            locationDisabledAt: offTime.toISOString(),
-            timeText: tText,
-          };
-        });
+          const allLocOff = await Device.find({
+            parentUserId,
+            isLocationEnabled: false,
+            appRemoved: { $ne: true },
+            isPaired: { $ne: false },
+          }).lean();
 
-        if (allLocOff.length <= 1) {
-          const devName = device.deviceName || (device as any).name || device.model || 'Child Device';
-          const timeText = formatRelativeDateTimeForNotification(device.locationDisabledAt || new Date(), lang, parentTz);
-          await sendLocalizedFcmTopicNotification(
-            parentTopic,
-            'DEVICE_LOCATION_OFF',
-            {
-              deviceName: devName,
-              timeText,
-              timeInfo: timeText ? ` (${timeText})` : '',
-            },
-            lang,
-            {
-              type: 'LOCATION_DISABLED',
-              deviceId: String(device.deviceId || device._id),
-              deviceName: devName,
-              timestamp: Date.now().toString(),
-              locationDisabledAt: (device.locationDisabledAt || new Date()).toISOString(),
-              timeText,
-              deviceCount: '1',
-              devices: JSON.stringify(devPayloadList),
-              timezone: parentTz,
-            }
-          );
-        } else {
-          const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
-          await sendLocalizedFcmTopicNotification(
-            parentTopic,
-            'DEVICE_LOCATION_OFF_MULTI',
-            {
-              count: allLocOff.length,
-              deviceList,
-            },
-            lang,
-            {
-              type: 'LOCATION_DISABLED',
-              deviceCount: String(allLocOff.length),
-              devices: JSON.stringify(devPayloadList),
-              timezone: parentTz,
-            }
-          );
+          const devPayloadList = allLocOff.map((d) => {
+            const offTime = d.locationDisabledAt ? new Date(d.locationDisabledAt) : new Date();
+            const tText = formatRelativeDateTimeForNotification(offTime, lang, parentTz);
+            return {
+              deviceId: String(d.deviceId),
+              deviceName: d.deviceName || 'Child Device',
+              locationDisabledAt: offTime.toISOString(),
+              timeText: tText,
+            };
+          });
+
+          if (allLocOff.length <= 1) {
+            const devName = device.deviceName || (device as any).name || device.model || 'Child Device';
+            const timeText = formatRelativeDateTimeForNotification(device.locationDisabledAt || new Date(), lang, parentTz);
+            await sendLocalizedFcmTopicNotification(
+              parentTopic,
+              'DEVICE_LOCATION_OFF',
+              {
+                deviceName: devName,
+                timeText,
+                timeInfo: timeText ? ` (${timeText})` : '',
+              },
+              lang,
+              {
+                type: 'LOCATION_DISABLED',
+                deviceId: String(device.deviceId || device._id),
+                deviceName: devName,
+                timestamp: Date.now().toString(),
+                locationDisabledAt: (device.locationDisabledAt || new Date()).toISOString(),
+                timeText,
+                deviceCount: '1',
+                devices: JSON.stringify(devPayloadList),
+                timezone: parentTz,
+              }
+            );
+          } else {
+            const deviceList = devPayloadList.map((d) => `${d.deviceName} (${d.timeText})`).join(', ');
+            await sendLocalizedFcmTopicNotification(
+              parentTopic,
+              'DEVICE_LOCATION_OFF_MULTI',
+              {
+                count: allLocOff.length,
+                deviceList,
+              },
+              lang,
+              {
+                type: 'LOCATION_DISABLED',
+                deviceCount: String(allLocOff.length),
+                devices: JSON.stringify(devPayloadList),
+                timezone: parentTz,
+              }
+            );
+          }
+        } catch (fcmErr: any) {
+          console.warn('[FCM-LOCATION-OFF-WARN]', fcmErr?.message);
         }
-        await Device.updateOne({ _id: device._id }, { $set: { locationDisabledNotifiedAt: new Date() } });
-      } catch (fcmErr: any) {
-        console.warn('[FCM-LOCATION-OFF-WARN]', fcmErr?.message);
       }
     }
     let uploadBlocked = false;
