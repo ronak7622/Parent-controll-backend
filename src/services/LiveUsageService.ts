@@ -235,12 +235,17 @@ export class LiveUsageService {
       isEnded: false,
     };
 
-    // Schedule mid-session cutoff timer: when allowedMinutes are reached, force-stop session!
+    // Do NOT start the per-session cutoffTimer here before media connects;
+    // it starts in markMediaConnected() so failed/unconnected attempts never trigger SESSION_LIMIT_REACHED.
+    // Safety net: if media never connects within 60s, clean up the pending session silently.
     const cutoffDurationMs = sessionAllowedMinutes * 60 * 1000;
-    session.cutoffTimer = setTimeout(async () => {
-      console.log(`[LIVE-USAGE-CUTOFF] Session ${sessionId} reached max allowed time (${sessionAllowedMinutes} min). Force stopping...`);
-      await LiveUsageService.cutoffSession(sessionId);
-    }, cutoffDurationMs);
+    session.cutoffTimer = setTimeout(() => {
+      const s = this.activeSessions.get(sessionId);
+      if (s && !s.mediaStartedAt && !s.isEnded) {
+        console.log(`[LIVE-USAGE-CLEANUP] Pending session ${sessionId} never connected within 60s; cancelling silently.`);
+        this.cancelSession(sessionId, deviceId, parentSocketId);
+      }
+    }, 60_000);
 
     this.activeSessions.set(sessionId, session);
     this.deviceToSession.set(deviceId, sessionId);
@@ -268,7 +273,15 @@ export class LiveUsageService {
         session.childSocketId = childSocketId;
         this.socketToSession.set(childSocketId, session.sessionId);
       }
-      console.log(`[LIVE-USAGE-MEDIA] Media connected for session ${session.sessionId}`);
+      if (session.cutoffTimer) {
+        clearTimeout(session.cutoffTimer);
+      }
+      const cutoffDurationMs = session.allowedMinutes * 60 * 1000;
+      session.cutoffTimer = setTimeout(async () => {
+        console.log(`[LIVE-USAGE-CUTOFF] Session ${session.sessionId} reached max allowed time (${session.allowedMinutes} min). Force stopping...`);
+        await LiveUsageService.cutoffSession(session.sessionId);
+      }, cutoffDurationMs);
+      console.log(`[LIVE-USAGE-MEDIA] Media connected for session ${session.sessionId}. Cutoff in ${cutoffDurationMs / 1000}s`);
     }
   }
 
@@ -277,7 +290,7 @@ export class LiveUsageService {
    */
   public static async cutoffSession(sessionId: string): Promise<void> {
     const session = this.activeSessions.get(sessionId);
-    if (!session || session.isEnded) return;
+    if (!session || session.isEnded || !session.mediaStartedAt) return;
 
     const isSessionCap = session.limitedBySessionCap === true;
     let reason = isSessionCap ? 'SESSION_LIMIT_REACHED' : 'LIVE_MINUTES_EXCEEDED';

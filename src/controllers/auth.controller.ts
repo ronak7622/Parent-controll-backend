@@ -229,6 +229,19 @@ export const authenticateFirebase = async (req: Request, res: Response) => {
 
     await cacheService.set(`user_session_${user._id.toString()}`, newSessionId, 365 * 86400);
 
+    // Notify any previously connected Web/Flutter parent session in real-time so it logs out immediately.
+    // The new session carries `newSessionId` in its JWT and ignores this event.
+    try {
+      const io = getSignalingIo();
+      if (io) {
+        io.to(`parent_${user._id.toString()}`).emit('session-revoked', {
+          newSessionId,
+          userId: user._id.toString(),
+          message: 'Your account was signed in on another device or browser. You have been logged out.',
+        });
+      }
+    } catch (_) {}
+
     const token = jwt.sign(
       {
         userId: user._id.toString(),
