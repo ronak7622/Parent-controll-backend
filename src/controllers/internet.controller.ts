@@ -4,6 +4,7 @@ import { getReadQuery } from '../dal/db.dal';
 import { Device } from '../models/Device';
 import { checkQuotaBlocked } from './ingest.controller';
 import { encryptText, decryptText } from '../utils/crypto.utils';
+import { getDayBounds, resolveTzOffsetMinutes } from '../utils/date.utils';
 
 // Helper function to format bytes to human readable string (KB, MB, GB)
 const formatBytes = (bytes: number): string => {
@@ -200,11 +201,9 @@ export const getInternetHistory = async (req: Request, res: Response) => {
     const filter: any = { deviceId };
 
     if (date && typeof date === 'string') {
-      const targetDate = new Date(date);
-      if (!isNaN(targetDate.getTime())) {
-        const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
-        const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
-        filter.timestamp = { $gte: startOfDay, $lte: endOfDay };
+      const bounds = getDayBounds(date, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        filter.timestamp = { $gte: bounds.start, $lte: bounds.end };
       }
     }
 
@@ -314,23 +313,17 @@ export const deleteInternetHistoryDay = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'date parameter is required (YYYY-MM-DD)' });
     }
 
-    const targetDate = new Date(date);
-    if (isNaN(targetDate.getTime())) {
+    const bounds = getDayBounds(date, resolveTzOffsetMinutes(req));
+    if (!bounds) {
       return res.status(400).json({ success: false, message: 'Invalid date format' });
     }
-
-    const parts = date.split('-').map(Number);
-    const [y, m, d] = parts.length === 3 ? parts : [targetDate.getFullYear(), targetDate.getMonth() + 1, targetDate.getDate()];
-    const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
-    const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
 
     const result = await InternetLog.deleteMany({
       deviceId,
       $or: [
-        { timestamp: { $gte: startOfDay, $lte: endOfDay } },
-        { createdAt: { $gte: startOfDay, $lte: endOfDay } },
-        { connectedAt: { $gte: startOfDay, $lte: endOfDay } },
-        { date: date }
+        { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+        { createdAt: { $gte: bounds.start, $lte: bounds.end } },
+        { connectedAt: { $gte: bounds.start, $lte: bounds.end } },
       ]
     });
 

@@ -5,6 +5,7 @@ import { MediaCapture } from '../models/MediaCapture';
 import { CallRecording } from '../models/CallRecording';
 import { Recording } from '../models/Recording';
 import { KeyboardLog } from '../models/KeyboardLog';
+import { StorageAccountingService } from '../services/StorageAccountingService';
 import { toMs } from '../utils/duration';
 
 /**
@@ -22,37 +23,8 @@ export const getStorageStatus = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Parent user not found' });
     }
 
-    const devices = await Device.find({ parentUserId: user._id });
-    const deviceIds = devices.map((d) => d.deviceId);
-
-    // Sum storage bytes across MediaCaptures and CallRecordings
-    const [mediaRes, callRecRes, recordingRes, keyboardRes] = await Promise.all([
-      MediaCapture.aggregate([
-        { $match: { deviceId: { $in: deviceIds } } },
-        { $group: { _id: null, totalBytes: { $sum: '$fileSizeBytes' } } },
-      ]),
-      CallRecording.aggregate([
-        { $match: { deviceId: { $in: deviceIds } } },
-        { $group: { _id: null, totalBytes: { $sum: '$fileSizeBytes' } } },
-      ]),
-      // Video/screen/audio recordings were previously MISSING from this total,
-      // making it disagree with the per-category storage screen.
-      Recording.aggregate([
-        { $match: { deviceId: { $in: deviceIds }, status: 'completed' } },
-        { $group: { _id: null, totalBytes: { $sum: '$fileSizeBytes' } } },
-      ]),
-      // Keyboard screenshots stored in R2 (real bytes).
-      KeyboardLog.aggregate([
-        { $match: { deviceId: { $in: deviceIds }, fileSizeBytes: { $gt: 0 } } },
-        { $group: { _id: null, totalBytes: { $sum: '$fileSizeBytes' } } },
-      ]),
-    ]);
-
-    const mediaBytes = mediaRes[0]?.totalBytes || 0;
-    const callRecBytes = callRecRes[0]?.totalBytes || 0;
-    const recordingBytes = recordingRes[0]?.totalBytes || 0;
-    const keyboardBytes = keyboardRes[0]?.totalBytes || 0;
-    const usedStorageBytes = mediaBytes + callRecBytes + recordingBytes + keyboardBytes;
+    const accountingUsage = await StorageAccountingService.getStorageUsage(user._id.toString());
+    const usedStorageBytes = accountingUsage?.totalBytes ?? 0;
 
     const baseQuotaBytes = user.storageQuotaBytes || 21474836480; // 20GB default
     const addonQuotaBytes = user.addonStorageBytes || 0;

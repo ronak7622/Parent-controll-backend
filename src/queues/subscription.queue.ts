@@ -251,6 +251,18 @@ const processSubscriptionJobs = async () => {
         // ─── 3A. APP REMOVED ALERT (Multi-Device Grouped) ───
         const removedDevs = pDevs.filter((d) => d.appRemoved === true);
         if (removedDevs.length > 0) {
+          // Backfill missing appRemovedAt once so afterMin window always expires
+          const missingRemovedAt = removedDevs.filter((d) => !d.appRemovedAt);
+          if (missingRemovedAt.length > 0) {
+            await Promise.all(
+              missingRemovedAt.map((d) => {
+                const anchor = d.lastSeenAt || (d as any).updatedAt || now;
+                d.appRemovedAt = anchor;
+                return Device.updateOne({ _id: d._id, appRemovedAt: null }, { $set: { appRemovedAt: anchor } });
+              })
+            );
+          }
+
           const afterMin = Number(options.appRemovedWarNotificationAfterTimeInMinute) || 4320;
           const intervalMin = Number(options.appRemovedWarNotificationIntervalInMinute) || 1440;
 
@@ -331,6 +343,18 @@ const processSubscriptionJobs = async () => {
         );
 
         if (permOffDevs.length > 0) {
+          // Backfill missing criticalPermissionsOffAt once so afterMin window always expires
+          const missingPermOffAt = permOffDevs.filter((d) => !d.criticalPermissionsOffAt);
+          if (missingPermOffAt.length > 0) {
+            await Promise.all(
+              missingPermOffAt.map((d) => {
+                const anchor = (d as any).adminDisabledAt || (d as any).updatedAt || now;
+                d.criticalPermissionsOffAt = anchor;
+                return Device.updateOne({ _id: d._id, criticalPermissionsOffAt: null }, { $set: { criticalPermissionsOffAt: anchor } });
+              })
+            );
+          }
+
           const afterMin = Number(options.permissionOffWarNotificationAfterTimeInMinute) || 4320;
           const intervalMin = Number(options.permissionOffWarNotificationIntervalInMinute) || 1440;
 

@@ -3,6 +3,7 @@ import { WifiLog } from '../models/wifi-log.model';
 import { getReadQuery } from '../dal/db.dal';
 import { checkQuotaBlocked } from './ingest.controller';
 import { encryptText, decryptText, encryptDeterministic, decryptDeterministic } from '../utils/crypto.utils';
+import { getDayBounds, resolveTzOffsetMinutes } from '../utils/date.utils';
 
 // Ingest Wi-Fi log event from child device
 export const ingestWifiLog = async (req: Request, res: Response) => {
@@ -209,11 +210,9 @@ export const getWifiHistory = async (req: Request, res: Response) => {
     };
 
     if (date && typeof date === 'string') {
-      const targetDate = new Date(date);
-      if (!isNaN(targetDate.getTime())) {
-        const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
-        const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
-        filter.timestamp = { $gte: startOfDay, $lte: endOfDay };
+      const bounds = getDayBounds(date, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        filter.timestamp = { $gte: bounds.start, $lte: bounds.end };
       }
     }
 
@@ -308,29 +307,17 @@ export const deleteWifiHistoryForDay = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'date query parameter is required (YYYY-MM-DD)' });
     }
 
-    const parts = date.split('-').map(Number);
-    let startOfDay: Date;
-    let endOfDay: Date;
-
-    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-      const [y, m, d] = parts;
-      startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
-      endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
-    } else {
-      const targetDate = new Date(date);
-      startOfDay = new Date(targetDate);
-      startOfDay.setUTCHours(0, 0, 0, 0);
-      endOfDay = new Date(targetDate);
-      endOfDay.setUTCHours(23, 59, 59, 999);
+    const bounds = getDayBounds(date, resolveTzOffsetMinutes(req));
+    if (!bounds) {
+      return res.status(400).json({ success: false, message: 'Invalid date format' });
     }
 
     const result = await WifiLog.deleteMany({
       deviceId,
       $or: [
-        { timestamp: { $gte: startOfDay, $lte: endOfDay } },
-        { createdAt: { $gte: startOfDay, $lte: endOfDay } },
-        { connectedAt: { $gte: startOfDay, $lte: endOfDay } },
-        { date: date }
+        { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+        { createdAt: { $gte: bounds.start, $lte: bounds.end } },
+        { connectedAt: { $gte: bounds.start, $lte: bounds.end } },
       ]
     });
 

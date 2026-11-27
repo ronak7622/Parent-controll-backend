@@ -7,9 +7,10 @@ import { getReadQuery } from '../dal/db.dal';
 import { checkQuotaBlocked } from './ingest.controller';
 import { encryptText, decryptText, encryptDeterministic, decryptDeterministic } from '../utils/crypto.utils';
 import { uploadDirectBuffer, generatePresignedGetUrl, bulkDeleteMediaFromR2 } from '../services/r2.service';
+import { getDayBounds, resolveTzOffsetMinutes } from '../utils/date.utils';
 
 function getLocalDateString(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
+  return new Date(ms + 330 * 60_000).toISOString().slice(0, 10);
 }
 
 // Categorized once at ingest time so every later read/filter is free (no per-request regex scans).
@@ -206,13 +207,15 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
         const decAddress = decryptDeterministic(a._id, deviceId);
         const decContact = decryptText(a.contactName, deviceId);
         let photoUrl = a.contactPhotoBase64 || null;
+        let legacyBase64 = a.contactPhotoBase64 || null;
         if (a.contactPhotoKey) {
           photoUrl = await generatePresignedGetUrl(a.contactPhotoKey, 900);
+          legacyBase64 = null;
         }
         return {
           address: decAddress,
           contactName: decContact || null,
-          contactPhotoBase64: photoUrl,
+          contactPhotoBase64: legacyBase64,
           contactPhotoUrl: photoUrl,
           totalCount: a.totalCount,
           unreadCount: a.unreadCount,
@@ -274,9 +277,11 @@ export const getMessagesForConversation = async (req: AuthRequest, res: Response
         obj.address = decryptDeterministic(obj.address, deviceId);
         if (obj.imageKey) {
           obj.imageUrl = await generatePresignedGetUrl(obj.imageKey, 900);
+          delete obj.imageKey;
         }
         if (obj.contactPhotoKey) {
           obj.contactPhotoUrl = await generatePresignedGetUrl(obj.contactPhotoKey, 900);
+          delete obj.contactPhotoKey;
         }
         return obj;
       })
@@ -300,9 +305,11 @@ export const getMessageDetail = async (req: AuthRequest, res: Response) => {
     obj.address = decryptDeterministic(obj.address, obj.deviceId);
     if (obj.imageKey) {
       obj.imageUrl = await generatePresignedGetUrl(obj.imageKey, 900);
+      delete obj.imageKey;
     }
     if (obj.contactPhotoKey) {
       obj.contactPhotoUrl = await generatePresignedGetUrl(obj.contactPhotoKey, 900);
+      delete obj.contactPhotoKey;
     }
     return res.json({ success: true, message: obj });
   } catch (error: any) {
@@ -356,16 +363,12 @@ export const deleteMessagesForDevice = async (req: AuthRequest, res: Response) =
     if (address) query.address = address;
 
     if (date && typeof date === 'string') {
-      const parts = date.split('-').map(Number);
-      if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-        const [y, m, d] = parts;
-        const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
-        const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+      const bounds = getDayBounds(date, resolveTzOffsetMinutes(req));
+      if (bounds) {
         query.$or = [
-          { date: date },
-          { timestamp: { $gte: startOfDay, $lte: endOfDay } },
-          { messageDate: { $gte: startOfDay, $lte: endOfDay } },
-          { createdAt: { $gte: startOfDay, $lte: endOfDay } }
+          { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+          { messageDate: { $gte: bounds.start, $lte: bounds.end } },
+          { createdAt: { $gte: bounds.start, $lte: bounds.end } }
         ];
       } else {
         query.date = date;

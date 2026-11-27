@@ -31,7 +31,15 @@ import { bulkDeleteMediaFromR2, deleteMediaFromR2, generatePresignedGetUrl } fro
 import { decryptText, decryptDeterministic, encryptDeterministic } from '../utils/crypto.utils';
 import { Subscription } from '../models/Subscription';
 import { checkQuotaBlocked } from './ingest.controller';
+const buildAppIconUrl = (req: AuthRequest | any, packageName: string): string => {
+  if (!packageName) return '';
+  const proto = (req.headers?.['x-forwarded-proto'] as string)?.split(',')[0]?.trim() || req.protocol || 'https';
+  const host = req.get?.('host') || 'localhost:5000';
+  return `${proto}://${host}/api/parent/apps/icon/${encodeURIComponent(packageName)}`;
+};
+
 import { config } from '../config/env';
+import { getDayBounds, resolveTzOffsetMinutes } from '../utils/date.utils';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC+5:30
 
@@ -60,11 +68,10 @@ export const getBrowserHistory = async (req: AuthRequest, res: Response) => {
 
     const query: any = { deviceId };
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const fetchLimit = clampPaginationLimit(limit, 500, 100);
@@ -208,11 +215,10 @@ export const deleteBrowserHistoryForDevice = async (req: AuthRequest, res: Respo
     const { date } = req.query;
     const query: any = { deviceId };
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const result = await BrowserHistory.deleteMany(query);
@@ -239,11 +245,10 @@ export const getYouTubeHistory = async (req: AuthRequest, res: Response) => {
 
     const query: any = { deviceId };
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const fetchLimit = clampPaginationLimit(limit, 500, 100);
@@ -347,11 +352,10 @@ export const deleteYouTubeHistoryForDevice = async (req: AuthRequest, res: Respo
     const { date } = req.query;
     const query: any = { deviceId };
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const result = await YouTubeHistory.deleteMany(query);
@@ -381,11 +385,10 @@ export const getCapturedMedia = async (req: AuthRequest, res: Response) => {
     if (captureType) query.captureType = captureType;
     if (packageName) query.packageName = packageName;
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const fetchLimit = clampPaginationLimit(limit, 200, 50);
@@ -495,11 +498,10 @@ export const deleteCapturedMedia = async (req: AuthRequest, res: Response) => {
     if (id) {
       query._id = id;
     } else if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     } else if (all !== 'true' && deleteAll !== 'true') {
       return res.status(400).json({ success: false, message: 'Specify id, date, or all=true' });
     }
@@ -620,6 +622,7 @@ export const getContacts = async (req: AuthRequest, res: Response) => {
         if (obj.photoKey) {
           photoUriVal = await generatePresignedGetUrl(obj.photoKey, 900);
         }
+        delete obj.photoKey;
 
         const clean = (decPhone || '').replace(/[^0-9]/g, '');
         const last10 = clean.length >= 7 ? clean.slice(-10) : clean;
@@ -677,11 +680,10 @@ export const getCallLogs = async (req: AuthRequest, res: Response) => {
 
     // Date filter (YYYY-MM-DD)
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     // Call Type filter: 'incoming' | 'outgoing' | 'missed' | 'blocked'
@@ -1267,6 +1269,7 @@ export const getBlockedCalls = async (req: AuthRequest, res: Response) => {
           phoneNumber: matchedContact.phoneNumber || rawNumber,
           isSavedInContacts: true,
           photoUri: matchedContact.photoUri || '',
+          photoKey: matchedContact.photoKey,
           contactSource: matchedContact.contactSource || 'Device',
           accountType: matchedContact.accountType || 'Device',
         };
@@ -1309,6 +1312,7 @@ export const getBlockedCalls = async (req: AuthRequest, res: Response) => {
             phoneNumber: c.phoneNumber,
             isSavedInContacts: true,
             photoUri: c.photoUri || '',
+            photoKey: c.photoKey,
             contactSource: c.contactSource || 'Device',
             accountType: c.accountType || 'Device',
             isBlocked: true,
@@ -1353,6 +1357,7 @@ export const getBlockedCalls = async (req: AuthRequest, res: Response) => {
             phoneNumber: c.phoneNumber,
             isSavedInContacts: true,
             photoUri: c.photoUri || '',
+            photoKey: c.photoKey,
             contactSource: c.contactSource || 'Device',
             accountType: c.accountType || 'Device',
             isBlocked: !!c.isBlocked,
@@ -1381,10 +1386,26 @@ export const getBlockedCalls = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    const presignContactList = async (list: any[]) =>
+      Promise.all(
+        list.map(async (item) => {
+          if (item.photoKey) {
+            item.photoUri = await generatePresignedGetUrl(item.photoKey, 900);
+          }
+          delete item.photoKey;
+          return item;
+        })
+      );
+
+    const [blockedIncoming, blockedOutgoing] = await Promise.all([
+      presignContactList(Array.from(incomingMap.values())),
+      presignContactList(Array.from(outgoingMap.values())),
+    ]);
+
     return res.json({
       success: true,
-      blockedIncoming: Array.from(incomingMap.values()),
-      blockedOutgoing: Array.from(outgoingMap.values()),
+      blockedIncoming,
+      blockedOutgoing,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -1676,11 +1697,10 @@ export const getCallRecordings = async (req: AuthRequest, res: Response) => {
     }
 
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
@@ -1809,14 +1829,14 @@ export const deleteCallRecordingsForDay = async (req: AuthRequest, res: Response
       }
     }
 
-    const start = new Date(date as string);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(date as string);
-    end.setHours(23, 59, 59, 999);
+    const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+    if (!bounds) {
+      return res.status(400).json({ success: false, message: 'Invalid date format' });
+    }
 
     const query: any = {
       deviceId: { $in: [deviceId, targetDeviceId] },
-      timestamp: { $gte: start, $lte: end },
+      timestamp: { $gte: bounds.start, $lte: bounds.end },
     };
 
     if (phoneNumber) {
@@ -2037,7 +2057,7 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    let items = Array.from(dedupMap.values());
+    let items: any[] = Array.from(dedupMap.values());
     items = items.filter((item) => (item.usageDurationSeconds || 0) > 0);
     items.sort((a, b) => (b.usageDurationSeconds || 0) - (a.usageDurationSeconds || 0));
 
@@ -2048,6 +2068,13 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
       console.log(`  -> ${item.packageName} (${item.appName}): ${item.usageDurationSeconds}s | date=${item.date}`);
     }
 
+    items = items.map((item) => {
+      const obj = item.toObject ? item.toObject() : { ...item };
+      delete obj.appIcon;
+      obj.appIconUrl = buildAppIconUrl(req, obj.packageName);
+      return obj;
+    });
+
     // Check device details & installed apps
     const dev = await Device.findOne({ deviceId }).select('isSyncingPastUsage pastUsageSynced lastUsageSyncTime installedApps');
     const filteredInstalled = (dev?.installedApps || [])
@@ -2055,7 +2082,7 @@ export const getAppUsage = async (req: AuthRequest, res: Response) => {
       .map((a: any) => ({
         packageName: a.packageName,
         appName: a.appName?.trim() || a.packageName,
-        appIcon: a.appIcon,
+        appIconUrl: buildAppIconUrl(req, a.packageName),
         category: a.category || 'General',
         isSystemApp: a.isSystemApp ?? false,
       }))
@@ -2258,15 +2285,11 @@ export const deleteAppUsageForDevice = async (req: AuthRequest, res: Response) =
     if (packageName) query.packageName = packageName as string;
 
     if (date && typeof date === 'string') {
-      const parts = date.split('-').map(Number);
-      if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-        const [y, m, d] = parts;
-        const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
-        const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+      const bounds = getDayBounds(date, resolveTzOffsetMinutes(req));
+      if (bounds) {
         query.$or = [
-          { date: date },
-          { timestamp: { $gte: startOfDay, $lte: endOfDay } },
-          { createdAt: { $gte: startOfDay, $lte: endOfDay } }
+          { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+          { createdAt: { $gte: bounds.start, $lte: bounds.end } }
         ];
       } else {
         query.date = date;
@@ -2429,14 +2452,14 @@ export const deleteSelectedDayCallLogs = async (req: AuthRequest, res: Response)
       }
     }
 
-    const start = new Date(date as string);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(date as string);
-    end.setHours(23, 59, 59, 999);
+    const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+    if (!bounds) {
+      return res.status(400).json({ success: false, message: 'Invalid date format' });
+    }
 
     const result = await CallLog.deleteMany({
       deviceId: { $in: [deviceId, targetDeviceId] },
-      timestamp: { $gte: start, $lte: end },
+      timestamp: { $gte: bounds.start, $lte: bounds.end },
     });
 
     await Device.updateMany(
@@ -2761,15 +2784,12 @@ export const getNotificationApps = async (req: AuthRequest, res: Response) => {
       { $sort: { lastNotificationAt: -1 } },
     ]);
 
-    const dev = await Device.findOne({ deviceId }).select('installedApps lastNotificationSyncTime');
-    const iconMap = new Map<string, string | undefined>(
-      (dev?.installedApps || []).map((a: any) => [a.packageName, a.appIcon])
-    );
+    const dev = await Device.findOne({ deviceId }).select('lastNotificationSyncTime');
 
     const apps = agg.map((a) => ({
       packageName: a._id,
       appName: a.appName,
-      appIcon: iconMap.get(a._id) || null,
+      appIconUrl: buildAppIconUrl(req, a._id),
       totalCount: a.totalCount,
       unreadCount: a.unreadCount,
       lastNotificationAt: a.lastNotificationAt,
@@ -2797,7 +2817,7 @@ export const getInstalledApps = async (req: AuthRequest, res: Response) => {
       .map((a: any) => ({
         packageName: a.packageName,
         appName: a.appName?.trim() || a.packageName,
-        appIcon: a.appIcon || null,
+        appIconUrl: buildAppIconUrl(req, a.packageName),
         isSystemApp: a.isSystemApp || false,
         versionName: a.versionName || '',
         versionCode: a.versionCode || null,
@@ -2845,19 +2865,27 @@ export const getNotificationsForApp = async (req: AuthRequest, res: Response) =>
 
     const items = await ChildNotification.find(query).sort({ timestamp: -1 });
 
-    const decryptedItems = items.map((doc: any) => {
-      const obj = doc.toObject ? doc.toObject() : doc;
-      return {
-        ...obj,
-        title: decryptText(obj.title, deviceId),
-        body: decryptText(obj.body, deviceId),
-        subText: decryptText(obj.subText, deviceId),
-        bigText: decryptText(obj.bigText, deviceId),
-        summaryText: decryptText(obj.summaryText, deviceId),
-        infoText: decryptText(obj.infoText, deviceId),
-        messages: Array.isArray(obj.messages) ? obj.messages.map((m: string) => decryptText(m, deviceId)) : [],
-      };
-    });
+    const decryptedItems = await Promise.all(
+      items.map(async (doc: any) => {
+        const obj = doc.toObject ? doc.toObject() : { ...doc };
+        let imageUrl: string | undefined = undefined;
+        if (obj.imageKey) {
+          imageUrl = await generatePresignedGetUrl(obj.imageKey, 900);
+          delete obj.imageKey;
+        }
+        return {
+          ...obj,
+          ...(imageUrl ? { imageUrl } : {}),
+          title: decryptText(obj.title, deviceId),
+          body: decryptText(obj.body, deviceId),
+          subText: decryptText(obj.subText, deviceId),
+          bigText: decryptText(obj.bigText, deviceId),
+          summaryText: decryptText(obj.summaryText, deviceId),
+          infoText: decryptText(obj.infoText, deviceId),
+          messages: Array.isArray(obj.messages) ? obj.messages.map((m: string) => decryptText(m, deviceId)) : [],
+        };
+      })
+    );
 
     return res.json({ success: true, notifications: decryptedItems, date: query.date || 'all' });
   } catch (error: any) {
@@ -2882,9 +2910,15 @@ export const getNotificationDetail = async (req: AuthRequest, res: Response) => 
       return res.status(404).json({ success: false, message: 'Notification not found' });
     }
 
-    const obj = doc.toObject ? doc.toObject() : doc;
+    const obj = doc.toObject ? doc.toObject() : { ...doc };
+    let imageUrl: string | undefined = undefined;
+    if (obj.imageKey) {
+      imageUrl = await generatePresignedGetUrl(obj.imageKey, 900);
+      delete obj.imageKey;
+    }
     const decryptedDoc = {
       ...obj,
+      ...(imageUrl ? { imageUrl } : {}),
       title: decryptText(obj.title, deviceId),
       body: decryptText(obj.body, deviceId),
       subText: decryptText(obj.subText, deviceId),
@@ -2984,21 +3018,14 @@ export const getLocationHistory = async (req: AuthRequest, res: Response) => {
     };
 
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-
-      query.$and = [
-        { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
-        {
-          $or: [
-            { date: date as string },
-            { timestamp: { $gte: start, $lte: end } },
-          ],
-        },
-      ];
-      delete query.$or;
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.$and = [
+          { $or: [{ deviceId }, { deviceId: targetDeviceId }] },
+          { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+        ];
+        delete query.$or;
+      }
     }
 
     const logs = await LocationLog.find(query)
@@ -3114,20 +3141,15 @@ export const deleteLocationHistoryForDay = async (req: AuthRequest, res: Respons
       return res.status(400).json({ success: false, message: 'date query parameter is required' });
     }
 
-    const parts = date.split('-').map(Number);
-    let dateFilter: any = { date: date as string };
-    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-      const [y, m, d] = parts;
-      const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
-      const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
-      dateFilter = {
-        $or: [
-          { date: date as string },
-          { timestamp: { $gte: startOfDay, $lte: endOfDay } },
-          { createdAt: { $gte: startOfDay, $lte: endOfDay } }
-        ]
-      };
-    }
+    const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+    const dateFilter: any = bounds
+      ? {
+          $or: [
+            { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+            { createdAt: { $gte: bounds.start, $lte: bounds.end } },
+          ],
+        }
+      : { date: date as string };
 
     await Device.findOneAndUpdate(
       { deviceId },
@@ -3443,11 +3465,10 @@ export const getKeyboardHistory = async (req: AuthRequest, res: Response) => {
     const query: any = { deviceId };
 
     if (date) {
-      const start = new Date(date as string);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date as string);
-      end.setHours(23, 59, 59, 999);
-      query.timestamp = { $gte: start, $lte: end };
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
@@ -3501,20 +3522,15 @@ export const deleteKeyboardHistoryForDay = async (req: AuthRequest, res: Respons
       return res.status(400).json({ success: false, message: 'date query parameter is required' });
     }
 
-    const parts = date.split('-').map(Number);
-    let dateFilter: any = { date: date as string };
-    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-      const [y, m, d] = parts;
-      const startOfDay = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
-      const endOfDay = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
-      dateFilter = {
-        $or: [
-          { date: date as string },
-          { timestamp: { $gte: startOfDay, $lte: endOfDay } },
-          { createdAt: { $gte: startOfDay, $lte: endOfDay } }
-        ]
-      };
-    }
+    const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+    const dateFilter: any = bounds
+      ? {
+          $or: [
+            { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+            { createdAt: { $gte: bounds.start, $lte: bounds.end } },
+          ],
+        }
+      : { date: date as string };
 
     await Device.findOneAndUpdate(
       { deviceId },
@@ -3604,9 +3620,10 @@ export const getChatThreads = async (req: AuthRequest, res: Response) => {
       matchQuery.packageName = packageName as string;
     }
     if (date && typeof date === 'string') {
-      const startOfDay = new Date(`${date}T00:00:00.000Z`);
-      const endOfDay = new Date(`${date}T23:59:59.999Z`);
-      matchQuery.timestamp = { $gte: startOfDay, $lte: endOfDay };
+      const bounds = getDayBounds(date, resolveTzOffsetMinutes(req));
+      if (bounds) {
+        matchQuery.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const threads = await ChatMessage.aggregate([
@@ -3763,12 +3780,14 @@ export const deleteChatMessagesForDay = async (req: AuthRequest, res: Response) 
       return res.status(400).json({ success: false, message: 'date query parameter is required (YYYY-MM-DD)' });
     }
 
-    const startOfDay = new Date(`${date}T00:00:00.000Z`);
-    const endOfDay = new Date(`${date}T23:59:59.999Z`);
+    const bounds = getDayBounds(date, resolveTzOffsetMinutes(req));
+    if (!bounds) {
+      return res.status(400).json({ success: false, message: 'Invalid date format' });
+    }
 
     const query: any = {
       deviceId,
-      timestamp: { $gte: startOfDay, $lte: endOfDay },
+      timestamp: { $gte: bounds.start, $lte: bounds.end },
     };
     if (packageName) query.packageName = packageName as string;
 
@@ -3900,23 +3919,15 @@ export const getAppIcon = async (req: any, res: Response) => {
       return res.status(404).send('Icon not found');
     }
 
-    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
-
-    const dataUriMatch = cached.iconData.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-    if (dataUriMatch) {
-      const mime = dataUriMatch[1];
-      const buf = Buffer.from(dataUriMatch[2], 'base64');
-      res.setHeader('Content-Type', mime);
-      return res.send(buf);
+    const cleanB64 = String(cached.iconData).replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '').trim();
+    const buf = Buffer.from(cleanB64, 'base64');
+    if (!buf || buf.length === 0) {
+      return res.status(404).send('Icon not found');
     }
 
-    if (/^[A-Za-z0-9+/=]+$/.test(cached.iconData.slice(0, 100))) {
-      const buf = Buffer.from(cached.iconData, 'base64');
-      res.setHeader('Content-Type', 'image/png');
-      return res.send(buf);
-    }
-
-    return res.json({ success: true, iconData: cached.iconData });
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+    return res.send(buf);
   } catch (err: any) {
     return res.status(500).send(err.message);
   }

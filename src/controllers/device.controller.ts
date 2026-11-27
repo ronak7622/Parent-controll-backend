@@ -41,10 +41,15 @@ const formatDurationShort = (totalSeconds: number): string => {
   return `${sec}s`;
 };
 
-// Child sends its local time ("04:35 PM"); fall back to IST server time
-const resolveEventTime = (localTime?: string): string => {
+// Child sends its local time ("04:35 PM"); fall back to child device's timezone (or IST last-resort)
+const resolveEventTime = (localTime?: string, deviceTz?: string): string => {
   if (localTime && String(localTime).trim()) return String(localTime).trim();
-  return new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+  const tz = (deviceTz || '').trim() || 'Asia/Kolkata';
+  try {
+    return new Date().toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: true });
+  } catch {
+    return new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+  }
 };
 
 /**
@@ -1022,7 +1027,7 @@ export const reportLimitReached = async (req: any, res: Response) => {
     const limitMinutes = Number(limitDurationMinutes || limit?.limitDurationMinutes || 0);
     const limitText = limitMinutes > 0 ? formatDurationShort(limitMinutes * 60) : 'daily';
     const usedSec = Number(usedSeconds) || limitMinutes * 60;
-    const eventTime = resolveEventTime(localTime);
+    const eventTime = resolveEventTime(localTime, device?.timeZone || device?.timezone);
 
     const title = `App Limit Reached: ${name}`;
     const body = `${childName} crossed the ${limitText} daily limit for ${name} at ${eventTime}. Used today: ${formatDurationShort(usedSec)}.`;
@@ -1104,7 +1109,7 @@ export const reportBlockedAppAttempt = async (req: any, res: Response) => {
     });
     const childName = device?.deviceName || 'Child Device';
     const name = appName || rule?.appName || packageName;
-    const eventTime = resolveEventTime(localTime);
+    const eventTime = resolveEventTime(localTime, device?.timeZone || device?.timezone);
     const scheduleText = scheduleLabel ? ` (Block: ${scheduleLabel})` : '';
 
     const title = `Blocked App Opened: ${name}`;
@@ -1751,6 +1756,10 @@ export const reportAppRemoved = async (req: any, res: Response) => {
     // 5. Verification job will confirm actual uninstallation after 60-90 seconds if heartbeats and socket stop.
     if (reason === 'ADMIN_DISABLED') {
       const now = new Date();
+      const existingPermDev = await Device.findOne(
+        { $or: [{ deviceId: targetDeviceId }, { pairingCode: targetDeviceId }] },
+        { criticalPermissionsOffAt: 1 }
+      ).lean();
       const updatedDevice = await Device.findOneAndUpdate(
         { $or: [{ deviceId: targetDeviceId }, { pairingCode: targetDeviceId }] },
         {
@@ -1759,7 +1768,7 @@ export const reportAppRemoved = async (req: any, res: Response) => {
             adminDisabledAt: now,
             adminDisabledPendingRemoval: true,
             criticalPermissionsOff: true,
-            criticalPermissionsOffAt: now,
+            criticalPermissionsOffAt: existingPermDev?.criticalPermissionsOffAt || now,
           },
         },
         { new: true }

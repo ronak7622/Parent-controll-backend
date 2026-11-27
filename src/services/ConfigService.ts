@@ -282,7 +282,7 @@ export const DEFAULT_OPTIONS = {
   ],
   defaultAutoDeleteCategory: 'all',
 
-  syncIntervalMs: 300000,
+  syncIntervalMs: 3600000, // 60 minutes
   jitterWindowMs: 15000,
 
   statusGoodUntilStorage: 50,
@@ -343,6 +343,7 @@ export const DEFAULT_OPTIONS = {
 
   // Dynamic Profile & App Configs
   onlineThresholdSeconds: 150,
+  parentDevicePollSeconds: 30,
   childAppName: 'System Update Service',
   childAppUrl: 'https://parentprotect.app/download/child-app-latest.apk',
   childDeviceSecretCodeMaxAttempt: 5,

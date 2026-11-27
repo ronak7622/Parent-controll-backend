@@ -31,7 +31,8 @@ import { enqueueIngestJob } from '../queues/ingest.queue';
 import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification, sendFcmDirectNotification } from '../services/fcm.service';
 import { User } from '../models/User';
 import { formatRelativeDateTimeForNotification } from '../config/notificationTemplates';
-import { isIgnoredSystemPackage, getISTDateString } from './parent.controller';
+import { isIgnoredSystemPackage } from './parent.controller';
+import { getDateStringInTimeZone, parseNaiveDateInTimeZone } from '../utils/date.utils';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { Subscription } from '../models/Subscription';
 import { ConfigService } from '../services/ConfigService';
@@ -71,14 +72,22 @@ const formatDurationShortIngest = (totalSeconds: number): string => {
   return `${sec}s`;
 };
 
-export const getLocalDateString = getISTDateString;
+export const getLocalDateString = (d?: any, timeZone?: string): string => {
+  return getDateStringInTimeZone(d ?? new Date(), timeZone);
+};
+
+const resolveChildTimeZone = async (deviceId?: string): Promise<string | undefined> => {
+  if (!deviceId) return undefined;
+  const dev = await Device.findOne({ deviceId }).select('timeZone timezone').lean();
+  return (dev as any)?.timeZone || (dev as any)?.timezone;
+};
 
 /**
  * Update Heartbeat & Online Status from Child Device
  */
 export const updateHeartbeat = async (req: Request, res: Response) => {
   try {
-    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled, appVersionCode, appVersionName, grantedPermissions, isAppHidden } = req.body;
+    const { deviceId, batteryLevel, isCharging, isLocationEnabled, locationEnabled, appVersionCode, appVersionName, grantedPermissions, isAppHidden, timeZone, timezone } = req.body;
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     const mongoSet: any = {
@@ -99,7 +108,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     const isObjId = mongoose.isValidObjectId(deviceId);
     const existing = await Device.findOne(
       { $or: [{ deviceId }, ...(isObjId ? [{ _id: deviceId }] : [])] },
-      { appRemoved: 1, isPaired: 1, isLocationEnabled: 1, locationEnabled: 1, locationDisabledAt: 1, locationDisabledNotifiedAt: 1, parentUserId: 1, name: 1, deviceName: 1, model: 1 }
+      { appRemoved: 1, isPaired: 1, isLocationEnabled: 1, locationEnabled: 1, locationDisabledAt: 1, locationDisabledNotifiedAt: 1, criticalPermissionsOff: 1, criticalPermissionsOffAt: 1, grantedPermissions: 1, parentUserId: 1, name: 1, deviceName: 1, model: 1 }
     );
 
     let isLocationTurningOff = false;
@@ -129,6 +138,26 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     }
     if (grantedPermissions && typeof grantedPermissions === 'object') {
       mongoSet.grantedPermissions = grantedPermissions;
+      const accOff = (grantedPermissions as any).ACCESSIBILITY === false;
+      const admOff = (grantedPermissions as any).DEVICE_ADMIN === false;
+      if (accOff || admOff) {
+        mongoSet.criticalPermissionsOff = true;
+        if (!existing?.criticalPermissionsOffAt) {
+          mongoSet.criticalPermissionsOffAt = new Date();
+        }
+      } else if (
+        (grantedPermissions as any).ACCESSIBILITY === true &&
+        (grantedPermissions as any).DEVICE_ADMIN === true
+      ) {
+        mongoSet.criticalPermissionsOff = false;
+        mongoSet.criticalPermissionsOffAt = null;
+        mongoSet.criticalPermissionsNotifiedAt = null;
+      }
+    }
+    const rawTz = (timeZone || timezone || req.headers['x-timezone'] || '').toString().trim();
+    if (rawTz) {
+      mongoSet.timeZone = rawTz;
+      mongoSet.timezone = rawTz;
     }
 
     // AUTO-RESTORE: If the device was previously marked appRemoved, but is now sending a valid authenticated
@@ -496,19 +525,34 @@ async function sendBlockedUrlPush(deviceId: string, doc: any) {
   const childName = device.deviceName || 'Child Device';
   const reason = doc.blockReason ? String(doc.blockReason) : 'the Blacklist';
 
-  // Date & Time formatting (today/date and hh:mm am/pm)
+  // Resolve parent's timezone & format event time in parent's local timezone
+  const parentUser = await User.findById(device.parentUserId).select('timezone timeZone languageCode').lean();
+  const parentTz = (parentUser as any)?.timezone || (parentUser as any)?.timeZone || 'Asia/Kolkata';
+
   const eventTime = doc.timestamp ? new Date(doc.timestamp) : new Date();
   const timeFormatted = eventTime.toLocaleTimeString('en-US', {
+    timeZone: parentTz,
     hour: '2-digit',
     minute: '2-digit',
     hour12: true,
   }).toLowerCase();
 
   const now = new Date();
-  const isToday = eventTime.toDateString() === now.toDateString();
-  const dateFormatted = isToday 
-    ? 'today' 
-    : `${String(eventTime.getDate()).padStart(2, '0')}/${String(eventTime.getMonth() + 1).padStart(2, '0')}/${eventTime.getFullYear()}`;
+  const ymdFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: parentTz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const isToday = ymdFmt.format(eventTime) === ymdFmt.format(now);
+  const dateFormatted = isToday
+    ? 'today'
+    : new Intl.DateTimeFormat('en-GB', {
+        timeZone: parentTz,
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      }).format(eventTime);
 
   await sendLocalizedFcmTopicNotification(
     `parent_${device.parentUserId}`,
@@ -1446,6 +1490,14 @@ export const ingestCallRecording = async (req: Request, res: Response) => {
       }
     }
 
+    let resolvedSizeBytes = Number(fileSizeBytes) || buffer.length;
+    if (audioUrl && audioUrl.startsWith('http')) {
+      const r2Size = await headObjectSizeR2(audioUrl);
+      if (r2Size > 0) {
+        resolvedSizeBytes = r2Size;
+      }
+    }
+
     const callRecording = new CallRecording({
       deviceId,
       phoneNumber,
@@ -1453,7 +1505,7 @@ export const ingestCallRecording = async (req: Request, res: Response) => {
       callType: callType === 'outgoing' ? 'outgoing' : 'incoming',
       durationSeconds: Number(durationSeconds) || 0,
       audioUrl,
-      fileSizeBytes: fileSizeBytes || buffer.length,
+      fileSizeBytes: resolvedSizeBytes,
       timestamp: timestamp ? new Date(timestamp) : new Date(),
     });
 
@@ -2218,6 +2270,7 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
         continue;
       }
 
+      const childTz = await resolveChildTimeZone(deviceId);
       const parseTripDate = (rawStr?: any, rawMs?: any): Date => {
         if (typeof rawMs === 'number' && rawMs > 0) {
           return new Date(rawMs < 1e11 ? rawMs * 1000 : rawMs);
@@ -2225,14 +2278,14 @@ export const ingestDrivingTrips = async (req: Request, res: Response) => {
         if (!rawStr) return new Date();
         const str = String(rawStr).trim();
         if (/^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?$/.test(str)) {
-          return new Date(`${str.replace(' ', 'T')}+05:30`);
+          return parseNaiveDateInTimeZone(str, childTz);
         }
         return new Date(str);
       };
 
       const startTime = parseTripDate(item.startTime, item.startTimeMs);
       const endTime = parseTripDate(item.endTime, item.endTimeMs);
-      const dateStr = item.date || getLocalDateString(startTime);
+      const dateStr = item.date || getLocalDateString(startTime, childTz);
 
       const avgSpd = Math.min(120, Number(item.avgSpeedKmH) || 0);
       const rawMaxSpd = Number(item.maxSpeedKmH) || 0;
@@ -2395,10 +2448,12 @@ export const ingestKeyboardLogs = async (req: Request, res: Response) => {
           console.warn('[INGEST-KEYBOARD] R2 image upload warning:', e?.message);
         }
       }
-      // If the child uploaded the image directly (presigned) and only sent the URL,
-      // HEAD R2 for the authoritative size so accounting/display == real R2 bytes.
-      if (screenshotUrl && screenshotBytes <= 0) {
-        screenshotBytes = await headObjectSizeR2(screenshotUrl);
+      // Authoritative R2 bytes: always HEAD R2 when URL is present (unless already uploaded from buffer above)
+      if (screenshotUrl && !item.screenshotBase64) {
+        const r2Size = await headObjectSizeR2(screenshotUrl);
+        if (r2Size > 0) {
+          screenshotBytes = r2Size;
+        }
       }
 
       if (item.appIcon && item.packageName) {

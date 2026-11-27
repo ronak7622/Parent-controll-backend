@@ -8,6 +8,7 @@ import { Device } from '../models/Device';
 import { sendFcmDataCommand, sendFcmTopicNotification, sendLocalizedFcmTopicNotification } from '../services/fcm.service';
 import { getSignalingIo, isChildOnline } from '../signaling/webrtc.signaling';
 import { getISTDateString } from './parent.controller';
+import { getDayBounds, resolveTzOffsetMinutes } from '../utils/date.utils';
 import { StorageAccountingService } from '../services/StorageAccountingService';
 import { DeletedRecording } from '../models/DeletedRecording';
 import { deleteMediaFromR2, bulkDeleteMediaFromR2, generatePresignedPutUrl, generatePresignedGetUrl, headObjectSizeR2 } from '../services/r2.service';
@@ -427,11 +428,10 @@ export const getRecordings = async (req: Request, res: Response) => {
     };
 
     if (date && typeof date === 'string' && date.trim().length > 0 && date.trim().toLowerCase() !== 'all') {
-      // Parse YYYY-MM-DD in local IST (+05:30) timezone
-      const targetDateStr = date.trim();
-      const startOfDay = new Date(`${targetDateStr}T00:00:00.000+05:30`);
-      const endOfDay = new Date(`${targetDateStr}T23:59:59.999+05:30`);
-      query.timestamp = { $gte: startOfDay, $lte: endOfDay };
+      const bounds = getDayBounds(date.trim(), resolveTzOffsetMinutes(req));
+      if (bounds) {
+        query.timestamp = { $gte: bounds.start, $lte: bounds.end };
+      }
     }
 
     const list = await Recording.find(query)
@@ -544,11 +544,13 @@ export const deleteRecordings = async (req: Request, res: Response) => {
     }
 
     if (date) {
-      const startOfDay = new Date(`${date}T00:00:00.000+05:30`);
-      const endOfDay = new Date(`${date}T23:59:59.999+05:30`);
+      const bounds = getDayBounds(date as string, resolveTzOffsetMinutes(req));
+      if (!bounds) {
+        return res.status(400).json({ success: false, message: 'Invalid date format' });
+      }
       const deleteQuery: any = {
         deviceId,
-        timestamp: { $gte: startOfDay, $lte: endOfDay },
+        timestamp: { $gte: bounds.start, $lte: bounds.end },
       };
       if (type) deleteQuery.recordingType = type;
 
