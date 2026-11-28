@@ -22,6 +22,7 @@ export interface IPlanSnapshot {
   storageWarnPercent: number;
   features: string[];
   isAllowSocialAppChatHistory?: boolean;
+  isAllowLiveFeatures?: boolean;
 }
 
 export interface IQueuedPlan {
@@ -99,6 +100,7 @@ const PlanSnapshotSchema: Schema = new Schema(
     storageWarnPercent: { type: Number, default: 80 },
     features: [{ type: String }],
     isAllowSocialAppChatHistory: { type: Boolean, default: false },
+    isAllowLiveFeatures: { type: Boolean, default: true },
   },
   { _id: false }
 );

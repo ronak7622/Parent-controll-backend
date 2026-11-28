@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { mediaRateLimiter } from '../middleware/rateLimiter';
+import { mediaRateLimiter, ingestRateLimiter } from '../middleware/rateLimiter';
 import {
   authenticateFirebase,
   authRateLimiter,
@@ -289,6 +289,7 @@ router.get('/parent/apps/icon/:packageName', getAppIcon);
 // ===================================
 // 3. Child App Data Ingestion Routes (Device Token Protected)
 // ===================================
+router.use('/ingest', ingestRateLimiter);
 router.post('/device/heartbeat', authenticateDevice, updateHeartbeat);
 router.post('/ingest/heartbeat', authenticateDevice, updateHeartbeat);
 router.post('/ingest/browser-history', authenticateDevice, ingestBrowserHistory);

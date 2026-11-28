@@ -67,8 +67,28 @@ export const ingestMessages = async (req: Request, res: Response) => {
       .filter((m: any) => m && m.nativeId && m.address && m.timestamp)
       .slice(0, 500);
 
+    // Pre-check which (deviceId, nativeId, isMms) already exist so we never upload orphan/duplicate images to R2
+    const existingKeys = new Set<string>();
+    if (validMessages.length > 0) {
+      const existingDocs = await ChildMessage.find({
+        deviceId,
+        $or: validMessages.map((m: any) => ({ nativeId: String(m.nativeId), isMms: !!m.isMms })),
+      })
+        .select('nativeId isMms')
+        .lean();
+      for (const doc of existingDocs as any[]) {
+        existingKeys.add(`${doc.nativeId}::${!!doc.isMms}`);
+      }
+    }
+    const seenInBatch = new Set<string>();
+
     const ops: any[] = [];
     for (const m of validMessages) {
+      const dedupeKey = `${String(m.nativeId)}::${!!m.isMms}`;
+      if (existingKeys.has(dedupeKey) || seenInBatch.has(dedupeKey)) {
+        continue;
+      }
+      seenInBatch.add(dedupeKey);
       const timestamp = new Date(m.timestamp);
       const rawBody = m.body ? String(m.body).slice(0, 4000) : '';
       const rawAddress = String(m.address).trim();
@@ -79,7 +99,9 @@ export const ingestMessages = async (req: Request, res: Response) => {
       const encryptedContactName = m.contactName ? encryptText(String(m.contactName).slice(0, 200), deviceId) : undefined;
 
       let imageKey: string | undefined = undefined;
+      let imageSizeBytes = 0;
       let contactPhotoKey: string | undefined = undefined;
+      let contactPhotoSizeBytes = 0;
 
       if (m.imageBase64 && typeof m.imageBase64 === 'string' && (m.imageBase64.startsWith('data:image') || m.imageBase64.length > 200)) {
         try {
@@ -87,6 +109,7 @@ export const ingestMessages = async (req: Request, res: Response) => {
           const buf = Buffer.from(cleanB64, 'base64');
           if (buf.length > 0 && buf.length <= 10 * 1024 * 1024) {
             imageKey = await uploadDirectBuffer(buf, `messages/${deviceId}/${uuidv4()}.jpg`, 'image/jpeg');
+            imageSizeBytes = buf.length;
           }
         } catch (e: any) {
           console.warn('[MSG-IMAGE] Upload error:', e.message);
@@ -99,6 +122,7 @@ export const ingestMessages = async (req: Request, res: Response) => {
           const buf = Buffer.from(cleanB64, 'base64');
           if (buf.length > 0 && buf.length <= 10 * 1024 * 1024) {
             contactPhotoKey = await uploadDirectBuffer(buf, `contact-photos/${deviceId}/${uuidv4()}.jpg`, 'image/jpeg');
+            contactPhotoSizeBytes = buf.length;
           }
         } catch (e: any) {
           console.warn('[MSG-CONTACT-PHOTO] Upload error:', e.message);
@@ -117,8 +141,8 @@ export const ingestMessages = async (req: Request, res: Response) => {
               direction: (m.direction === 'sent' ? 'sent' : 'received') as MessageDirection,
               isMms: !!m.isMms,
               body: encryptedBody,
-              ...(imageKey ? { imageKey } : {}),
-              ...(contactPhotoKey ? { contactPhotoKey } : {}),
+              ...(imageKey ? { imageKey, imageSizeBytes } : {}),
+              ...(contactPhotoKey ? { contactPhotoKey, contactPhotoSizeBytes } : {}),
               category,
               timestamp,
               date: (m.date && String(m.date).trim()) || getLocalDateString(timestamp.getTime()),

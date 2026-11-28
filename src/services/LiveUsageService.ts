@@ -1,8 +1,10 @@
 import { LiveUsage } from '../models/LiveUsage';
 import { Subscription } from '../models/Subscription';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
+import { getRedisClient } from './cache.service';
 import { ConfigService } from './ConfigService';
 import { sendLocalizedFcmTopicNotification } from './fcm.service';
+import { DEFAULT_TZ_OFFSET_MINUTES, getDateStringInTimeZone, getDayBounds } from '../utils/date.utils';
 
 export interface ActiveLiveSession {
   sessionId: string;
@@ -27,12 +29,175 @@ export class LiveUsageService {
   private static activeSessions = new Map<string, ActiveLiveSession>();
   private static deviceToSession = new Map<string, string>();
   private static socketToSession = new Map<string, string>();
+  private static sweepTimer: NodeJS.Timeout | null = null;
+
+  private static readonly REDIS_SESS_PREFIX = 'live:sess:';
+  private static readonly REDIS_DEV_PREFIX = 'live:dev:';
+  private static readonly REDIS_SOCK_PREFIX = 'live:sock:';
+  private static readonly REDIS_ACTIVE_SET = 'live:active_ids';
+  private static readonly REDIS_ENDED_PREFIX = 'live:ended:';
+
+  private static serializeSession(s: ActiveLiveSession): string {
+    return JSON.stringify({
+      sessionId: s.sessionId,
+      parentUserId: s.parentUserId,
+      deviceId: s.deviceId,
+      rawDeviceId: s.rawDeviceId,
+      parentSocketId: s.parentSocketId,
+      childSocketId: s.childSocketId,
+      type: s.type,
+      startedAtMs: s.startedAt.getTime(),
+      mediaStartedAtMs: s.mediaStartedAt ? s.mediaStartedAt.getTime() : null,
+      allowedMinutes: s.allowedMinutes,
+      dailyPlanLimit: s.dailyPlanLimit,
+      dayKey: s.dayKey,
+      limitedBySessionCap: s.limitedBySessionCap,
+      willExhaustPlanTotal: s.willExhaustPlanTotal,
+      isEnded: Boolean(s.isEnded),
+    });
+  }
+
+  private static deserializeSession(raw: string): ActiveLiveSession | null {
+    try {
+      const p = JSON.parse(raw);
+      return {
+        sessionId: p.sessionId,
+        parentUserId: p.parentUserId,
+        deviceId: p.deviceId,
+        rawDeviceId: p.rawDeviceId,
+        parentSocketId: p.parentSocketId,
+        childSocketId: p.childSocketId,
+        type: p.type,
+        startedAt: new Date(p.startedAtMs),
+        mediaStartedAt: p.mediaStartedAtMs ? new Date(p.mediaStartedAtMs) : undefined,
+        allowedMinutes: p.allowedMinutes,
+        dailyPlanLimit: p.dailyPlanLimit,
+        dayKey: p.dayKey,
+        limitedBySessionCap: Boolean(p.limitedBySessionCap),
+        willExhaustPlanTotal: Boolean(p.willExhaustPlanTotal),
+        isEnded: Boolean(p.isEnded),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private static async persistSessionToRedis(s: ActiveLiveSession): Promise<void> {
+    const redis = getRedisClient();
+    if (!redis) return;
+    try {
+      const ttl = Math.max((s.allowedMinutes || 60) * 60 + 300, 600);
+      const multi = redis.multi();
+      multi.set(`${this.REDIS_SESS_PREFIX}${s.sessionId}`, this.serializeSession(s), 'EX', ttl);
+      multi.set(`${this.REDIS_DEV_PREFIX}${s.deviceId}`, s.sessionId, 'EX', ttl);
+      if (s.rawDeviceId && s.rawDeviceId !== s.deviceId) {
+        multi.set(`${this.REDIS_DEV_PREFIX}${s.rawDeviceId}`, s.sessionId, 'EX', ttl);
+      }
+      if (s.parentSocketId) {
+        multi.set(`${this.REDIS_SOCK_PREFIX}${s.parentSocketId}`, s.sessionId, 'EX', ttl);
+      }
+      if (s.childSocketId) {
+        multi.set(`${this.REDIS_SOCK_PREFIX}${s.childSocketId}`, s.sessionId, 'EX', ttl);
+      }
+      multi.sadd(this.REDIS_ACTIVE_SET, s.sessionId);
+      await multi.exec();
+    } catch (err: any) {
+      console.warn('[LIVE-REDIS-PERSIST-WARN]', err?.message);
+    }
+  }
+
+  private static async removeSessionFromRedis(s: ActiveLiveSession): Promise<void> {
+    const redis = getRedisClient();
+    if (!redis) return;
+    try {
+      const keys = [
+        `${this.REDIS_SESS_PREFIX}${s.sessionId}`,
+        `${this.REDIS_DEV_PREFIX}${s.deviceId}`,
+      ];
+      if (s.rawDeviceId && s.rawDeviceId !== s.deviceId) {
+        keys.push(`${this.REDIS_DEV_PREFIX}${s.rawDeviceId}`);
+      }
+      if (s.parentSocketId) keys.push(`${this.REDIS_SOCK_PREFIX}${s.parentSocketId}`);
+      if (s.childSocketId) keys.push(`${this.REDIS_SOCK_PREFIX}${s.childSocketId}`);
+      await redis.del(...keys);
+      await redis.srem(this.REDIS_ACTIVE_SET, s.sessionId);
+    } catch (_) {}
+  }
+
+  private static async findSessionFromRedis(key: string): Promise<ActiveLiveSession | undefined> {
+    const redis = getRedisClient();
+    if (!redis || !key) return undefined;
+    try {
+      let raw = await redis.get(`${this.REDIS_SESS_PREFIX}${key}`);
+      if (!raw) {
+        const mappedId =
+          (await redis.get(`${this.REDIS_DEV_PREFIX}${key}`)) ||
+          (await redis.get(`${this.REDIS_SOCK_PREFIX}${key}`));
+        if (mappedId) {
+          raw = await redis.get(`${this.REDIS_SESS_PREFIX}${mappedId}`);
+        }
+      }
+      if (!raw) return undefined;
+      return this.deserializeSession(raw) || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private static async claimEndLock(sessionId: string): Promise<boolean> {
+    const redis = getRedisClient();
+    if (!redis) return true;
+    try {
+      const res = await redis.set(`${this.REDIS_ENDED_PREFIX}${sessionId}`, '1', 'EX', 300, 'NX');
+      return res === 'OK';
+    } catch {
+      return true;
+    }
+  }
+
+  private static ensureSweepStarted(): void {
+    if (this.sweepTimer) return;
+    this.sweepTimer = setInterval(async () => {
+      const redis = getRedisClient();
+      if (!redis) return;
+      try {
+        const ids = await redis.smembers(this.REDIS_ACTIVE_SET);
+        if (!ids || ids.length === 0) return;
+        const nowMs = Date.now();
+        for (const id of ids) {
+          const raw = await redis.get(`${this.REDIS_SESS_PREFIX}${id}`);
+          if (!raw) {
+            await redis.srem(this.REDIS_ACTIVE_SET, id);
+            continue;
+          }
+          const s = this.deserializeSession(raw);
+          if (!s || s.isEnded) {
+            await redis.srem(this.REDIS_ACTIVE_SET, id);
+            continue;
+          }
+          if (s.mediaStartedAt) {
+            const cutoffAt = s.mediaStartedAt.getTime() + s.allowedMinutes * 60 * 1000;
+            if (nowMs >= cutoffAt) {
+              if (!this.activeSessions.has(s.sessionId)) {
+                this.activeSessions.set(s.sessionId, s);
+              }
+              await this.cutoffSession(s.sessionId);
+            }
+          } else if (nowMs - s.startedAt.getTime() > 90_000) {
+            await this.cancelSession(s.sessionId, s.deviceId, s.parentSocketId);
+          }
+        }
+      } catch (_) {}
+    }, 15_000);
+    if (this.sweepTimer.unref) this.sweepTimer.unref();
+  }
 
   /**
-   * Helper to format today's day key ("YYYY-MM-DD")
+   * Helper to format today's day key ("YYYY-MM-DD") in default timezone (Asia/Kolkata)
+   * so daily resets do not depend on the host server OS timezone.
    */
   public static getDayKey(date: Date = new Date()): string {
-    return date.toISOString().split('T')[0];
+    return getDateStringInTimeZone(date);
   }
 
   public static getMonthKey(date: Date = new Date()): string {
@@ -81,29 +246,45 @@ export class LiveUsageService {
     const now = new Date();
     const dayKey = this.getDayKey(now);
 
-    // 1. Overall Plan Cumulative Live Limit
+    // 0. Plan feature flag check (isAllowLiveFeatures === false disables live features)
+    if (sub.planSnapshot?.isAllowLiveFeatures === false) {
+      return {
+        hasSubscription: true,
+        isExpired: false,
+        dailyLimit: 0,
+        dailyUsed: 0,
+        dailyRemaining: 0,
+        planTotalLimit: 0,
+        planTotalUsed: 0,
+        planTotalRemaining: 0,
+        basePlanRemainingToday: 0,
+        addonPoolRemaining: Math.max(0, sub.addonLiveMinutesPool || 0),
+        totalRemaining: 0,
+        sub,
+      };
+    }
+
+    // 1. Overall Plan Cumulative Live Limit (0 = disabled, -1 = unlimited)
     const planTotalLimit = Number(sub.planSnapshot?.liveLimitTotalInMinute ?? sub.planSnapshot?.liveMinutesTotal ?? 0);
     const planTotalUsed = Number(sub.planLiveMinutesUsed ?? 0);
-    const hasTotalLimit = planTotalLimit > 0;
-    const planTotalRemaining = hasTotalLimit ? Math.max(0, planTotalLimit - planTotalUsed) : Infinity;
+    const isUnlimitedTotal = planTotalLimit < 0;
+    const planTotalRemaining = isUnlimitedTotal ? Infinity : Math.max(0, planTotalLimit - planTotalUsed);
 
-    // 2. Daily Plan Limit
+    // 2. Daily Plan Limit (0 = disabled, -1 = unlimited)
     const rawDailyLimit = Number(sub.planSnapshot?.liveLimitPerDayInMinutes ?? sub.planSnapshot?.liveLimitPerDay ?? 0);
-    const hasDailyLimit = rawDailyLimit > 0;
+    const isUnlimitedDaily = rawDailyLimit < 0;
 
     const liveUsage = await LiveUsage.findOne({ parentUserId, dayKey });
     const dailyUsed = liveUsage ? (liveUsage.dailyMinutesUsed || 0) : 0;
-    const dailyRemaining = hasDailyLimit ? Math.max(0, rawDailyLimit - dailyUsed) : Infinity;
+    const dailyRemaining = isUnlimitedDaily ? Infinity : Math.max(0, rawDailyLimit - dailyUsed);
 
     // 3. Base plan minutes remaining today:
-    // If daily limit exists, today cannot exceed today's remaining daily limit.
-    // Also, today cannot exceed what remains in the entire base plan!
     let basePlanRemainingToday = 0;
-    if (hasDailyLimit && hasTotalLimit) {
+    if (!isUnlimitedDaily && !isUnlimitedTotal) {
       basePlanRemainingToday = Math.min(dailyRemaining, planTotalRemaining);
-    } else if (hasDailyLimit) {
+    } else if (!isUnlimitedDaily) {
       basePlanRemainingToday = dailyRemaining;
-    } else if (hasTotalLimit) {
+    } else if (!isUnlimitedTotal) {
       basePlanRemainingToday = planTotalRemaining;
     } else {
       basePlanRemainingToday = 999999;
@@ -115,12 +296,12 @@ export class LiveUsageService {
     return {
       hasSubscription: true,
       isExpired: false,
-      dailyLimit: hasDailyLimit ? rawDailyLimit : (hasTotalLimit ? planTotalLimit : 0),
+      dailyLimit: rawDailyLimit > 0 ? rawDailyLimit : (planTotalLimit > 0 ? planTotalLimit : 0),
       dailyUsed,
       dailyRemaining: basePlanRemainingToday === Infinity ? 999999 : basePlanRemainingToday,
       planTotalLimit,
       planTotalUsed,
-      planTotalRemaining: hasTotalLimit ? planTotalRemaining : 999999,
+      planTotalRemaining: isUnlimitedTotal ? 999999 : planTotalRemaining,
       basePlanRemainingToday: basePlanRemainingToday === Infinity ? 999999 : basePlanRemainingToday,
       addonPoolRemaining,
       totalRemaining,
@@ -155,6 +336,16 @@ export class LiveUsageService {
         allowedMinutes: 0,
         reason: 'SUBSCRIPTION_EXPIRED',
         message: 'Subscription plan expired. Please renew plan to access live view/stream.',
+        canRetry: false,
+      };
+    }
+
+    if (remaining.sub?.planSnapshot?.isAllowLiveFeatures === false) {
+      return {
+        allowed: false,
+        allowedMinutes: 0,
+        reason: 'LIVE_FEATURE_NOT_ALLOWED',
+        message: 'Live streaming is not included in your current plan. Upgrade to unlock Live Screen, Camera & Audio.',
         canRetry: false,
       };
     }
@@ -253,6 +444,8 @@ export class LiveUsageService {
       this.deviceToSession.set(rawDeviceId, sessionId);
     }
     this.socketToSession.set(parentSocketId, sessionId);
+    this.ensureSweepStarted();
+    await this.persistSessionToRedis(session);
 
     console.log(`[LIVE-USAGE-GRANT] Session ${sessionId} granted for parent ${parentUserId}, device ${deviceId}. Max allowed: ${sessionAllowedMinutes} min (limitedBySessionCap: ${limitedBySessionCap}). Cutoff in ${cutoffDurationMs / 1000}s`);
 
@@ -282,6 +475,17 @@ export class LiveUsageService {
         await LiveUsageService.cutoffSession(session.sessionId);
       }, cutoffDurationMs);
       console.log(`[LIVE-USAGE-MEDIA] Media connected for session ${session.sessionId}. Cutoff in ${cutoffDurationMs / 1000}s`);
+      this.persistSessionToRedis(session).catch(() => {});
+    } else if (!session && (sessionId || deviceId)) {
+      const key = sessionId || deviceId || '';
+      this.findSessionFromRedis(key).then((remote) => {
+        if (remote && !remote.mediaStartedAt && !remote.isEnded) {
+          remote.mediaStartedAt = new Date();
+          if (childSocketId) remote.childSocketId = childSocketId;
+          this.activeSessions.set(remote.sessionId, remote);
+          this.persistSessionToRedis(remote).catch(() => {});
+        }
+      }).catch(() => {});
     }
   }
 
@@ -343,12 +547,21 @@ export class LiveUsageService {
    * Ends a live session and atomically increments LiveUsage and decrements Subscription addonLiveMinutesPool.
    */
   public static async endSession(sessionIdOrKey: string, reason: string = 'NORMAL'): Promise<number> {
-    const session = this.activeSessions.get(sessionIdOrKey) ||
+    const session =
+      this.activeSessions.get(sessionIdOrKey) ||
       (this.deviceToSession.has(sessionIdOrKey) ? this.activeSessions.get(this.deviceToSession.get(sessionIdOrKey)!) : undefined) ||
-      (this.socketToSession.has(sessionIdOrKey) ? this.activeSessions.get(this.socketToSession.get(sessionIdOrKey)!) : undefined);
+      (this.socketToSession.has(sessionIdOrKey) ? this.activeSessions.get(this.socketToSession.get(sessionIdOrKey)!) : undefined) ||
+      (await this.findSessionFromRedis(sessionIdOrKey));
 
     if (!session) return 0;
     if (session.isEnded) {
+      this.cleanupSessionReferences(session);
+      await this.removeSessionFromRedis(session);
+      return 0;
+    }
+
+    const gotLock = await this.claimEndLock(session.sessionId);
+    if (!gotLock) {
       this.cleanupSessionReferences(session);
       return 0;
     }
@@ -360,6 +573,7 @@ export class LiveUsageService {
     }
 
     this.cleanupSessionReferences(session);
+    await this.removeSessionFromRedis(session);
 
     // Only ACTUAL streamed media is billable. If media never connected (user clicked Live but it
     // stayed on "connecting" and then failed/was cancelled), mediaStartedAt is never set — charge 0.
@@ -398,22 +612,24 @@ export class LiveUsageService {
     const planTotalLimit = Number(sub?.planSnapshot?.liveLimitTotalInMinute ?? sub?.planSnapshot?.liveMinutesTotal ?? 0);
     const currentPlanTotalUsed = Number(sub?.planLiveMinutesUsed ?? 0);
     const hasTotalLimit = planTotalLimit > 0;
-    const planCapacity = hasTotalLimit ? Math.max(0, planTotalLimit - currentPlanTotalUsed) : Infinity;
+    const isUnlimitedTotal = planTotalLimit < 0;
+    const planCapacity = isUnlimitedTotal ? Infinity : Math.max(0, planTotalLimit - currentPlanTotalUsed);
 
     const rawDailyLimit = Number(sub?.planSnapshot?.liveLimitPerDayInMinutes ?? sub?.planSnapshot?.liveLimitPerDay ?? session.dailyPlanLimit ?? 0);
     const hasDailyLimit = rawDailyLimit > 0;
+    const isUnlimitedDaily = rawDailyLimit < 0;
 
     let liveUsage = await LiveUsage.findOne({ parentUserId: session.parentUserId, dayKey });
     const currentDailyUsed = liveUsage ? (liveUsage.dailyMinutesUsed || 0) : 0;
-    const dailyCapacity = hasDailyLimit ? Math.max(0, rawDailyLimit - currentDailyUsed) : Infinity;
+    const dailyCapacity = isUnlimitedDaily ? Infinity : Math.max(0, rawDailyLimit - currentDailyUsed);
 
     // Available capacity from base plan today:
     let availableBaseCapacity = 0;
-    if (hasDailyLimit && hasTotalLimit) {
+    if (!isUnlimitedDaily && !isUnlimitedTotal) {
       availableBaseCapacity = Math.min(dailyCapacity, planCapacity);
-    } else if (hasDailyLimit) {
+    } else if (!isUnlimitedDaily) {
       availableBaseCapacity = dailyCapacity;
-    } else if (hasTotalLimit) {
+    } else if (!isUnlimitedTotal) {
       availableBaseCapacity = planCapacity;
     } else {
       availableBaseCapacity = minutesToCharge;
@@ -425,7 +641,8 @@ export class LiveUsageService {
     console.log(`[LIVE-USAGE-SPLIT] Session ${session.sessionId}: Total=${minutesToCharge} min -> BasePlan=${toBase} min, AddonPool=${toAddon} min`);
 
     // 2. Atomic $inc on LiveUsage for today
-    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const bounds = getDayBounds(now, DEFAULT_TZ_OFFSET_MINUTES);
+    const nextMidnight = bounds ? new Date(bounds.end.getTime() + 1) : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
     await LiveUsage.findOneAndUpdate(
       { parentUserId: session.parentUserId, dayKey },
       {
@@ -585,7 +802,18 @@ export class LiveUsageService {
    */
   public static cancelSession(sessionId?: string, deviceId?: string, socketId?: string): void {
     const session = this.findSession(sessionId, deviceId, socketId);
-    if (!session) return;
+    if (!session) {
+      const key = sessionId || deviceId || socketId || '';
+      if (key) {
+        this.findSessionFromRedis(key).then((remote) => {
+          if (remote) {
+            remote.isEnded = true;
+            this.removeSessionFromRedis(remote).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+      return;
+    }
 
     session.isEnded = true;
     if (session.cutoffTimer) {
@@ -593,6 +821,7 @@ export class LiveUsageService {
       session.cutoffTimer = undefined;
     }
     this.cleanupSessionReferences(session);
+    this.removeSessionFromRedis(session).catch(() => {});
     console.log(`[LIVE-USAGE-CANCEL] Session ${session.sessionId} canceled without charges.`);
   }
 

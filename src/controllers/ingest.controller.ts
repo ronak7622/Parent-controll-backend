@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import AppIconCache from '../models/AppIconCache';
 import { BrowserHistory } from '../models/BrowserHistory';
@@ -25,7 +26,7 @@ import { ChatMessage } from '../models/ChatMessage';
 import { Device, enrichDeviceWithOnlineStatus } from '../models/Device';
 import { getSignalingIo } from '../signaling/webrtc.signaling';
 import { shouldSendAlertShared } from './device.controller';
-import { uploadMediaToR2, uploadDirectBuffer, generatePresignedPutUrl, generatePresignedGetUrl, headObjectSizeR2 } from '../services/r2.service';
+import { uploadMediaToR2, uploadDirectBuffer, generatePresignedPutUrl, generatePresignedGetUrl, headObjectSizeR2, bulkDeleteMediaFromR2 } from '../services/r2.service';
 import { config } from '../config/env';
 import { enqueueIngestJob } from '../queues/ingest.queue';
 import { sendFcmTopicNotification, sendLocalizedFcmTopicNotification, sendFcmDirectNotification } from '../services/fcm.service';
@@ -322,6 +323,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
     let expiryAtStr: string | null = null;
     let graceEndsAtStr: string | null = null;
     let hasQueuedPlan = false;
+    let isAllowSocialAppChatHistory = false;
 
     if (parentUserId) {
       const sub = await Subscription.findOne({ parentUserId });
@@ -344,6 +346,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
           uploadBlocked = true;
         } else {
           subState = 'active';
+          isAllowSocialAppChatHistory = sub.planSnapshot?.isAllowSocialAppChatHistory === true;
           const usage = await StorageAccountingService.getStorageUsage(parentUserId);
           const allowed = (sub.planSnapshot?.storageBytes || 10737418240) + (sub.addonStorageBytes || 0);
           if ((usage?.totalBytes || 0) >= allowed) {
@@ -372,6 +375,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
       expiryAt: expiryAtStr,
       graceEndsAt: graceEndsAtStr,
       hasQueuedPlan,
+      isAllowSocialAppChatHistory,
       allowDeveloperModeOnChildApp: Boolean(options.allowDeveloperModeOnChildApp),
       restrictions: {
         youtubeBlocked: device.youtubeBlocked ?? false,
@@ -404,6 +408,7 @@ export const updateHeartbeat = async (req: Request, res: Response) => {
         uploadBlocked,
         isExpired,
         isGrace,
+        isAllowSocialAppChatHistory,
       },
     });
   } catch (error: any) {
@@ -1365,6 +1370,18 @@ export const ingestContacts = async (req: Request, res: Response) => {
     const operations: any[] = [];
     const activeNumbers: string[] = [];
 
+    // Pre-fetch existing contact photoKeys so unchanged photos are not re-uploaded as duplicate R2 objects
+    const existingContacts = await Contact.find({ deviceId: targetDeviceId })
+      .select('phoneNumber photoKey')
+      .lean();
+    const existingPhotoByPhone = new Map<string, string>();
+    for (const ec of existingContacts as any[]) {
+      if (ec.phoneNumber && ec.photoKey) {
+        existingPhotoByPhone.set(ec.phoneNumber, ec.photoKey);
+      }
+    }
+    const staleContactPhotoKeys: string[] = [];
+
     for (const c of rawContacts) {
       const deviceId = c.deviceId || topDeviceId;
       if (!deviceId || !c.phoneNumber) continue;
@@ -1378,13 +1395,26 @@ export const ingestContacts = async (req: Request, res: Response) => {
       const isOutgoingBlocked = c.isOutgoingBlocked || (cleanNum.length >= 10 && blockedOutgoingNumbersSet.has(cleanNum.slice(-10)));
 
       let photoKey: string | undefined = undefined;
+      let photoSizeBytes = 0;
       let photoUriVal = c.photoUri || '';
+      const existingPhotoKey = existingPhotoByPhone.get(encPhone) || existingPhotoByPhone.get(c.phoneNumber);
       if (photoUriVal && typeof photoUriVal === 'string' && (photoUriVal.startsWith('data:image') || photoUriVal.length > 500)) {
         try {
           const cleanB64 = photoUriVal.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
           const buf = Buffer.from(cleanB64, 'base64');
           if (buf.length > 0 && buf.length <= 10 * 1024 * 1024) {
-            photoKey = await uploadDirectBuffer(buf, `contact-photos/${deviceId}/${uuidv4()}.jpg`, 'image/jpeg');
+            const phoneHash = crypto.createHash('sha256').update(encPhone).digest('hex').slice(0, 12);
+            const bufHash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 16);
+            const targetKey = `contact-photos/${deviceId}/${phoneHash}_${bufHash}.jpg`;
+            if (existingPhotoKey === targetKey) {
+              photoKey = existingPhotoKey;
+            } else {
+              photoKey = await uploadDirectBuffer(buf, targetKey, 'image/jpeg');
+              if (existingPhotoKey && existingPhotoKey !== photoKey) {
+                staleContactPhotoKeys.push(existingPhotoKey);
+              }
+            }
+            photoSizeBytes = buf.length;
             photoUriVal = ''; // strip base64 from mongo document
           }
         } catch (e: any) {
@@ -1400,7 +1430,7 @@ export const ingestContacts = async (req: Request, res: Response) => {
         emails: (Array.isArray(c.emails) ? c.emails : (c.email ? [c.email] : [])).map((e: string) => encryptDeterministic(e, deviceId)),
         accountType: c.accountType || 'Device',
         photoUri: photoUriVal,
-        ...(photoKey ? { photoKey } : {}),
+        ...(photoKey ? { photoKey, photoSizeBytes } : {}),
         firstName: c.firstName ? encryptText(c.firstName, deviceId) : '',
         middleName: c.middleName ? encryptText(c.middleName, deviceId) : '',
         lastName: c.lastName ? encryptText(c.lastName, deviceId) : '',
@@ -1432,12 +1462,27 @@ export const ingestContacts = async (req: Request, res: Response) => {
       await Contact.bulkWrite(operations, { ordered: false });
     }
 
-    // Reconcile contacts: delete contacts on backend that no longer exist on child device
+    if (staleContactPhotoKeys.length > 0) {
+      bulkDeleteMediaFromR2(staleContactPhotoKeys).catch(() => {});
+    }
+
+    // Reconcile contacts: delete contacts on backend that no longer exist on child device (+ their R2 photos)
     if (isFullSync && activeNumbers.length > 0) {
-      await Contact.deleteMany({
+      const removedFilter = {
         deviceId: targetDeviceId,
-        phoneNumber: { $nin: activeNumbers }
-      });
+        phoneNumber: { $nin: activeNumbers },
+      };
+      const removedWithPhoto = await Contact.find({
+        ...removedFilter,
+        photoKey: { $exists: true, $nin: [null, ''] },
+      })
+        .select('photoKey')
+        .lean();
+      const removedPhotoKeys = removedWithPhoto.map((d: any) => d.photoKey).filter(Boolean);
+      if (removedPhotoKeys.length > 0) {
+        bulkDeleteMediaFromR2(removedPhotoKeys).catch(() => {});
+      }
+      await Contact.deleteMany(removedFilter);
     }
 
     return res.json({ success: true, count: operations.length, reconciled: isFullSync });
@@ -1680,10 +1725,35 @@ export const ingestNotifications = async (req: Request, res: Response) => {
     };
 
     const validNotifications = notifications.filter((n: any) => n && n.packageName && n.timestamp).slice(0, 500);
+
+    // Pre-check existing (deviceId, packageName, timestamp) so duplicate/retried notifications never create orphan R2 images
+    const existingNotifKeys = new Set<string>();
+    if (validNotifications.length > 0) {
+      const existingNotifs = await ChildNotification.find({
+        deviceId,
+        $or: validNotifications.map((n: any) => ({
+          packageName: String(n.packageName).trim(),
+          timestamp: new Date(n.timestamp),
+        })),
+      })
+        .select('packageName timestamp')
+        .lean();
+      for (const doc of existingNotifs as any[]) {
+        const tsMs = doc.timestamp ? new Date(doc.timestamp).getTime() : 0;
+        existingNotifKeys.add(`${doc.packageName}::${tsMs}`);
+      }
+    }
+    const seenNotifBatch = new Set<string>();
+
     const ops: any[] = [];
     for (const n of validNotifications) {
       const timestamp = new Date(n.timestamp);
       const packageName = String(n.packageName).trim();
+      const dedupeKey = `${packageName}::${timestamp.getTime()}`;
+      if (existingNotifKeys.has(dedupeKey) || seenNotifBatch.has(dedupeKey)) {
+        continue;
+      }
+      seenNotifBatch.add(dedupeKey);
       const appName = n.appName ? String(n.appName).trim() : packageName;
       const rawTitle = n.title ? String(n.title).slice(0, 500) : '';
       const rawBody = n.body ? String(n.body).slice(0, 2000) : '';
@@ -1693,12 +1763,14 @@ export const ingestNotifications = async (req: Request, res: Response) => {
       const encryptedBody = encryptText(rawBody, deviceId);
 
       let imageKey: string | undefined = undefined;
+      let imageSizeBytes = 0;
       if (n.imageBase64 && typeof n.imageBase64 === 'string' && (n.imageBase64.startsWith('data:image') || n.imageBase64.length > 200)) {
         try {
           const cleanB64 = n.imageBase64.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
           const buf = Buffer.from(cleanB64, 'base64');
           if (buf.length > 0 && buf.length <= 10 * 1024 * 1024) {
             imageKey = await uploadDirectBuffer(buf, `notifications/${deviceId}/${uuidv4()}.jpg`, 'image/jpeg');
+            imageSizeBytes = buf.length;
           }
         } catch (e: any) {
           console.warn('[NOTIF-IMAGE] Upload error:', e.message);
@@ -1717,7 +1789,7 @@ export const ingestNotifications = async (req: Request, res: Response) => {
               date,
               title: encryptedTitle,
               body: encryptedBody,
-              ...(imageKey ? { imageKey } : {}),
+              ...(imageKey ? { imageKey, imageSizeBytes } : {}),
               isRead: false,
               subText: n.subText ? encryptText(String(n.subText).slice(0, 500), deviceId) : undefined,
               bigText: n.bigText ? encryptText(String(n.bigText).slice(0, 4000), deviceId) : undefined,
@@ -1889,7 +1961,7 @@ export const ingestInstalledApps = async (req: Request, res: Response) => {
       // Upsert / merge by packageName so chunked uploads accumulate correctly
       const existingDevice = await Device.findOne(
         { deviceId },
-        'installedApps deviceName model name uninstalledAppNotifiedList parentUserId'
+        'installedApps deviceName model name uninstalledAppNotifiedList installedAppNotifiedList installedAppsSynced parentUserId'
       );
       const appMap = new Map<string, any>();
       if (existingDevice && Array.isArray(existingDevice.installedApps)) {
@@ -1899,16 +1971,24 @@ export const ingestInstalledApps = async (req: Request, res: Response) => {
           }
         }
       }
+      const hadExistingApps = appMap.size > 0;
+      const isInitialSyncComplete =
+        (existingDevice as any)?.installedAppsSynced === true ||
+        (hadExistingApps && (existingDevice as any)?.installedAppsSynced !== false);
+      const newlyInstalledApps: any[] = [];
 
       for (const newApp of cleanApps) {
-        const prev = appMap.get(newApp.packageName) || {};
+        const prev = appMap.get(newApp.packageName);
+        if (isInitialSyncComplete && (!prev || prev.isInstalled === false) && newApp.isSystemApp !== true) {
+          newlyInstalledApps.push(newApp);
+        }
         const definedNewApp: any = { isInstalled: true, uninstalledAt: null };
         for (const [key, val] of Object.entries(newApp)) {
           if (val !== undefined) {
             definedNewApp[key] = val;
           }
         }
-        appMap.set(newApp.packageName, { ...prev, ...definedNewApp });
+        appMap.set(newApp.packageName, { ...(prev || {}), ...definedNewApp });
       }
 
       // Handle install-state transitions on the final chunk
@@ -1936,9 +2016,17 @@ export const ingestInstalledApps = async (req: Request, res: Response) => {
         }
       }
 
+      const nextInstalledAppsSynced =
+        isFinalChunk === true ? true : (isInitialSyncComplete ? true : false);
+
       await Device.updateOne(
         { deviceId },
-        { $set: { installedApps: Array.from(appMap.values()) } },
+        {
+          $set: {
+            installedApps: Array.from(appMap.values()),
+            installedAppsSynced: nextInstalledAppsSynced,
+          },
+        },
         { upsert: !existingDevice }
       );
 
@@ -2010,6 +2098,68 @@ export const ingestInstalledApps = async (req: Request, res: Response) => {
           }
         } catch (notifErr: any) {
           console.warn('[APP-UNINSTALL-NOTIF-WARN]', notifErr?.message);
+        }
+      }
+
+      // Part 3: Dispatch single-time install notifications for newly installed non-system apps
+      if (newlyInstalledApps.length > 0) {
+        try {
+          const parentUserId = await StorageAccountingService.resolveParentUserId(deviceId);
+          if (parentUserId) {
+            const parentUser = await User.findById(parentUserId);
+            const lang = parentUser?.languageCode || 'en';
+            const parentTz = (parentUser as any)?.timezone || (parentUser as any)?.timeZone || 'Asia/Kolkata';
+            const devName = existingDevice?.deviceName || (existingDevice as any)?.name || existingDevice?.model || 'Child Device';
+            const parentTopic = `parent_${parentUserId}`;
+
+            const notifiedInstallList: string[] = Array.isArray((existingDevice as any)?.installedAppNotifiedList)
+              ? [...(existingDevice as any).installedAppNotifiedList]
+              : [];
+            const newlyNotifiedInstallKeys: string[] = [];
+
+            for (const installedApp of newlyInstalledApps) {
+              const pkg = installedApp.packageName;
+              const iTime = installedApp.firstInstallTime || nowMs;
+              const dedupKey = `${deviceId}_${pkg}_${iTime}`;
+              if (notifiedInstallList.includes(dedupKey) || newlyNotifiedInstallKeys.includes(dedupKey)) {
+                continue;
+              }
+
+              const dateTimeStr = formatRelativeDateTimeForNotification(new Date(iTime), lang, parentTz);
+              const appName = installedApp.appName || pkg;
+
+              await sendLocalizedFcmTopicNotification(
+                parentTopic,
+                'DEVICE_APP_INSTALLED',
+                {
+                  appName,
+                  deviceName: devName,
+                  childDeviceName: devName,
+                  dateTime: dateTimeStr,
+                },
+                lang,
+                {
+                  type: 'APP_INSTALLED',
+                  deviceId: String(deviceId),
+                  packageName: pkg,
+                  appName,
+                  installedAt: String(iTime),
+                  timezone: parentTz,
+                }
+              );
+
+              newlyNotifiedInstallKeys.push(dedupKey);
+            }
+
+            if (newlyNotifiedInstallKeys.length > 0) {
+              await Device.updateOne(
+                { deviceId },
+                { $addToSet: { installedAppNotifiedList: { $each: newlyNotifiedInstallKeys } } }
+              );
+            }
+          }
+        } catch (notifErr: any) {
+          console.warn('[APP-INSTALL-NOTIF-WARN]', notifErr?.message);
         }
       }
     }

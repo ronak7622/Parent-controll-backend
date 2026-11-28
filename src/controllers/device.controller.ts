@@ -1200,7 +1200,8 @@ export const getTextStorageBreakdown = async (req: AuthRequest, res: Response) =
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     const { StorageAccountingService } = require('../services/StorageAccountingService');
-    const breakdown = await StorageAccountingService.getTextStorageBreakdown(deviceId, date);
+    const { resolveTzOffsetMinutes } = require('../utils/date.utils');
+    const breakdown = await StorageAccountingService.getTextStorageBreakdown(deviceId, date, resolveTzOffsetMinutes(req));
     return res.json({ success: true, ...breakdown });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -1218,7 +1219,8 @@ export const clearTextCategoryData = async (req: AuthRequest, res: Response) => 
     if (!deviceId) return res.status(400).json({ success: false, message: 'deviceId is required' });
 
     const { StorageAccountingService } = require('../services/StorageAccountingService');
-    await StorageAccountingService.clearTextCategoryData(deviceId, category || 'all', date, parentUserId);
+    const { resolveTzOffsetMinutes } = require('../utils/date.utils');
+    await StorageAccountingService.clearTextCategoryData(deviceId, category || 'all', date, parentUserId, resolveTzOffsetMinutes(req));
     return res.json({ success: true, message: 'Text category data cleared successfully.' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -1654,7 +1656,7 @@ export const processPendingAppRemovals = async () => {
         { adminDisabledPendingRemoval: true },
         { criticalPermissionsOff: true },
       ],
-    });
+    }).limit(500);
 
     const now = Date.now();
 

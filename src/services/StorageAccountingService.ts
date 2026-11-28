@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { StorageUsage, IStorageUsage } from '../models/StorageUsage';
 import { Device } from '../models/Device';
+import { DEFAULT_TZ_OFFSET_MINUTES, getDayBounds } from '../utils/date.utils';
 import { Recording } from '../models/Recording';
 import { MediaCapture } from '../models/MediaCapture';
 import { CallRecording } from '../models/CallRecording';
@@ -150,6 +151,33 @@ export class StorageAccountingService {
         }
         perDeviceMap[dId].photoBytes += bytes;
         parentTotalPhoto += bytes;
+      }
+
+      // 3c. SMS/MMS images, Notification images, and Contact photos stored in R2
+      const [msgImgAgg, notifImgAgg, contactImgAgg] = await Promise.all([
+        ChildMessage.aggregate([
+          { $match: { deviceId: { $in: deviceIds }, $or: [{ imageSizeBytes: { $gt: 0 } }, { contactPhotoSizeBytes: { $gt: 0 } }] } },
+          { $group: { _id: '$deviceId', totalBytes: { $sum: { $add: [{ $ifNull: ['$imageSizeBytes', 0] }, { $ifNull: ['$contactPhotoSizeBytes', 0] }] } } } },
+        ]),
+        ChildNotification.aggregate([
+          { $match: { deviceId: { $in: deviceIds }, imageSizeBytes: { $gt: 0 } } },
+          { $group: { _id: '$deviceId', totalBytes: { $sum: '$imageSizeBytes' } } },
+        ]),
+        Contact.aggregate([
+          { $match: { deviceId: { $in: deviceIds }, photoSizeBytes: { $gt: 0 } } },
+          { $group: { _id: '$deviceId', totalBytes: { $sum: '$photoSizeBytes' } } },
+        ]),
+      ]);
+      for (const agg of [msgImgAgg, notifImgAgg, contactImgAgg]) {
+        for (const item of agg as any[]) {
+          const dId = item._id;
+          const bytes = item.totalBytes || 0;
+          if (!perDeviceMap[dId]) {
+            perDeviceMap[dId] = { videoBytes: 0, audioBytes: 0, photoBytes: 0, textBytes: 0, chatBytes: 0, totalBytes: 0 };
+          }
+          perDeviceMap[dId].photoBytes += bytes;
+          parentTotalPhoto += bytes;
+        }
       }
 
       // 4. Text & Database Logs
@@ -308,23 +336,22 @@ export class StorageAccountingService {
   /**
    * Get detailed text & database log storage breakdown for a single device across all 12 categories
    */
-  static async getTextStorageBreakdown(deviceId: string, dateStr?: string) {
+  static async getTextStorageBreakdown(deviceId: string, dateStr?: string, tzOffsetMinutes: number = DEFAULT_TZ_OFFSET_MINUTES) {
     if (!deviceId) return { deviceId, date: dateStr || 'all', categories: [], totalBytes: 0, totalCount: 0 };
 
     const filter = () => {
       const f: any = { deviceId };
       if (dateStr && dateStr !== 'all' && dateStr.trim() !== '') {
-        const start = new Date(dateStr);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(dateStr);
-        end.setHours(23, 59, 59, 999);
-        f.$or = [
-          { createdAt: { $gte: start, $lte: end } },
-          { timestamp: { $gte: start, $lte: end } },
-          { date: { $gte: start, $lte: end } },
-          { startTime: { $gte: start, $lte: end } },
-          { recordedAt: { $gte: start, $lte: end } },
-        ];
+        const bounds = getDayBounds(dateStr, tzOffsetMinutes);
+        if (bounds) {
+          f.$or = [
+            { createdAt: { $gte: bounds.start, $lte: bounds.end } },
+            { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+            { date: { $gte: bounds.start, $lte: bounds.end } },
+            { startTime: { $gte: bounds.start, $lte: bounds.end } },
+            { recordedAt: { $gte: bounds.start, $lte: bounds.end } },
+          ];
+        }
       }
       return f;
     };
@@ -347,6 +374,9 @@ export class StorageAccountingService {
       locCount,
       drivingCount,
       keylogImgAgg,
+      contactImgAgg,
+      smsImgAgg,
+      notifImgAgg,
     ] = await Promise.all([
       BrowserHistory.countDocuments(queryFilter),
       InternetLog.countDocuments(queryFilter),
@@ -367,9 +397,25 @@ export class StorageAccountingService {
         { $match: { ...queryFilter, fileSizeBytes: { $gt: 0 } } },
         { $group: { _id: null, totalBytes: { $sum: '$fileSizeBytes' } } },
       ]),
+      // Real R2 bytes of contact photos, SMS/MMS images, and notification images
+      Contact.aggregate([
+        { $match: { ...queryFilter, photoSizeBytes: { $gt: 0 } } },
+        { $group: { _id: null, totalBytes: { $sum: '$photoSizeBytes' } } },
+      ]),
+      ChildMessage.aggregate([
+        { $match: { ...queryFilter, $or: [{ imageSizeBytes: { $gt: 0 } }, { contactPhotoSizeBytes: { $gt: 0 } }] } },
+        { $group: { _id: null, totalBytes: { $sum: { $add: [{ $ifNull: ['$imageSizeBytes', 0] }, { $ifNull: ['$contactPhotoSizeBytes', 0] }] } } } },
+      ]),
+      ChildNotification.aggregate([
+        { $match: { ...queryFilter, imageSizeBytes: { $gt: 0 } } },
+        { $group: { _id: null, totalBytes: { $sum: '$imageSizeBytes' } } },
+      ]),
     ]);
 
     const keylogImgBytes = (keylogImgAgg as any[])?.[0]?.totalBytes || 0;
+    const contactImgBytes = (contactImgAgg as any[])?.[0]?.totalBytes || 0;
+    const smsImgBytes = (smsImgAgg as any[])?.[0]?.totalBytes || 0;
+    const notifImgBytes = (notifImgAgg as any[])?.[0]?.totalBytes || 0;
 
     const categories = [
       {
@@ -418,21 +464,21 @@ export class StorageAccountingService {
         category: 'call_history',
         label: 'Call History',
         count: callCount + contactCount,
-        bytes: (callCount + contactCount) * 250,
+        bytes: (callCount + contactCount) * 250 + contactImgBytes,
         icon: 'phone',
       },
       {
         category: 'sms_history',
         label: 'SMS History',
         count: smsCount,
-        bytes: smsCount * 300,
+        bytes: smsCount * 300 + smsImgBytes,
         icon: 'sms',
       },
       {
         category: 'notification_history',
         label: 'Notification History',
         count: notifCount,
-        bytes: notifCount * 400,
+        bytes: notifCount * 400 + notifImgBytes,
         icon: 'notifications',
       },
       {
@@ -473,23 +519,28 @@ export class StorageAccountingService {
   /**
    * Clear text category data for a specific device and category (or all categories)
    */
-  static async clearTextCategoryData(deviceId: string, category: string, dateStr?: string, parentUserId?: string) {
+  static async clearTextCategoryData(
+    deviceId: string,
+    category: string,
+    dateStr?: string,
+    parentUserId?: string,
+    tzOffsetMinutes: number = DEFAULT_TZ_OFFSET_MINUTES
+  ) {
     if (!deviceId) return false;
 
     const buildFilter = () => {
       const f: any = { deviceId };
       if (dateStr && dateStr !== 'all' && dateStr.trim() !== '') {
-        const start = new Date(dateStr);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(dateStr);
-        end.setHours(23, 59, 59, 999);
-        f.$or = [
-          { createdAt: { $gte: start, $lte: end } },
-          { timestamp: { $gte: start, $lte: end } },
-          { date: { $gte: start, $lte: end } },
-          { startTime: { $gte: start, $lte: end } },
-          { recordedAt: { $gte: start, $lte: end } },
-        ];
+        const bounds = getDayBounds(dateStr, tzOffsetMinutes);
+        if (bounds) {
+          f.$or = [
+            { createdAt: { $gte: bounds.start, $lte: bounds.end } },
+            { timestamp: { $gte: bounds.start, $lte: bounds.end } },
+            { date: { $gte: bounds.start, $lte: bounds.end } },
+            { startTime: { $gte: bounds.start, $lte: bounds.end } },
+            { recordedAt: { $gte: bounds.start, $lte: bounds.end } },
+          ];
+        }
       }
       return f;
     };

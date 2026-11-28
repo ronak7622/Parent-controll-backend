@@ -150,7 +150,7 @@ export class SubscriptionJob {
       const postGraceSubs = await Subscription.find({
         $or: [
           { status: 'grace', graceEndsAt: { $lte: now } },
-          { status: 'expired' },
+          { status: 'expired', $or: [{ addonStorageBytes: { $gt: 0 } }, { addonLiveMinutesPool: { $gt: 0 } }] },
         ],
       }).limit(500);
 

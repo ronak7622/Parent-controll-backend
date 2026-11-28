@@ -92,3 +92,41 @@ export const mediaRateLimiter = rateLimit({
     message: 'Too many media requests, please slow down and try again shortly.',
   },
 });
+
+/**
+ * Stricter per-device write limiter for child ingestion endpoints (/api/ingest/*).
+ * Prevents a misbehaving or compromised child device from hammering write routes at 10M+ scale.
+ */
+export const ingestRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.NODE_ENV === 'development' ? 500000 : 2000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    if (process.env.NODE_ENV === 'development') return true;
+    const ip = req.ip || req.headers['x-forwarded-for'] || '';
+    if (typeof ip === 'string' && (ip.includes('127.0.0.1') || ip.includes('::1') || ip.startsWith('192.168.') || ip.startsWith('10.'))) {
+      return true;
+    }
+    return false;
+  },
+  validate: { keyGeneratorIpFallback: false, xForwardedForHeader: false },
+  passOnStoreError: true,
+  store: getRedisClient()
+    ? new RedisStore({
+        // @ts-ignore
+        sendCommand: (...args: string[]) => getRedisClient()!.call(...args),
+        prefix: 'rli:',
+      })
+    : undefined,
+  keyGenerator: (req: any) => {
+    const deviceId =
+      req.headers['x-device-id'] || req.params?.deviceId || req.query?.deviceId || req.body?.deviceId;
+    if (deviceId) return `ingest_device_${deviceId}`;
+    return req.ip || req.headers['x-forwarded-for'] || 'unknown_ip';
+  },
+  message: {
+    success: false,
+    message: 'Too many ingest requests from this device, please slow down.',
+  },
+});

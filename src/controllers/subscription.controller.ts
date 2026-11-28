@@ -881,6 +881,7 @@ export const activateTrial = async (req: Request, res: Response) => {
       graceDays: Math.ceil(graceTimeInMinute / 1440),
       storageWarnPercent: options.storageWarnDialogPercent || options.storageWarnNotificationPercent || 80,
       isAllowSocialAppChatHistory: false,
+      isAllowLiveFeatures: (trialOptions as any).isAllowLiveFeatures ?? true,
       features: trialOptions.features || [
         'No ads',
         '1 Connected device',

@@ -15,7 +15,9 @@ export interface IChildMessage extends Document {
   body: string;
   imageBase64?: string; // MMS picture attachment, if any
   imageKey?: string;
+  imageSizeBytes?: number;
   contactPhotoKey?: string;
+  contactPhotoSizeBytes?: number;
   category: MessageCategory;
   timestamp: Date;
   date: string; // yyyy-MM-dd, device-local day (matches AppUsage/ChildNotification convention)
@@ -36,7 +38,9 @@ const ChildMessageSchema = new Schema<IChildMessage>(
     body: { type: String, default: '' },
     imageBase64: { type: String },
     imageKey: { type: String },
+    imageSizeBytes: { type: Number, default: 0 },
     contactPhotoKey: { type: String },
+    contactPhotoSizeBytes: { type: Number, default: 0 },
     category: { type: String, enum: ['personal', 'otp', 'transactions', 'promotions', 'subscription'], default: 'personal' },
     timestamp: { type: Date, required: true },
     date: { type: String, required: true },

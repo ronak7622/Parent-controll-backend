@@ -52,6 +52,7 @@ export interface IPlan extends Document {
   isDefaultSelection?: boolean;
   sortOrder: number;
   isAllowSocialAppChatHistory?: boolean;
+  isAllowLiveFeatures?: boolean;
 }
 
 const PlanSchema: Schema = new Schema(
@@ -103,6 +104,7 @@ const PlanSchema: Schema = new Schema(
     isDefaultSelection: { type: Boolean, default: false },
     sortOrder: { type: Number, default: 0 },
     isAllowSocialAppChatHistory: { type: Boolean, default: false },
+    isAllowLiveFeatures: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

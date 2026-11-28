@@ -9,6 +9,7 @@ export interface IContact extends Document {
   accountType?: string;
   photoUri?: string;
   photoKey?: string;
+  photoSizeBytes?: number;
   isBlocked: boolean;
   isOutgoingBlocked?: boolean;
   firstName?: string;
@@ -37,6 +38,7 @@ const ContactSchema = new Schema<IContact>(
     accountType: { type: String, default: 'Device' },
     photoUri: { type: String },
     photoKey: { type: String },
+    photoSizeBytes: { type: Number, default: 0 },
     isBlocked: { type: Boolean, default: false },
     isOutgoingBlocked: { type: Boolean, default: false },
     firstName: { type: String, default: '' },

@@ -75,8 +75,8 @@ export async function buildPlanSnapshot(
   const graceMs = graceTimeInMinute * 60 * 1000;
   const graceDays = Math.ceil(graceTimeInMinute / 1440);
 
-  const liveLimitPerDay = plan.liveLimitPerDayInMinutes || (plan as any).liveLimitPerDay || 60;
-  const liveMinutesTotal = plan.liveLimitTotalInMinute || (plan as any).liveMinutesTotal || (liveLimitPerDay * durationDays);
+  const liveLimitPerDay = plan.liveLimitPerDayInMinutes ?? (plan as any).liveLimitPerDay ?? 60;
+  const liveMinutesTotal = plan.liveLimitTotalInMinute ?? (plan as any).liveMinutesTotal ?? (liveLimitPerDay > 0 ? liveLimitPerDay * durationDays : 0);
 
   const planSnapshot: IPlanSnapshot = {
     planId: plan.planId,
@@ -99,7 +99,9 @@ export async function buildPlanSnapshot(
     graceDays,
     storageWarnPercent: options.storageWarnDialogPercent || options.storageWarnNotificationPercent || 80,
     features: plan.features || [],
-    isAllowSocialAppChatHistory: (plan as any).isAllowSocialAppChatHistory ?? false };
+    isAllowSocialAppChatHistory: (plan as any).isAllowSocialAppChatHistory ?? false,
+    isAllowLiveFeatures: (plan as any).isAllowLiveFeatures ?? true,
+  };
 
   return { planSnapshot, durationMs, durationDays, graceMs, graceDays, price, currency };
 }

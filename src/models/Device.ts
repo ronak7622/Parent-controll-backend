@@ -148,6 +148,8 @@ export interface IDevice extends Document {
     uninstalledAt?: number | null;
   }[];
   uninstalledAppNotifiedList?: string[];
+  installedAppNotifiedList?: string[];
+  installedAppsSynced?: boolean;
 
   createdAt: Date;
   updatedAt: Date;
@@ -298,6 +300,8 @@ const DeviceSchema = new Schema<IDevice>(
       },
     ],
     uninstalledAppNotifiedList: [{ type: String }],
+    installedAppNotifiedList: [{ type: String }],
+    installedAppsSynced: { type: Boolean },
   },
   { timestamps: true }
 );

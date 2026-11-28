@@ -1445,6 +1445,9 @@ export const deleteContact = async (req: AuthRequest, res: Response) => {
     const contactId = contact._id;
 
     // Delete contact record only. DO NOT delete CallLog records!
+    if ((contact as any).photoKey) {
+      bulkDeleteMediaFromR2([(contact as any).photoKey]).catch(() => {});
+    }
     await Contact.deleteOne({ _id: contact._id });
 
     // Notify Child Device to delete contact remotely
@@ -1630,30 +1633,109 @@ export const getCallRecordingContacts = async (req: AuthRequest, res: Response) 
       }
     }).catch((e) => console.error('Auto-clean recording error:', e));
 
-    const contactsAggregation = await CallRecording.aggregate([
-      { $match: { deviceId: { $in: [deviceId, targetDeviceId] } } },
-      { $sort: { timestamp: -1 } },
-      {
-        $group: {
-          _id: '$phoneNumber',
-          phoneNumber: { $first: '$phoneNumber' },
-          contactName: { $first: '$contactName' },
-          count: { $sum: 1 },
-          recordingCount: { $sum: 1 },
-          latestTimestamp: { $first: '$timestamp' },
-          lastRecordingAt: { $first: '$timestamp' },
-          lastDurationSeconds: { $first: '$durationSeconds' },
-          lastCallType: { $first: '$callType' },
+    const [contactsAggregation, savedContacts] = await Promise.all([
+      CallRecording.aggregate([
+        { $match: { deviceId: { $in: [deviceId, targetDeviceId] } } },
+        { $sort: { timestamp: -1 } },
+        {
+          $group: {
+            _id: '$phoneNumber',
+            phoneNumber: { $first: '$phoneNumber' },
+            contactName: { $first: '$contactName' },
+            count: { $sum: 1 },
+            recordingCount: { $sum: 1 },
+            latestTimestamp: { $first: '$timestamp' },
+            lastRecordingAt: { $first: '$timestamp' },
+            lastDurationSeconds: { $first: '$durationSeconds' },
+            lastCallType: { $first: '$callType' },
+          },
         },
-      },
-      { $sort: { latestTimestamp: -1 } },
+        { $sort: { latestTimestamp: -1 } },
+      ]),
+      Contact.find({ deviceId: { $in: [deviceId, targetDeviceId] } })
+        .select('name phoneNumber')
+        .lean(),
     ]);
 
-    const formattedContacts = contactsAggregation.map((c: any) => ({
-      ...c,
-      phoneNumber: cleanPhone(c.phoneNumber),
-      contactName: cleanName(c.contactName),
-    }));
+    const normalizeKey = (raw: string): string => {
+      const d = (raw || '').replace(/[^0-9]/g, '');
+      if (d.length >= 10) return d.slice(-10);
+      if (d.length > 0) return d;
+      return (raw || 'unknown').trim().toLowerCase();
+    };
+
+    const isPlaceholderName = (name: string): boolean => {
+      const t = (name || '').trim();
+      if (!t) return true;
+      const lower = t.toLowerCase();
+      if (lower === 'unknown' || lower === 'unknown caller' || lower === 'private number') return true;
+      // Pure phone-number string (digits, +, -, spaces) is not a real saved name
+      return /^[+\d\s()-]+$/.test(t);
+    };
+
+    // Map normalized phone key -> saved contact name from Contacts list
+    const savedNameByKey = new Map<string, string>();
+    for (const sc of savedContacts as any[]) {
+      const scPhone = cleanPhone(decryptDeterministic(sc.phoneNumber, targetDeviceId) || sc.phoneNumber || '');
+      const scName = cleanName(decryptText(sc.name, targetDeviceId) || sc.name || '');
+      if (!scPhone || isPlaceholderName(scName)) continue;
+      const k = normalizeKey(scPhone);
+      if (!savedNameByKey.has(k)) {
+        savedNameByKey.set(k, scName);
+      }
+    }
+
+    // Merge duplicate groups (e.g. "8160590953" and "+918160590953") by last-10-digit key
+    const mergedMap = new Map<string, any>();
+    for (const c of contactsAggregation as any[]) {
+      const decPhone = cleanPhone(decryptDeterministic(c.phoneNumber, targetDeviceId) || c.phoneNumber || '');
+      const decName = cleanName(decryptText(c.contactName, targetDeviceId) || c.contactName || '');
+      const key = normalizeKey(decPhone);
+      const cTime = c.latestTimestamp ? new Date(c.latestTimestamp).getTime() : 0;
+
+      const existing = mergedMap.get(key);
+      if (!existing) {
+        const resolvedName = !isPlaceholderName(decName) ? decName : (savedNameByKey.get(key) || decName);
+        mergedMap.set(key, {
+          ...c,
+          _id: key,
+          phoneNumber: decPhone,
+          contactName: resolvedName,
+          count: Number(c.count) || 0,
+          recordingCount: Number(c.recordingCount) || 0,
+          _latestMs: cTime,
+        });
+      } else {
+        existing.count += Number(c.count) || 0;
+        existing.recordingCount += Number(c.recordingCount) || 0;
+
+        // Prefer formatted phone number (e.g. with +countryCode) or latest
+        if (decPhone.length > existing.phoneNumber.length) {
+          existing.phoneNumber = decPhone;
+        }
+        // Prefer real saved contact name over placeholder/number
+        if (isPlaceholderName(existing.contactName) && !isPlaceholderName(decName)) {
+          existing.contactName = decName;
+        } else if (isPlaceholderName(existing.contactName) && savedNameByKey.has(key)) {
+          existing.contactName = savedNameByKey.get(key);
+        }
+
+        if (cTime > existing._latestMs) {
+          existing._latestMs = cTime;
+          existing.latestTimestamp = c.latestTimestamp;
+          existing.lastRecordingAt = c.lastRecordingAt;
+          existing.lastDurationSeconds = c.lastDurationSeconds;
+          existing.lastCallType = c.lastCallType;
+          if (!isPlaceholderName(decName)) {
+            existing.contactName = decName;
+          }
+        }
+      }
+    }
+
+    const formattedContacts = Array.from(mergedMap.values())
+      .sort((a, b) => b._latestMs - a._latestMs)
+      .map(({ _latestMs, ...rest }) => rest);
 
     return res.json({
       success: true,
@@ -2941,6 +3023,9 @@ export const deleteNotification = async (req: AuthRequest, res: Response) => {
     if (!deleted) {
       return res.status(404).json({ success: false, message: 'Notification not found' });
     }
+    if ((deleted as any).imageKey) {
+      bulkDeleteMediaFromR2([(deleted as any).imageKey]).catch(() => {});
+    }
     return res.json({ success: true, message: 'Notification deleted successfully' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -2954,7 +3039,16 @@ export const deleteNotificationsForDay = async (req: AuthRequest, res: Response)
     if (!packageName || !date) {
       return res.status(400).json({ success: false, message: 'packageName and date are required' });
     }
-    const result = await ChildNotification.deleteMany({ deviceId, packageName, date });
+    const filter = { deviceId, packageName, date };
+    const withImg = await ChildNotification.find({
+      ...filter,
+      imageKey: { $exists: true, $nin: [null, ''] },
+    }).select('imageKey').lean();
+    const imgKeys = withImg.map((d: any) => d.imageKey).filter(Boolean);
+    if (imgKeys.length > 0) {
+      bulkDeleteMediaFromR2(imgKeys).catch(() => {});
+    }
+    const result = await ChildNotification.deleteMany(filter);
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -2968,6 +3062,14 @@ export const deleteAllNotificationsForApp = async (req: AuthRequest, res: Respon
     // With packageName: that one app's notifications. Without: every notification on the device.
     const query: any = { deviceId };
     if (packageName) query.packageName = packageName as string;
+    const withImg = await ChildNotification.find({
+      ...query,
+      imageKey: { $exists: true, $nin: [null, ''] },
+    }).select('imageKey').lean();
+    const imgKeys = withImg.map((d: any) => d.imageKey).filter(Boolean);
+    if (imgKeys.length > 0) {
+      bulkDeleteMediaFromR2(imgKeys).catch(() => {});
+    }
     const result = await ChildNotification.deleteMany(query);
     return res.json({ success: true, deletedCount: result.deletedCount });
   } catch (error: any) {

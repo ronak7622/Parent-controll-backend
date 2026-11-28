@@ -391,8 +391,10 @@ export class StorageDeleteService {
   }
 
   /**
-   * Erase ALL stored data for a specific device (Media in R2 + All Text/Log records in Mongo)
-   * Decrements/zeros device storage and recalculates parent account storage.
+   * Erase ALL stored history/media data for a specific device (Media in R2 + Text/Log records in Mongo)
+   * and recalculates parent account storage.
+   * Preserves user-configured rules/settings (AppBlockRule, AppLimit, ScheduleConfig) and LiveUsage
+   * quota unless [wipeParentScoped] is true (e.g. Plan + Grace expired).
    * DOES NOT unpair or disconnect the device.
    */
   static async eraseAllDeviceData(deviceId: string, parentUserId?: string, wipeParentScoped: boolean = false): Promise<{ freedBytes: number; deletedCount: number }> {
@@ -510,7 +512,7 @@ export class StorageDeleteService {
         }
       }
 
-      // 5. Delete all Text / Database Logs (19 Collections) - wrapped safe
+      // 5. Delete all Text / Database History & Log Collections (preserve setup/rules unless full plan-expiry wipe)
       const textCollections: Array<{ name: string; promise: Promise<any> }> = [
         { name: 'CallLog', promise: CallLog.deleteMany({ deviceId }) },
         { name: 'LocationLog', promise: LocationLog.deleteMany({ deviceId }) },
@@ -527,11 +529,16 @@ export class StorageDeleteService {
         { name: 'InternetLog', promise: InternetLog.deleteMany({ deviceId }) },
         { name: 'ChatMessage', promise: ChatMessage.deleteMany({ deviceId }) },
         { name: 'Contact', promise: Contact.deleteMany({ deviceId }) },
-        { name: 'AppBlockRule', promise: AppBlockRule.deleteMany({ deviceId }) },
-        { name: 'AppLimit', promise: AppLimit.deleteMany({ deviceId }) },
-        { name: 'ScheduleConfig', promise: ScheduleConfig.deleteMany({ deviceId }) },
         { name: 'DeletedRecording', promise: DeletedRecording.deleteMany({ deviceId }) },
       ];
+
+      if (wipeParentScoped) {
+        textCollections.push(
+          { name: 'AppBlockRule', promise: AppBlockRule.deleteMany({ deviceId }) },
+          { name: 'AppLimit', promise: AppLimit.deleteMany({ deviceId }) },
+          { name: 'ScheduleConfig', promise: ScheduleConfig.deleteMany({ deviceId }) },
+        );
+      }
 
       const settled = await Promise.allSettled(textCollections.map((c) => c.promise));
       settled.forEach((res, idx) => {
@@ -544,15 +551,9 @@ export class StorageDeleteService {
         }
       });
 
-      // 6. Recalculate or Wipe Parent Account Storage / LiveUsage
+      // 6. Recalculate StorageUsage (or wipe LiveUsage + StorageUsage ONLY on full plan-expiry wipe)
       if (parentUserId) {
-        let shouldWipeParent = wipeParentScoped;
-        if (!shouldWipeParent) {
-          const otherDevices = await Device.countDocuments({ parentUserId, deviceId: { $ne: deviceId } }).catch(() => 0);
-          if (otherDevices === 0) shouldWipeParent = true;
-        }
-
-        if (shouldWipeParent) {
+        if (wipeParentScoped) {
           try {
             await LiveUsage.deleteMany({ parentUserId });
           } catch (e: any) {
@@ -565,6 +566,7 @@ export class StorageDeleteService {
           }
           await StorageAccountingService.invalidateCache(parentUserId);
         } else {
+          // Erase All Data & Unpair: preserve LiveUsage quota and recalculate cloud StorageUsage
           await StorageAccountingService.recalculateStorage(parentUserId);
         }
       }
